@@ -121,17 +121,17 @@ SDMMC Slot 0 4-bit -> SDMMC Slot 0 1-bit -> SDSPI2 -> SDSPI3 -> flash_fat fallba
 ## 6. 构建与刷写
 
 ```powershell
-$env:IDF_PATH='C:\esp\v6.0.1\esp-idf'
+$env:IDF_PATH='<ESP_IDF_PATH>'
 $env:ESP_IDF_VERSION='6.0'
-$env:ESP_ROM_ELF_DIR='C:\Espressif\tools\esp-rom-elfs\20241011'
-$env:PATH='C:\Espressif\tools\ninja\1.12.1;C:\Espressif\tools\cmake\4.0.3\bin;C:\Espressif\tools\ccache\4.12.1\ccache-4.12.1-windows-x86_64;C:\Espressif\tools\riscv32-esp-elf\esp-15.2.0_20251204\riscv32-esp-elf\bin;'+$env:PATH
-& 'C:\Espressif\tools\cmake\4.0.3\bin\cmake.exe' --build build --target app
+$env:ESP_ROM_ELF_DIR='<IDF_TOOLS_PATH>\esp-rom-elfs\20241011'
+$env:PATH='<IDF_TOOLS_PATH>\ninja\1.12.1;<IDF_TOOLS_PATH>\cmake\4.0.3\bin;<IDF_TOOLS_PATH>\ccache\4.12.1\ccache-4.12.1-windows-x86_64;<IDF_TOOLS_PATH>\riscv32-esp-elf\esp-15.2.0_20251204\riscv32-esp-elf\bin;'+$env:PATH
+& '<IDF_TOOLS_PATH>\cmake\4.0.3\bin\cmake.exe' --build build --target app
 ```
 
 刷写 app-only：
 
 ```powershell
-C:\Users\Administrator\.espressif\python_env\idf6.0_py3.11_env\Scripts\python.exe -m esptool --chip esp32p4 -p COM3 -b 921600 --before default-reset --after hard-reset write-flash --flash-mode dio --flash-freq 80m --flash-size 16MB 0x8000 build\partition_table\partition-table.bin 0x10000 build\esp32p4_buoy_vision_lab.bin
+<IDF_PYTHON> -m esptool --chip esp32p4 -p COM3 -b 921600 --before default-reset --after hard-reset write-flash --flash-mode dio --flash-freq 80m --flash-size 16MB 0x8000 build\partition_table\partition-table.bin 0x10000 build\esp32p4_buoy_vision_lab.bin
 ```
 
 ## 7. 验证清单

@@ -1,0 +1,19 @@
+{
+  "dataset": "coco_video_demo",
+  "input": "store-aisle-detection.mp4",
+  "source_url": "https://github.com/intel-iot-devkit/sample-videos/blob/master/store-aisle-detection.mp4",
+  "license_url": "https://github.com/intel-iot-devkit/sample-videos/blob/master/LICENSE",
+  "output": "test_assets\\coco_video_demo",
+  "board_path": "/sdcard/esp32p4/datasets/coco_video_demo",
+  "source_fps": 59.94005994005994,
+  "source_frames": 3921,
+  "source_size": [
+    720,
+    404
+  ],
+  "start_frame": 2400,
+  "every": 60,
+  "exported_frames": 16,
+  "frame_width": 448,
+  "jpeg_quality": 78
+}

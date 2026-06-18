@@ -1,0 +1,17 @@
+dependencies:
+  idf: ">=5.4"
+  esp_video: "^2.2.0"
+  espressif/esp_wifi_remote:
+    version: ">=0.10,<2.0"
+    rules:
+      - if: "target in [esp32p4, esp32h2]"
+  espressif/esp_hosted:
+    # 2.12.8 resets the ESP32-P4 Function EV Board under normal HTTP traffic.
+    # 2.9.3 is the stable host-side version reported for this exact board.
+    version: "==2.9.3"
+    rules:
+      - if: "target in [esp32p4, esp32h2]"
+  espressif/yolo26:
+    version: "*"
+  espressif/coco_detect:
+    version: "0.3.2"

@@ -1,0 +1,329 @@
+menu "Wi-Fi Camera Web Control"
+
+    config APP_WIFI_SSID
+        string "Wi-Fi SSID"
+        default "TP-LINK"
+
+    config APP_WIFI_PASSWORD
+        string "Wi-Fi password"
+        default "fjj13308196146"
+
+    config APP_AP_SSID
+        string "SoftAP SSID"
+        default "P4_Buoy_Lab"
+
+    config APP_AP_PASSWORD
+        string "SoftAP password"
+        default "13572468"
+
+    config APP_AP_CHANNEL
+        int "SoftAP channel"
+        default 6
+        range 1 13
+
+    config APP_AP_MAX_CLIENTS
+        int "SoftAP max clients"
+        default 4
+        range 1 8
+
+    config APP_AP_STATIC_IP
+        string "SoftAP static IPv4 address"
+        default "192.168.4.1"
+        help
+            Static SoftAP address used for direct phone access.
+
+    config APP_AP_NETMASK
+        string "SoftAP IPv4 netmask"
+        default "255.255.255.0"
+
+    config APP_AP_GATEWAY
+        string "SoftAP IPv4 gateway"
+        default "192.168.4.1"
+
+    config APP_DEFAULT_NETWORK_MODE
+        int "Default network mode: 0 STA, 1 SoftAP, 2 AP+STA"
+        default 2
+        range 0 2
+        help
+            STA connects to the configured router. SoftAP starts the board's own hotspot.
+            AP+STA keeps the hotspot alive while also trying to join the router.
+
+    config APP_NETWORK_BOOT_WINDOW_MS
+        int "Network boot access window in milliseconds"
+        default 300000
+        range 10000 3600000
+        help
+            Wi-Fi and HTTP stay available for at least this long after boot.
+
+    config APP_NETWORK_IDLE_TIMEOUT_MS
+        int "Network idle shutdown timeout in milliseconds"
+        default 300000
+        range 10000 3600000
+        help
+            After the boot window, Wi-Fi and HTTP stop once AP, HTTP and stream activity
+            have all been idle for this long. They reopen on the next reboot.
+
+    config APP_NETWORK_WATCHDOG_PERIOD_MS
+        int "Network idle watchdog period in milliseconds"
+        default 5000
+        range 1000 60000
+
+    config APP_STORAGE_TIMESHARE_BOOT_PROBE_MS
+        int "Automatic boot TF maintenance probe delay in milliseconds"
+        default 0
+        range 0 600000
+        help
+            Set to 0 to keep the TF maintenance window manual only. Non-zero values
+            stop Wi-Fi/ESP-Hosted after the delay to test the TF card while the SDIO
+            transport is down, then reboot to restore AP+STA.
+
+    config APP_DEFAULT_RECOGNITION_METHOD
+        int "Default recognition method: 0 off, 1 MLP, 2 YOLO26, 3 YOLO11, 4 COCO YOLO11n 320"
+        default 4
+        range 0 4
+        help
+            MLP is the lightweight baseline. YOLO26 and YOLO11 are ESP-DL board-side routes.
+
+    config APP_YOLO26_BOARD_ENABLE
+        bool "Enable board-side YOLO26 ESP-DL inference"
+        default y
+        help
+            Enable the self-trained Coke/Sprite YOLO26n model embedded from models/.
+            The firmware still depends on the espressif/yolo26 component for the postprocessor,
+            but the graph loaded at runtime is models/yolo26_coke_sprite_raw_heads_416_allint8_p4.espdl.
+
+    config APP_WIFI_MAX_RETRY
+        int "Maximum retry count before continuing forever"
+        default 0
+        help
+            Set to 0 to keep reconnecting forever.
+
+    config APP_HTTP_PART_BOUNDARY
+        string "HTTP MJPEG part boundary"
+        default "123456789000000000000987654321"
+
+    config APP_FRAME_BUFFER_BYTES
+        int "Latest JPEG/client frame buffer bytes"
+        default 262144
+        range 65536 1048576
+        help
+            Maximum bytes reserved for the cached JPEG frame and each stream client's copy buffer.
+
+    config APP_STREAM_MAX_FPS
+        int "Maximum MJPEG FPS per client"
+        default 12
+        range 1 30
+
+    config APP_MAX_STREAM_CLIENTS
+        int "Maximum concurrent MJPEG stream clients"
+        default 4
+        range 1 6
+        help
+            Increase this only if PSRAM and Wi-Fi bandwidth are sufficient.
+
+    config APP_ASYNC_WORKER_TASK_STACK_SIZE
+        int "Async stream worker task stack size"
+        default 8192
+        range 4096 16384
+
+    config APP_CAMERA_TASK_STACK_SIZE
+        int "Camera capture task stack size"
+        default 8192
+        range 4096 16384
+
+    config APP_CAMERA_TASK_PRIORITY
+        int "Camera capture task priority"
+        default 6
+        range 1 20
+
+    config APP_INFERENCE_TASK_STACK_SIZE
+        int "YOLO inference worker task stack size"
+        default 12288
+        range 8192 24576
+        help
+            Stack for the independent YOLO worker. Keep it separate from the camera task
+            so long ESP-DL runs do not stop frame capture and MJPEG streaming.
+
+    config APP_INFERENCE_TASK_PRIORITY
+        int "YOLO inference worker task priority"
+        default 4
+        range 1 20
+        help
+            Lower than the camera task by default. The worker consumes copied JPEG frames
+            from a depth-1 queue and publishes results asynchronously.
+
+    config APP_BOOT_STANDBY
+        bool "Start in standby after boot"
+        default y
+
+    config APP_SD_ENABLE
+        bool "Enable TF card storage"
+        default y
+
+    config APP_SD_MOUNT_POINT
+        string "TF card mount point"
+        default "/sdcard"
+
+    config APP_FLASH_STORAGE_LABEL
+        string "Internal flash fallback FAT partition label"
+        default "storage"
+        help
+            Partition label used as the online fallback file store when the TF
+            card cannot be mounted. It is mounted at the same VFS path as the
+            TF card so history, timeline and validation APIs remain available.
+
+    config APP_SD_USE_SDMMC
+        bool "Use SDMMC host for TF card instead of SDSPI"
+        default y
+        help
+            The TF card socket on ESP32-P4 Function EV Board / P4-Eye uses
+            SDMMC Slot 0 pins CMD=44, CLK=43, D0-D3=39-42. ESP-Hosted Wi-Fi
+            uses a different SDIO slot and pin group, so SDMMC Slot 0 should be
+            tried before SDSPI.
+
+    config APP_SD_BUS_WIDTH
+        int "TF card SDMMC bus width"
+        default 4
+        range 1 4
+
+    config APP_SD_PIN_CMD
+        int "TF card SDMMC CMD pin"
+        default 44
+
+    config APP_SD_PIN_CLK
+        int "TF card SDMMC CLK pin"
+        default 43
+
+    config APP_SD_PIN_D0
+        int "TF card SDMMC D0 pin"
+        default 39
+
+    config APP_SD_PIN_D1
+        int "TF card SDMMC D1 pin"
+        default 40
+
+    config APP_SD_PIN_D2
+        int "TF card SDMMC D2 pin"
+        default 41
+
+    config APP_SD_PIN_D3
+        int "TF card SDMMC D3 pin"
+        default 42
+
+    config APP_SD_LDO_IO_ID
+        int "TF card internal LDO channel"
+        default 4
+        range 1 4
+
+    config APP_HISTORY_ENABLE
+        bool "Enable recognition history"
+        default y
+
+    config APP_CAN_BOX_MIN_SCORE
+        int "Recognition minimum box score"
+        default 96
+        range 50 100
+        help
+            Minimum candidate score, in percent, required before the Coke/Sprite recognizer draws a box
+            and records a positive object result. Increase it to reduce false boxes; decrease it to
+            recover more weak detections.
+
+    config APP_INFERENCE_INTERVAL_MS
+        int "Recognition inference interval in milliseconds"
+        default 1000
+        range 0 600000
+        help
+            Minimum interval between two recognizer runs. Use 0 for every frame.
+            YOLO inference is much slower than MLP on the board. Use about 3000-5000 ms
+            for YOLO11, and 30000 ms or more for YOLO26 when the video stream is active.
+
+    config APP_HISTORY_SAMPLE_INTERVAL_MS
+        int "Recognition history sample interval in milliseconds"
+        default 2000
+        range 250 600000
+
+    config APP_HISTORY_MAX_RECORDS
+        int "Recognition history records kept in RAM"
+        default 128
+        range 16 512
+
+    config APP_HISTORY_MAX_SNAPSHOTS
+        int "Recognition snapshot files kept on TF card"
+        default 1800
+        range 32 20000
+
+    config APP_HISTORY_INDEX_MAX_KB
+        int "Maximum history JSONL file size before rotation"
+        default 2048
+        range 128 65536
+
+    config APP_HISTORY_SAVE_JPEG
+        bool "Save sampled JPEG snapshots with recognition history"
+        default y
+
+    config APP_RECORDING_ENABLE
+        bool "Enable TF card MJPEG segment recording"
+        default y
+        help
+            Save boot-session camera video as short MJPEG segment files on TF card.
+            Recognition metadata is written to JSONL indexes for monitoring-style review.
+
+    config APP_RECORDING_SEGMENT_MS
+        int "Recording segment length in milliseconds"
+        default 60000
+        range 5000 600000
+
+    config APP_RECORDING_MAX_FPS
+        int "Maximum TF recording FPS"
+        default 4
+        range 1 15
+        help
+            The live stream can run faster. This limit protects TF write bandwidth and
+            keeps COCO inference responsive while still providing reviewable video.
+
+    config APP_RECORDING_MAX_SEGMENTS
+        int "Maximum AVI recording segments kept on TF card"
+        default 20000
+        range 4 20000
+
+    config APP_RECORDING_QUEUE_DEPTH
+        int "Recording writer queue depth"
+        default 16
+        range 1 16
+
+    config APP_SUMMARY_INTERVAL_MS
+        int "Periodic recognition summary interval"
+        default 60000
+        range 5000 600000
+
+    config APP_DATASET_RUN_MAX_FRAMES
+        int "Maximum TF dataset frames per HTTP validation run"
+        default 16
+        range 1 64
+
+    config APP_HISTORY_TASK_STACK_SIZE
+        int "History storage task stack size"
+        default 8192
+        range 4096 16384
+
+    config APP_RECORDING_TASK_STACK_SIZE
+        int "AVI recording task stack size"
+        default 16384
+        range 8192 24576
+
+    config APP_HISTORY_TASK_PRIORITY
+        int "History storage task priority"
+        default 4
+        range 1 20
+
+    config EXAMPLE_CAMERA_VIDEO_BUFFER_NUMBER
+        int "Camera video buffer number"
+        default 2
+        range 1 4
+
+    config EXAMPLE_JPEG_COMPRESSION_QUALITY
+        int "JPEG compression quality"
+        default 75
+        range 1 100
+
+endmenu

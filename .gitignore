@@ -1,0 +1,25 @@
+# Build outputs
+/build/
+/build_*/
+
+# Local Python environments and caches
+/.venv*/
+/venv/
+/__pycache__/
+*.py[cod]
+
+# ESP-IDF managed/downloaded component cache
+/.idf_component_cache/
+/managed_components/
+
+# Local datasets, training outputs, and generated reports/artifacts
+/data/
+/runs/
+/artifacts/
+/reports/
+/tmp_verify/
+/reference_models/
+
+# Local editor and OS noise
+.DS_Store
+Thumbs.db

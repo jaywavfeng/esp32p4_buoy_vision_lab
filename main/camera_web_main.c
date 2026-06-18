@@ -176,7 +176,7 @@ extern int esp_hosted_connect_to_slave(void);
 #define CONFIG_APP_DEFAULT_NETWORK_MODE 0
 #endif
 #ifndef CONFIG_APP_AP_STATIC_IP
-#define CONFIG_APP_AP_STATIC_IP "192.168.4.1"
+#define CONFIG_APP_AP_STATIC_IP "YOUR_AP_IP"
 #endif
 #ifndef CONFIG_APP_AP_NETMASK
 #define CONFIG_APP_AP_NETMASK "255.255.255.0"
@@ -4978,7 +4978,7 @@ static void load_runtime_settings(void)
     if (nvs_get_u32(nvs, "version", &version) != ESP_OK || version != SETTINGS_VERSION) {
         /*
          * NVS 会保留现场调参结果。升级到本版本后需要重置一次运行参数：
-         * - 网络恢复 AP+STA，保证手机固定访问 192.168.4.1；
+         * - 网络恢复 AP+STA，保证手机固定访问 YOUR_AP_IP；
          * - 新 TF 卡到位后恢复历史记录和分段录像默认开启；
          * - 主识别路线恢复 COCO，避免旧实验模型继续占用演示入口。
          */
@@ -9724,7 +9724,7 @@ static esp_err_t wifi_apply_mode(network_mode_t mode)
     /*
      * Wi-Fi 模式切换会短暂断开当前连接，所以调用者要先让摄像头 standby。
      * 这里按“停止 -> 配置 STA/AP -> 启动 -> 等待 STA 结果”的顺序执行；
-     * SoftAP 的 IP 固定使用 esp_netif 默认的 192.168.4.1，方便手机野外直连。
+     * SoftAP 的 IP 固定使用 esp_netif 默认的 YOUR_AP_IP，方便手机野外直连。
      */
     if (!s_wifi_event_group) {
         s_wifi_event_group = xEventGroupCreate();

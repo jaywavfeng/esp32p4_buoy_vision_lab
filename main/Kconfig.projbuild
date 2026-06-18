@@ -2,19 +2,19 @@ menu "Wi-Fi Camera Web Control"
 
     config APP_WIFI_SSID
         string "Wi-Fi SSID"
-        default "TP-LINK"
+        default "YOUR_WIFI_SSID"
 
     config APP_WIFI_PASSWORD
         string "Wi-Fi password"
-        default "fjj13308196146"
+        default "YOUR_WIFI_PASSWORD"
 
     config APP_AP_SSID
         string "SoftAP SSID"
-        default "P4_Buoy_Lab"
+        default "YOUR_AP_SSID"
 
     config APP_AP_PASSWORD
         string "SoftAP password"
-        default "13572468"
+        default "YOUR_WIFI_OR_AP_PASSWORD"
 
     config APP_AP_CHANNEL
         int "SoftAP channel"
@@ -28,7 +28,7 @@ menu "Wi-Fi Camera Web Control"
 
     config APP_AP_STATIC_IP
         string "SoftAP static IPv4 address"
-        default "192.168.4.1"
+        default "YOUR_AP_IP"
         help
             Static SoftAP address used for direct phone access.
 
@@ -38,7 +38,7 @@ menu "Wi-Fi Camera Web Control"
 
     config APP_AP_GATEWAY
         string "SoftAP IPv4 gateway"
-        default "192.168.4.1"
+        default "YOUR_AP_IP"
 
     config APP_DEFAULT_NETWORK_MODE
         int "Default network mode: 0 STA, 1 SoftAP, 2 AP+STA"

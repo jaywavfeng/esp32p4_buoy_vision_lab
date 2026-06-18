@@ -2,7 +2,7 @@
 
 本工程是 `D:\ZJU\Project\wifi_led_web` 的实验副本，目录为 `D:\ZJU\Project\esp32p4_buoy_vision_lab`。原工程保持只读，本工程用于继续验证 ESP32-P4-WIFI6-DEV-KIT-A 的无线图传、板端识别、低功耗待机、网页调参和后续海洋无线漂流检测球原型。
 
-当前固件已经升级到产品化记录模式。默认识别方法为 `coco`，上电直接启动摄像头、异步推理、历史记录和分段 MJPEG 录像；存储优先使用 TF 卡，若 TF 底层不可用则自动挂载内部 flash FAT fallback 到同一个 `/sdcard` 路径，继续保存最近监控片段、识别事件、快照、周期摘要和手机视频验证数据。默认网络模式为 AP+STA：板子热点 `P4_Buoy_Lab / 13572468` 和路由器 STA 同时启动，手机优先访问固定地址 `http://192.168.4.1/`；连接同一路由器 `jaywav` 的设备也可访问串口打印的 `STA URL`。
+当前固件已经升级到产品化记录模式。默认识别方法为 `coco`，上电直接启动摄像头、异步推理、历史记录和分段 MJPEG 录像；存储优先使用 TF 卡，若 TF 底层不可用则自动挂载内部 flash FAT fallback 到同一个 `/sdcard` 路径，继续保存最近监控片段、识别事件、快照、周期摘要和手机视频验证数据。默认网络模式为 AP+STA：板子热点 `YOUR_AP_SSID / YOUR_WIFI_OR_AP_PASSWORD` 和路由器 STA 同时启动，手机优先访问固定地址 `http://YOUR_AP_IP/`；连接同一路由器 `YOUR_WIFI_SSID` 的设备也可访问串口打印的 `STA URL`。
 
 ## 硬件
 
@@ -44,7 +44,7 @@
 - 当前刷写固件默认为 `running + coco + apsta`，摄像头上电后启动；网络/HTTP 上电至少开放 5 分钟，若有 AP 客户端、HTTP/API 请求或 `/stream` 客户端活跃则继续保活，全部空闲超过 5 分钟后关闭 HTTP 和 Wi-Fi，下次 reboot 再重新开放。
 - ESP-Hosted 已切到板载 ESP32-C6 + SPI full duplex，避免继续占用 TF 需要的 SDMMC host：P4 host 引脚为 `MOSI=14`、`MISO=15`、`CLK=18`、`CS=19`、`HANDSHAKE=16`、`DATA_READY=17`、`RESET=54`。C6 侧必须同步刷写匹配的 SPI slave 固件；若仍是出厂 SDIO slave 固件，AP/STA/HTTP 都不会启动。
 - C6 SPI slave 固件已在 C: 临时副本中构建通过，并把可刷写产物复制到 `artifacts/c6_spi_slave/`：`network_adapter.bin=0x1334a0`，C6 OTA app 分区剩余 36%。刷写命令见 `artifacts/c6_spi_slave/README.md`。
-- AP+STA 目标模式保持为板子热点 `P4_Buoy_Lab / 13572468` + 路由器 `jaywav / 13572468`。旧 SDIO 固件曾实测 AP/STA 可用；当前 SPI 版本的无线验收以“P4 app + C6 SPI slave 同步刷写后 `/api/status` 可访问”为准。
+- AP+STA 目标模式保持为板子热点 `YOUR_AP_SSID / YOUR_WIFI_OR_AP_PASSWORD` + 路由器 `YOUR_WIFI_SSID / YOUR_WIFI_OR_AP_PASSWORD`。旧 SDIO 固件曾实测 AP/STA 可用；当前 SPI 版本的无线验收以“P4 app + C6 SPI slave 同步刷写后 `/api/status` 可访问”为准。
 - HTTP 板端图片验证入口为 `http://<board-ip>/api/validate/run?sample=demo_01..demo_04&method=coco&box_min_score=50`，用于复测四张 COCO classic 图。
 
 ## 常用页面和 API
@@ -81,8 +81,8 @@
 
 ## 固定地址访问和网络生命周期
 
-1. 重启板子后，固件默认启动 `AP+STA`。手机连接热点 `P4_Buoy_Lab / 13572468`，打开 `http://192.168.4.1/validate` 做板端图片推理验证。
-2. 如果手机或电脑已经连接路由器 `jaywav / 13572468`，也可以打开串口打印的 `STA URL`。DHCP 地址可能变化，以串口日志中的 `STA URL` 和 `/api/status` 里的 `sta_url` 为准。
+1. 重启板子后，固件默认启动 `AP+STA`。手机连接热点 `YOUR_AP_SSID / YOUR_WIFI_OR_AP_PASSWORD`，打开 `http://YOUR_AP_IP/validate` 做板端图片推理验证。
+2. 如果手机或电脑已经连接路由器 `YOUR_WIFI_SSID / YOUR_WIFI_OR_AP_PASSWORD`，也可以打开串口打印的 `STA URL`。DHCP 地址可能变化，以串口日志中的 `STA URL` 和 `/api/status` 里的 `sta_url` 为准。
 3. 网络和 HTTP 服务上电后至少开放 `300000 ms`。有 AP 客户端、网页/API 请求或 `/stream` 客户端时会刷新保活时间；全部空闲超过 `300000 ms` 后串口打印 `network idle shutdown`，随后热点消失。
 4. 空闲关闭后不会自动重开，按当前需求需要 reboot 才会再次开放 5 分钟窗口。
 5. 如果串口出现 `Wi-Fi runtime unavailable: ESP_FAIL` 或 `Failed to get ESP_Hosted slave transport up`，说明 ESP32-C6 Wi-Fi 协处理器链路没有起来，固件无法提供 AP/STA/HTTP 页面。优先确认 P4 host 和 C6 slave 是否都已刷为 SPI transport；当前 P4 已是 SPI 配置，若 C6 仍是 SDIO 旧固件会导致 AP/STA 全不可用。此时仍可通过串口 `BOARD_IMAGE_VALIDATION` 验证板端模型延迟。
@@ -229,11 +229,11 @@ free_psram/min_free_psram  当前/最低 PSRAM 余量
 默认值主要在 `sdkconfig.defaults` 和 `main/Kconfig.projbuild` 中：
 
 ```text
-CONFIG_APP_WIFI_SSID="jaywav"
-CONFIG_APP_WIFI_PASSWORD="13572468"
-CONFIG_APP_AP_SSID="P4_Buoy_Lab"
-CONFIG_APP_AP_PASSWORD="13572468"
-CONFIG_APP_AP_STATIC_IP="192.168.4.1"
+CONFIG_APP_WIFI_SSID="YOUR_WIFI_SSID"
+CONFIG_APP_WIFI_PASSWORD="YOUR_WIFI_OR_AP_PASSWORD"
+CONFIG_APP_AP_SSID="YOUR_AP_SSID"
+CONFIG_APP_AP_PASSWORD="YOUR_WIFI_OR_AP_PASSWORD"
+CONFIG_APP_AP_STATIC_IP="YOUR_AP_IP"
 CONFIG_APP_DEFAULT_NETWORK_MODE=2
 CONFIG_APP_NETWORK_BOOT_WINDOW_MS=300000
 CONFIG_APP_NETWORK_IDLE_TIMEOUT_MS=300000

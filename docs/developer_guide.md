@@ -139,7 +139,7 @@ C:\Users\Administrator\.espressif\python_env\idf6.0_py3.11_env\Scripts\python.ex
 1. 构建通过，`check_sizes.py` 显示 app 分区剩余为正。
 2. 串口启动出现：
    - `TF card mounted at /sdcard ...`，或 `flash fallback storage mounted at /sdcard`
-   - `AP URL: http://192.168.4.1/`
+   - `AP URL: http://YOUR_AP_IP/`
    - `BOARD_IMAGE_VALIDATION ... analysis_ms < 1000`
 3. 访问 `/api/status`，确认：
    - `file_storage_mounted=true`
@@ -212,7 +212,7 @@ POST   /api/time/sync?epoch_ms=<unix-ms>
 - New APIs: `/api/search`, `/api/recording/frame.svg`, `/api/dataset/frame.svg`.
 - JSONL index version is `4`; recording indexes add `start_epoch_ms`, `end_epoch_ms` and `clock_source`, while sidecar/event lines add `epoch_ms`.
 - Recording retention keeps at least the larger of 4 GiB or 5% of TF capacity free by deleting oldest segments and sidecars first.
-- AP+STA remains default: STA `jaywav` plus AP `P4_Buoy_Lab`. No AP/HTTP/stream activity within 5 minutes after boot stops HTTP/Wi-Fi until reboot.
+- AP+STA remains default: STA `YOUR_WIFI_SSID` plus AP `YOUR_AP_SSID`. No AP/HTTP/stream activity within 5 minutes after boot stops HTTP/Wi-Fi until reboot.
 - Build verified on 2026-06-11: app bin `0xc41790`, smallest app partition `0xe00000`, `0x1be870` free (12%).
 
 删除实现只允许白名单目录和白名单扩展名，避免通过 URL 删除工程外文件。

@@ -51,6 +51,9 @@ uint32_t coco_espdl_model_bytes(void);
 esp_err_t coco_espdl_detect_jpeg(const uint8_t *jpg_data,
                                  size_t jpg_len,
                                  coco_espdl_result_t *out);
+esp_err_t coco_espdl_detect_jpeg_background(const uint8_t *jpg_data,
+                                            size_t jpg_len,
+                                            coco_espdl_result_t *out);
 esp_err_t coco_espdl_detect_and_annotate_jpeg(const uint8_t *jpg_data,
                                               size_t jpg_len,
                                               uint32_t min_score,
@@ -58,7 +61,15 @@ esp_err_t coco_espdl_detect_and_annotate_jpeg(const uint8_t *jpg_data,
                                               coco_espdl_result_t *out,
                                               uint8_t **annotated_jpeg,
                                               size_t *annotated_len);
+esp_err_t coco_espdl_annotate_jpeg(const uint8_t *jpg_data,
+                                   size_t jpg_len,
+                                   const coco_espdl_result_t *result,
+                                   uint32_t min_score,
+                                   uint8_t jpeg_quality,
+                                   uint8_t **annotated_jpeg,
+                                   size_t *annotated_len);
 void coco_espdl_free_jpeg(uint8_t *jpeg);
+void coco_espdl_release_background(void);
 
 #ifdef __cplusplus
 }

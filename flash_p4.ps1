@@ -1,41 +1,49 @@
 param(
-    [string]$Port = "COM3"
+    [string]$Port = "COM3",
+    [switch]$Monitor
 )
 
 $ErrorActionPreference = "Stop"
 
 $ProjectDir = $PSScriptRoot
-
-if (-not $env:IDF_PATH) {
-    throw "Set IDF_PATH first, or run this script from an ESP-IDF PowerShell environment."
-}
-
-$IdfPath = $env:IDF_PATH
+$IdfPath = "C:\esp\v6.0.1\esp-idf"
+$Python = "C:\Espressif\tools\python\v6.0.1\venv\Scripts\python.exe"
 $IdfPy = Join-Path $IdfPath "tools\idf.py"
-if (-not (Test-Path $IdfPy)) {
-    throw "idf.py not found under IDF_PATH: $IdfPy"
-}
 
-$Python = "python"
-if ($env:IDF_PYTHON_ENV_PATH) {
-    $EnvPython = Join-Path $env:IDF_PYTHON_ENV_PATH "Scripts\python.exe"
-    if (Test-Path $EnvPython) {
-        $Python = $EnvPython
-    }
-}
+$env:IDF_TOOLS_PATH = "C:\Espressif\tools"
+$env:IDF_COMPONENT_CACHE_PATH = Join-Path $ProjectDir ".idf_component_cache"
+$env:IDF_COMPONENT_LOCAL_STORAGE_URL = "file://C:\Espressif\tools"
+$env:IDF_PYTHON_ENV_PATH = "C:\Espressif\tools\python\v6.0.1\venv"
+$env:IDF_PATH = $IdfPath
+$env:ESP_IDF_VERSION = "6.0"
+$env:ESP_ROM_ELF_DIR = "C:\Espressif\tools\esp-rom-elfs\20241011"
 
-if (-not $env:ESP_IDF_VERSION) {
-    $env:ESP_IDF_VERSION = "6.0"
-}
-if (-not $env:IDF_COMPONENT_CACHE_PATH) {
-    $env:IDF_COMPONENT_CACHE_PATH = Join-Path $ProjectDir ".idf_component_cache"
-}
+$env:GIT_CONFIG_COUNT = "1"
+$env:GIT_CONFIG_KEY_0 = "safe.directory"
+$env:GIT_CONFIG_VALUE_0 = "C:/esp/v6.0.1/esp-idf"
+
+$ToolPath = @(
+    "C:\Espressif\tools\ccache\4.12.1\ccache-4.12.1-windows-x86_64",
+    "C:\Espressif\tools\cmake\4.0.3\bin",
+    "C:\Espressif\tools\ninja\1.12.1",
+    "C:\Espressif\tools\riscv32-esp-elf\esp-15.2.0_20251204\riscv32-esp-elf\bin",
+    "C:\Espressif\tools\python\v6.0.1\venv\Scripts"
+)
+$env:PATH = ($ToolPath -join ";") + ";" + $env:PATH
 
 Push-Location $ProjectDir
 try {
-    & $Python $IdfPy set-target esp32p4
     & $Python $IdfPy build
-    & $Python $IdfPy -p $Port flash monitor
+    if ($LASTEXITCODE -ne 0) {
+        throw "ESP-IDF build failed with exit code $LASTEXITCODE"
+    }
+    & $Python $IdfPy -p $Port flash
+    if ($LASTEXITCODE -ne 0) {
+        throw "ESP-IDF flash failed with exit code $LASTEXITCODE"
+    }
+    if ($Monitor) {
+        & $Python $IdfPy -p $Port monitor
+    }
 }
 finally {
     Pop-Location

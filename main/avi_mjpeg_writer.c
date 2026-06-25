@@ -37,6 +37,14 @@ struct avi_mjpeg_writer {
     uint64_t duration_ms;
 };
 
+struct avi_mjpeg_reader {
+    FILE *file;
+    uint8_t *frame;
+    size_t frame_capacity;
+    uint32_t frame_count;
+    uint32_t frame_index;
+};
+
 static void put_u16(uint8_t *dst, uint16_t value)
 {
     dst[0] = (uint8_t)value;
@@ -550,4 +558,97 @@ esp_err_t avi_mjpeg_retime_file(const char *path, uint64_t duration_ms)
     }
     fclose(file);
     return ret;
+}
+
+esp_err_t avi_mjpeg_reader_open(avi_mjpeg_reader_t **out,
+                                const char *path,
+                                avi_mjpeg_info_t *info)
+{
+    if (!out || !path) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *out = NULL;
+
+    avi_mjpeg_info_t probed = {0};
+    ESP_RETURN_ON_ERROR(avi_mjpeg_probe(path, &probed), TAG, "probe AVI reader input");
+
+    FILE *file = fopen(path, "rb");
+    if (!file || fseek(file, AVI_HEADER_BYTES, SEEK_SET) != 0) {
+        if (file) {
+            fclose(file);
+        }
+        return ESP_FAIL;
+    }
+
+    avi_mjpeg_reader_t *reader = calloc(1, sizeof(*reader));
+    if (!reader) {
+        fclose(file);
+        return ESP_ERR_NO_MEM;
+    }
+    reader->file = file;
+    reader->frame_count = probed.frame_count;
+    if (info) {
+        *info = probed;
+    }
+    *out = reader;
+    return ESP_OK;
+}
+
+esp_err_t avi_mjpeg_reader_next(avi_mjpeg_reader_t *reader,
+                                const uint8_t **jpeg,
+                                size_t *jpeg_size,
+                                uint32_t *frame_index)
+{
+    if (!reader || !reader->file || !jpeg || !jpeg_size) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *jpeg = NULL;
+    *jpeg_size = 0;
+    if (reader->frame_index >= reader->frame_count) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    uint8_t chunk[8];
+    if (fread(chunk, 1, sizeof(chunk), reader->file) != sizeof(chunk) ||
+        memcmp(chunk, "00dc", 4) != 0) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    uint32_t size = get_u32(chunk + 4);
+    if (size == 0 || size > 2U * 1024U * 1024U) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    if (size > reader->frame_capacity) {
+        uint8_t *grown = realloc(reader->frame, size);
+        if (!grown) {
+            return ESP_ERR_NO_MEM;
+        }
+        reader->frame = grown;
+        reader->frame_capacity = size;
+    }
+    if (fread(reader->frame, 1, size, reader->file) != size) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    if ((size & 1U) != 0U && fgetc(reader->file) == EOF) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    reader->frame_index++;
+    *jpeg = reader->frame;
+    *jpeg_size = size;
+    if (frame_index) {
+        *frame_index = reader->frame_index;
+    }
+    return ESP_OK;
+}
+
+void avi_mjpeg_reader_close(avi_mjpeg_reader_t *reader)
+{
+    if (!reader) {
+        return;
+    }
+    if (reader->file) {
+        fclose(reader->file);
+    }
+    free(reader->frame);
+    free(reader);
 }

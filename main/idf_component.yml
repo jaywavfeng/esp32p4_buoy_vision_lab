@@ -15,3 +15,5 @@ dependencies:
     version: "*"
   espressif/coco_detect:
     version: "0.3.2"
+  espressif/mdns: "^1.8.0"
+  espressif/esp_tinyusb: "^2.0.1~1"

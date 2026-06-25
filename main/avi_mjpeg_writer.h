@@ -10,6 +10,7 @@ extern "C" {
 #endif
 
 typedef struct avi_mjpeg_writer avi_mjpeg_writer_t;
+typedef struct avi_mjpeg_reader avi_mjpeg_reader_t;
 
 typedef struct {
     uint32_t width;
@@ -43,6 +44,17 @@ esp_err_t avi_mjpeg_recover_part(const char *part_path, const char *final_path);
 esp_err_t avi_mjpeg_probe(const char *path, avi_mjpeg_info_t *info);
 
 esp_err_t avi_mjpeg_retime_file(const char *path, uint64_t duration_ms);
+
+esp_err_t avi_mjpeg_reader_open(avi_mjpeg_reader_t **out,
+                                const char *path,
+                                avi_mjpeg_info_t *info);
+
+esp_err_t avi_mjpeg_reader_next(avi_mjpeg_reader_t *reader,
+                                const uint8_t **jpeg,
+                                size_t *jpeg_size,
+                                uint32_t *frame_index);
+
+void avi_mjpeg_reader_close(avi_mjpeg_reader_t *reader);
 
 #ifdef __cplusplus
 }

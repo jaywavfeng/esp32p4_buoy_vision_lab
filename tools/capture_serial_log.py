@@ -27,7 +27,16 @@ def main() -> int:
     parser.add_argument("--reset", action="store_true")
     args = parser.parse_args()
 
-    with serial.Serial(args.port, args.baud, timeout=0.1) as ser:
+    ser = serial.Serial()
+    ser.port = args.port
+    ser.baudrate = args.baud
+    ser.timeout = 0.1
+    # CH343 boards wire DTR/RTS to auto-reset. Set both states before opening
+    # the port so a log-only capture cannot reboot a board under test.
+    ser.dtr = False
+    ser.rts = False
+    ser.open()
+    with ser:
         if args.reset:
             reset_board(ser)
 

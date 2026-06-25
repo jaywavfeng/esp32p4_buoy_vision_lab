@@ -48,6 +48,7 @@ static constexpr uint32_t kFallbackModelBytes = 2860704;
 static constexpr float kFallbackNmsThreshold = 0.70f;
 
 static COCODetect *s_detector;
+static COCODetect *s_background_detector;
 static SemaphoreHandle_t s_lock;
 
 static bool ensure_lock(void)
@@ -135,9 +136,11 @@ static void select_top_detections(std::vector<coco_espdl_detection_t> &candidate
     }
 }
 
-static esp_err_t ensure_detector(void)
+static esp_err_t ensure_detector(bool background, COCODetect **out)
 {
-    if (s_detector) {
+    COCODetect **slot = background ? &s_background_detector : &s_detector;
+    if (*slot) {
+        *out = *slot;
         return ESP_OK;
     }
     if (!ensure_lock()) {
@@ -145,16 +148,19 @@ static esp_err_t ensure_detector(void)
     }
 
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    if (!s_detector) {
-        s_detector = new (std::nothrow) COCODetect(COCODetect::YOLO11N_320_S8_V3, false);
-        if (!s_detector) {
+    if (!*slot) {
+        *slot = new (std::nothrow) COCODetect(COCODetect::YOLO11N_320_S8_V3, false);
+        if (!*slot) {
             xSemaphoreGive(s_lock);
             ESP_LOGE(TAG, "failed to allocate COCO YOLO11n detector");
             return ESP_ERR_NO_MEM;
         }
-        ESP_LOGI(TAG, "COCO YOLO11n 320 model ready, input=%" PRIu32 "x%" PRIu32 ", bytes=%" PRIu32,
+        ESP_LOGI(TAG, "COCO YOLO11n 320 %s model ready, input=%" PRIu32 "x%" PRIu32
+                 ", bytes=%" PRIu32,
+                 background ? "background" : "foreground",
                  kModelInputSize, kModelInputSize, coco_espdl_model_bytes());
     }
+    *out = *slot;
     xSemaphoreGive(s_lock);
     return ESP_OK;
 }
@@ -181,13 +187,55 @@ uint32_t coco_espdl_model_bytes(void)
 #endif
 }
 
+static esp_err_t annotate_decoded_image(dl::image::img_t &img,
+                                        const coco_espdl_result_t &result,
+                                        uint32_t min_score,
+                                        uint8_t jpeg_quality,
+                                        uint8_t **annotated_jpeg,
+                                        size_t *annotated_len)
+{
+    static const std::vector<std::vector<uint8_t>> colors = {
+        {255, 48, 48}, {35, 210, 120}, {45, 145, 255}, {255, 205, 40},
+        {220, 80, 255}, {30, 220, 220}, {255, 135, 30}, {245, 245, 245},
+    };
+    uint32_t drawn = 0;
+    for (uint32_t i = 0; i < result.detection_count; i++) {
+        const coco_espdl_detection_t &det = result.detections[i];
+        if (det.score < min_score || det.w <= 1 || det.h <= 1) {
+            continue;
+        }
+        int x1 = std::clamp<int>(det.x, 0, img.width - 2);
+        int y1 = std::clamp<int>(det.y, 0, img.height - 2);
+        int x2 = std::clamp<int>(det.x + det.w, x1 + 1, img.width - 1);
+        int y2 = std::clamp<int>(det.y + det.h, y1 + 1, img.height - 1);
+        dl::image::draw_hollow_rectangle(img, x1, y1, x2, y2,
+                                         colors[det.class_id % colors.size()], 3);
+        drawn++;
+    }
+    if (drawn == 0) {
+        return ESP_ERR_NOT_FOUND;
+    }
+#if CONFIG_SOC_JPEG_CODEC_SUPPORTED
+    dl::image::jpeg_img_t encoded = dl::image::hw_encode_jpeg(img, jpeg_quality);
+#else
+    dl::image::jpeg_img_t encoded = dl::image::sw_encode_jpeg(img, jpeg_quality);
+#endif
+    if (!encoded.data || encoded.data_len == 0) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    *annotated_jpeg = static_cast<uint8_t *>(encoded.data);
+    *annotated_len = encoded.data_len;
+    return ESP_OK;
+}
+
 static esp_err_t detect_jpeg_internal(const uint8_t *jpg_data,
                                       size_t jpg_len,
                                       uint32_t min_score,
                                       uint8_t jpeg_quality,
                                       coco_espdl_result_t *out,
                                       uint8_t **annotated_jpeg,
-                                      size_t *annotated_len)
+                                      size_t *annotated_len,
+                                      bool background)
 {
     if (!jpg_data || jpg_len == 0 || !out) {
         return ESP_ERR_INVALID_ARG;
@@ -204,7 +252,8 @@ static esp_err_t detect_jpeg_internal(const uint8_t *jpg_data,
     if (!coco_espdl_available()) {
         return ESP_ERR_NOT_SUPPORTED;
     }
-    esp_err_t ret = ensure_detector();
+    COCODetect *detector = nullptr;
+    esp_err_t ret = ensure_detector(background, &detector);
     if (ret != ESP_OK) {
         return ret;
     }
@@ -220,7 +269,7 @@ static esp_err_t detect_jpeg_internal(const uint8_t *jpg_data,
     }
 
     int64_t run_start = esp_timer_get_time();
-    std::list<dl::detect::result_t> &results = s_detector->run(img);
+    std::list<dl::detect::result_t> &results = detector->run(img);
     int64_t run_end = esp_timer_get_time();
 
     coco_espdl_result_t best = {};
@@ -250,34 +299,13 @@ static esp_err_t detect_jpeg_internal(const uint8_t *jpg_data,
     }
 
     if (annotated_jpeg) {
-        static const std::vector<std::vector<uint8_t>> colors = {
-            {255, 48, 48}, {35, 210, 120}, {45, 145, 255}, {255, 205, 40},
-            {220, 80, 255}, {30, 220, 220}, {255, 135, 30}, {245, 245, 245},
-        };
-        for (uint32_t i = 0; i < best.detection_count; i++) {
-            const coco_espdl_detection_t &det = best.detections[i];
-            if (det.score < min_score || det.w <= 1 || det.h <= 1) {
-                continue;
-            }
-            int x1 = std::clamp<int>(det.x, 0, img.width - 2);
-            int y1 = std::clamp<int>(det.y, 0, img.height - 2);
-            int x2 = std::clamp<int>(det.x + det.w, x1 + 1, img.width - 1);
-            int y2 = std::clamp<int>(det.y + det.h, y1 + 1, img.height - 1);
-            dl::image::draw_hollow_rectangle(img, x1, y1, x2, y2,
-                                             colors[det.class_id % colors.size()], 3);
-        }
-#if CONFIG_SOC_JPEG_CODEC_SUPPORTED
-        dl::image::jpeg_img_t encoded = dl::image::hw_encode_jpeg(img, jpeg_quality);
-#else
-        dl::image::jpeg_img_t encoded = dl::image::sw_encode_jpeg(img, jpeg_quality);
-#endif
-        if (!encoded.data || encoded.data_len == 0) {
+        ret = annotate_decoded_image(img, best, min_score, jpeg_quality,
+                                     annotated_jpeg, annotated_len);
+        if (ret != ESP_OK && ret != ESP_ERR_NOT_FOUND) {
             heap_caps_free(img.data);
             xSemaphoreGive(s_lock);
-            return ESP_ERR_INVALID_RESPONSE;
+            return ret;
         }
-        *annotated_jpeg = static_cast<uint8_t *>(encoded.data);
-        *annotated_len = encoded.data_len;
     }
     *out = best;
 
@@ -290,7 +318,14 @@ esp_err_t coco_espdl_detect_jpeg(const uint8_t *jpg_data,
                                  size_t jpg_len,
                                  coco_espdl_result_t *out)
 {
-    return detect_jpeg_internal(jpg_data, jpg_len, 0, 80, out, nullptr, nullptr);
+    return detect_jpeg_internal(jpg_data, jpg_len, 0, 80, out, nullptr, nullptr, false);
+}
+
+esp_err_t coco_espdl_detect_jpeg_background(const uint8_t *jpg_data,
+                                            size_t jpg_len,
+                                            coco_espdl_result_t *out)
+{
+    return detect_jpeg_internal(jpg_data, jpg_len, 0, 80, out, nullptr, nullptr, true);
 }
 
 esp_err_t coco_espdl_detect_and_annotate_jpeg(const uint8_t *jpg_data,
@@ -302,10 +337,52 @@ esp_err_t coco_espdl_detect_and_annotate_jpeg(const uint8_t *jpg_data,
                                               size_t *annotated_len)
 {
     return detect_jpeg_internal(jpg_data, jpg_len, min_score, jpeg_quality, out,
-                                annotated_jpeg, annotated_len);
+                                annotated_jpeg, annotated_len, false);
+}
+
+esp_err_t coco_espdl_annotate_jpeg(const uint8_t *jpg_data,
+                                   size_t jpg_len,
+                                   const coco_espdl_result_t *result,
+                                   uint32_t min_score,
+                                   uint8_t jpeg_quality,
+                                   uint8_t **annotated_jpeg,
+                                   size_t *annotated_len)
+{
+    if (!jpg_data || jpg_len == 0 || !result || !annotated_jpeg || !annotated_len) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *annotated_jpeg = nullptr;
+    *annotated_len = 0;
+    if (!ensure_lock()) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    dl::image::jpeg_img_t jpeg_img = {.data = (void *)jpg_data, .data_len = jpg_len};
+    dl::image::img_t img = dl::image::sw_decode_jpeg(jpeg_img, dl::image::DL_IMAGE_PIX_TYPE_RGB888);
+    if (!img.data || img.width == 0 || img.height == 0) {
+        xSemaphoreGive(s_lock);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    esp_err_t ret = annotate_decoded_image(img, *result, min_score, jpeg_quality,
+                                           annotated_jpeg, annotated_len);
+    heap_caps_free(img.data);
+    xSemaphoreGive(s_lock);
+    return ret;
 }
 
 void coco_espdl_free_jpeg(uint8_t *jpeg)
 {
     heap_caps_free(jpeg);
+}
+
+void coco_espdl_release_background(void)
+{
+    if (!ensure_lock()) {
+        return;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    delete s_background_detector;
+    s_background_detector = nullptr;
+    xSemaphoreGive(s_lock);
 }

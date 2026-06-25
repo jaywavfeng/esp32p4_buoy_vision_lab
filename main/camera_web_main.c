@@ -22,6 +22,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -41,6 +42,7 @@
 #include "driver/spi_common.h"
 #include "esp_check.h"
 #include "esp_err.h"
+#include "esp_eth.h"
 #include "esp_event.h"
 #include "esp_heap_caps.h"
 #include "esp_http_server.h"
@@ -51,6 +53,8 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_vfs_fat.h"
+#include "ff.h"
+#include "diskio_sdmmc.h"
 #include "wear_levelling.h"
 
 #ifndef CONFIG_WIFI_RMT_STATIC_RX_BUFFER_NUM
@@ -81,6 +85,7 @@
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "linux/videodev2.h"
+#include "mdns.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "sd_pwr_ctrl_by_on_chip_ldo.h"
@@ -93,6 +98,8 @@
 #include "yolo11_espdl_bridge.h"
 #include "yolo26_espdl_bridge.h"
 #include "coco_espdl_bridge.h"
+#include "recording_enrichment.h"
+#include "usb_msc_export.h"
 
 #if CONFIG_ESP_HOSTED_ENABLED
 #if !defined(CONFIG_ESP_HOSTED_CP_TARGET_ESP32C6) && !defined(CONFIG_SLAVE_IDF_TARGET_ESP32C6)
@@ -127,6 +134,40 @@ extern int esp_hosted_connect_to_slave(void);
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT BIT1
 
+#ifndef CONFIG_APP_ETH_ENABLE
+#define CONFIG_APP_ETH_ENABLE 0
+#endif
+#ifndef CONFIG_APP_ETH_DHCP_TIMEOUT_MS
+#define CONFIG_APP_ETH_DHCP_TIMEOUT_MS 8000
+#endif
+#ifndef CONFIG_APP_ETH_STATIC_FALLBACK_IP
+#define CONFIG_APP_ETH_STATIC_FALLBACK_IP "169.254.100.2"
+#endif
+#ifndef CONFIG_APP_ETH_STATIC_FALLBACK_NETMASK
+#define CONFIG_APP_ETH_STATIC_FALLBACK_NETMASK "255.255.0.0"
+#endif
+#ifndef CONFIG_APP_MDNS_ENABLE
+#define CONFIG_APP_MDNS_ENABLE 0
+#endif
+#ifndef CONFIG_APP_HOSTNAME
+#define CONFIG_APP_HOSTNAME "p4-buoy"
+#endif
+#ifndef CONFIG_APP_FILE_DOWNLOAD_CHUNK_BYTES
+#define CONFIG_APP_FILE_DOWNLOAD_CHUNK_BYTES 32768
+#endif
+
+#define APP_ETH_PHY_ADDR 1
+#define APP_ETH_PHY_RST_GPIO 51
+#define APP_ETH_MDC_GPIO 31
+#define APP_ETH_MDIO_GPIO 52
+#define APP_ETH_RMII_CLK_GPIO 50
+#define APP_ETH_RMII_TX_EN_GPIO 49
+#define APP_ETH_RMII_TXD0_GPIO 34
+#define APP_ETH_RMII_TXD1_GPIO 35
+#define APP_ETH_RMII_CRS_DV_GPIO 28
+#define APP_ETH_RMII_RXD0_GPIO 29
+#define APP_ETH_RMII_RXD1_GPIO 30
+
 #ifndef CONFIG_APP_BOOT_STANDBY
 #define CONFIG_APP_BOOT_STANDBY 0
 #endif
@@ -154,6 +195,9 @@ extern int esp_hosted_connect_to_slave(void);
 #ifndef CONFIG_APP_RECORDING_MAX_FPS
 #define CONFIG_APP_RECORDING_MAX_FPS 4
 #endif
+#ifndef CONFIG_APP_FIELD_RECORDING_MAX_FPS
+#define CONFIG_APP_FIELD_RECORDING_MAX_FPS CONFIG_APP_RECORDING_MAX_FPS
+#endif
 #ifndef CONFIG_APP_RECORDING_MAX_SEGMENTS
 #define CONFIG_APP_RECORDING_MAX_SEGMENTS 240
 #endif
@@ -176,7 +220,7 @@ extern int esp_hosted_connect_to_slave(void);
 #define CONFIG_APP_DEFAULT_NETWORK_MODE 0
 #endif
 #ifndef CONFIG_APP_AP_STATIC_IP
-#define CONFIG_APP_AP_STATIC_IP "YOUR_AP_IP"
+#define CONFIG_APP_AP_STATIC_IP "192.168.4.1"
 #endif
 #ifndef CONFIG_APP_AP_NETMASK
 #define CONFIG_APP_AP_NETMASK "255.255.255.0"
@@ -201,6 +245,9 @@ extern int esp_hosted_connect_to_slave(void);
 #endif
 #ifndef CONFIG_APP_SD_BUS_WIDTH
 #define CONFIG_APP_SD_BUS_WIDTH 4
+#endif
+#ifndef CONFIG_APP_SD_MAX_FREQ_KHZ
+#define CONFIG_APP_SD_MAX_FREQ_KHZ 20000
 #endif
 #ifndef CONFIG_APP_SD_USE_SDMMC
 #define CONFIG_APP_SD_USE_SDMMC 1
@@ -337,6 +384,8 @@ typedef enum {
 typedef enum {
     APP_MODE_SERVER = 0,
     APP_MODE_FIELD,
+    APP_MODE_EXPORT,
+    APP_MODE_USB_EXPORT,
 } app_mode_t;
 
 typedef enum {
@@ -459,6 +508,8 @@ typedef struct {
     uint8_t *jpeg;
     uint32_t jpeg_size;
     recording_kind_t kind;
+    bool finalize;
+    SemaphoreHandle_t finalize_done;
 } recording_item_t;
 
 typedef struct {
@@ -609,6 +660,9 @@ static const char *TAG = "wifi_camera_web";
 static EventGroupHandle_t s_wifi_event_group;
 static esp_netif_t *s_sta_netif;
 static esp_netif_t *s_ap_netif;
+static esp_netif_t *s_eth_netif;
+static esp_eth_handle_t s_eth_handle;
+static esp_eth_netif_glue_handle_t s_eth_glue;
 static httpd_handle_t s_server;
 static QueueHandle_t s_camera_cmd_queue;
 static QueueHandle_t s_async_req_queue;
@@ -619,6 +673,7 @@ static QueueHandle_t s_netmode_queue;
 static QueueHandle_t s_dataset_run_queue;
 static QueueHandle_t s_storage_service_queue;
 static SemaphoreHandle_t s_async_worker_ready;
+static SemaphoreHandle_t s_recording_finalize_done;
 static SemaphoreHandle_t s_frame_lock;
 static SemaphoreHandle_t s_history_lock;
 static SemaphoreHandle_t s_validation_lock;
@@ -629,7 +684,9 @@ static TaskHandle_t s_camera_task_handle;
 static TaskHandle_t s_inference_task_handle;
 static TaskHandle_t s_history_task_handle;
 static TaskHandle_t s_recording_task_handle;
+static TaskHandle_t s_enrichment_task_handle;
 static TaskHandle_t s_network_task_handle;
+static TaskHandle_t s_eth_fallback_task_handle;
 static TaskHandle_t s_validation_selftest_task_handle;
 static TaskHandle_t s_dataset_task_handle;
 static TaskHandle_t s_storage_service_task_handle;
@@ -642,10 +699,18 @@ static int s_retry_num;
 static char s_ip_addr[16] = "0.0.0.0";
 static char s_sta_ip_addr[16] = "0.0.0.0";
 static char s_ap_ip_addr[16] = CONFIG_APP_AP_STATIC_IP;
+static char s_eth_ip_addr[16] = "0.0.0.0";
 static bool s_wifi_started;
 static bool s_wifi_initialized;
 static bool s_wifi_handlers_registered;
+static bool s_eth_handlers_registered;
 static volatile bool s_wifi_runtime_ready;
+static volatile bool s_eth_runtime_ready;
+static volatile bool s_eth_started;
+static volatile bool s_eth_link_up;
+static volatile bool s_eth_got_ip;
+static volatile bool s_eth_static_fallback;
+static int64_t s_eth_link_up_ms;
 #if CONFIG_ESP_HOSTED_ENABLED && CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE
 /*
  * Hosted owns the global SDMMC host while Slot 1 is active. Slot 0 reuses that
@@ -656,10 +721,15 @@ static volatile bool s_hosted_sdmmc_host_active = true;
 #endif
 static volatile uint32_t s_wifi_init_failures;
 static char s_wifi_last_error[96] = "not started";
+static char s_eth_last_error[96] = "disabled";
 static volatile bool s_network_active;
 static volatile bool s_network_shutdown_for_idle;
 static volatile bool s_field_mode_requested;
+static volatile bool s_export_mode_requested;
+static volatile bool s_usb_export_requested;
+static volatile bool s_mdns_started;
 static volatile app_mode_t s_app_mode = APP_MODE_SERVER;
+static volatile bool s_storage_quiescing;
 static int64_t s_last_network_activity_ms;
 static int64_t s_network_boot_window_until_ms;
 static volatile bool s_storage_mount_allowed;
@@ -718,6 +788,7 @@ static bool s_sd_mounted;
 static sd_pwr_ctrl_handle_t s_sd_pwr_ctrl;
 static spi_host_device_t s_sd_spi_host = SPI2_HOST;
 static sdmmc_card_t *s_sd_card;
+static sdmmc_card_t *s_usb_sd_card;
 static wl_handle_t s_flash_wl_handle = WL_INVALID_HANDLE;
 static char s_storage_backend[20] = "none";
 static volatile bool s_storage_flash_fallback_enabled;
@@ -743,6 +814,7 @@ static volatile uint32_t s_frames_total;
 static volatile uint32_t s_capture_errors;
 static volatile uint32_t s_frame_drops;
 static volatile uint32_t s_stream_clients;
+static volatile uint32_t s_file_download_clients;
 static volatile uint32_t s_stream_errors;
 static volatile uint32_t s_stream_frames_total;
 static volatile uint64_t s_stream_bytes_total;
@@ -776,8 +848,9 @@ static volatile uint32_t s_recording_current_frames;
 static volatile uint64_t s_recording_bytes;
 static volatile uint64_t s_recording_current_bytes;
 static int64_t s_last_recording_frame_ms;
-static int64_t s_last_annotated_recording_frame_ms;
 static char s_recording_current_uri[128];
+static char s_usb_last_error[96] = "not initialized";
+static volatile bool s_usb_storage_ready;
 
 static uint32_t s_capture_fps_window_count;
 static uint32_t s_stream_fps_window_count;
@@ -797,12 +870,11 @@ static bool inference_worker_busy(void);
 static bool queue_yolo_inference(const uint8_t *jpeg, uint32_t jpeg_size,
                                  const frame_meta_t *meta, recognition_method_t method);
 static void recording_maybe_queue(const uint8_t *jpeg, uint32_t jpeg_size, const frame_meta_t *meta);
-static void recording_queue_owned(uint8_t *jpeg, uint32_t jpeg_size,
-                                  const frame_meta_t *meta, recording_kind_t kind);
 static bool network_mode_has_ap(network_mode_t mode);
 static void mark_network_activity(void);
 static void open_network_access_window(const char *reason);
 static void record_http_request(void);
+static esp_err_t eth_init_runtime(void);
 static void log_acceleration_status(void);
 static void dataset_status_copy(dataset_run_status_t *out);
 static bool validation_sample_image(validation_sample_t sample, const uint8_t **start, const uint8_t **end);
@@ -836,6 +908,22 @@ static const char *network_mode_name(network_mode_t mode)
         return "softap";
     case NETWORK_MODE_APSTA:
         return "apsta";
+    default:
+        return "unknown";
+    }
+}
+
+static const char *app_mode_name(app_mode_t mode)
+{
+    switch (mode) {
+    case APP_MODE_SERVER:
+        return "server";
+    case APP_MODE_FIELD:
+        return "field";
+    case APP_MODE_EXPORT:
+        return "export";
+    case APP_MODE_USB_EXPORT:
+        return "usb_export";
     default:
         return "unknown";
     }
@@ -1007,11 +1095,10 @@ static void base64_encode(char *dst, const uint8_t *src, size_t len)
 }
 
 /*
- * Packet-mode SDIO now handles the HTTP server's normal 8 KiB send window.
- * This keeps file downloads moving without the old per-KiB pacing overhead,
- * while still bounding each send buffer to a modest size.
+ * Ethernet file export benefits from fewer fread/send cycles. Keep the chunk
+ * bounded, but use a larger window than the old Hosted SDIO-oriented path.
  */
-#define HTTP_SAFE_CHUNK_BYTES (8192U)
+#define HTTP_SAFE_CHUNK_BYTES ((size_t)CONFIG_APP_FILE_DOWNLOAD_CHUNK_BYTES)
 
 static esp_err_t http_send_chunk_part(httpd_req_t *req, const char *data, size_t len)
 {
@@ -1187,7 +1274,7 @@ static const char s_index_html[] =
 "async function load(){try{const t=performance.now();let r=await fetch('/api/status?ts='+Date.now(),{cache:'no-store'});let s=await r.json();paint(s,Math.round(performance.now()-t))}catch(e){err.textContent='status offline'}}"
 "function cname(o){return o==='coke'?'可乐 Coke':(o==='sprite'?'雪碧 Sprite':(!o||o==='unknown'?'未知 Unknown':o))}"
 "function paintObject(s){let v=s.vision||{},ds=v.detections||[];boxes.innerHTML='';if(!ds.length&&v.object_count>0)ds=[{label:v.object,score:v.object_score,x:v.object_x,y:v.object_y,w:v.object_w,h:v.object_h}];if(!s.width||!s.height)return;ds.forEach(d=>{if(!d.w||!d.h)return;let b=document.createElement('div');b.className='bbox';b.style.left=(100*d.x/s.width)+'%';b.style.top=(100*d.y/s.height)+'%';b.style.width=(100*d.w/s.width)+'%';b.style.height=(100*d.h/s.height)+'%';let sp=document.createElement('span');sp.textContent=cname(d.label)+' '+d.score;b.appendChild(sp);boxes.appendChild(b)})}"
-"function paint(s,rtt){ip.textContent='http://'+s.ip+'/';mode.textContent=s.power_mode+' | '+s.network_mode+(s.rescue_ap?' + rescue AP':'')+' | '+s.recognition_method;setMode(s.power_mode);visionToggle.checked=!!s.vision_enabled;methodSelect.value=s.recognition_method||'mlp';netSelect.value=s.network_mode||'sta';historyToggle.checked=!!s.history_enabled;recordingToggle.checked=!!s.recording_enabled;keepInput(boxMin,s.config.box_min_score);keepInput(streamFps,s.config.stream_max_fps);keepInput(infMs,s.config.inference_interval_ms);keepInput(histMs,s.config.history_sample_interval_ms);keepInput(jpegQ,s.config.jpeg_quality);if(lastMode!=='running'&&s.power_mode==='running'){stream.src=streamUrl()}lastMode=s.power_mode;"
+"function paint(s,rtt){ip.textContent=s.mdns_url||s.eth_url||('http://'+s.ip+'/');mode.textContent=(s.app_mode||'server')+' | '+s.power_mode+' | '+s.network_mode+(s.rescue_ap?' + rescue AP':'')+' | '+s.recognition_method;setMode(s.power_mode);visionToggle.checked=!!s.vision_enabled;methodSelect.value=s.recognition_method||'mlp';netSelect.value=s.network_mode||'sta';historyToggle.checked=!!s.history_enabled;recordingToggle.checked=!!s.recording_enabled;keepInput(boxMin,s.config.box_min_score);keepInput(streamFps,s.config.stream_max_fps);keepInput(infMs,s.config.inference_interval_ms);keepInput(histMs,s.config.history_sample_interval_ms);keepInput(jpegQ,s.config.jpeg_quality);if(lastMode!=='running'&&s.power_mode==='running'){stream.src=streamUrl()}lastMode=s.power_mode;"
 "cfps.textContent=(s.capture_fps_x100/100).toFixed(1);sfps.textContent=(s.stream_fps_x100/100).toFixed(1);clients.textContent=s.stream_clients+'/'+s.max_stream_clients;age.textContent=s.last_frame_age_ms+' ms';"
 "lat.textContent=s.last_capture_ms+' ms';infer.textContent=(s.vision.inference_ms||0)+' ms';jpg.textContent=Math.round(s.last_jpeg_bytes/1024)+' KB';motion.textContent=s.vision.motion?'是 YES':'否 NO';scene.textContent=s.vision.scene;"
 "vision.textContent=cname(s.vision.object)+' / '+s.vision.label;vision2.textContent='模型 '+s.vision.model+' | 模型大小 '+Math.round((s.model_info?.bytes||s.model_bytes||0)/1024)+' KB | 输入 '+(s.model_info?.input_size||s.config.yolo_input_size||0)+' | 检测框 '+(s.vision.detection_count||0)+'/'+(s.model_info?.max_detections||8)+' | raw候选 '+(s.vision.raw_candidate_count||0)+' | NMS '+(s.model_info?.nms_threshold||70)+' | 候选分 '+s.vision.candidate_score+' | 画框阈值 '+s.vision.box_min_score+' | 目标分 '+s.vision.object_score+' | 可乐 '+s.vision.coke_score+' | 雪碧 '+s.vision.sprite_score+' | 未知 '+s.vision.unknown_score+' | 运动 '+s.vision.motion_score+' | 边缘 '+s.vision.edge_score+' | 亮度 '+s.vision.avg_luma+' | 推理 '+s.vision.inference_ms+' ms | 分析 '+s.vision.analysis_ms+' ms';"
@@ -2074,49 +2161,6 @@ static void classify_coco_jpeg(const uint8_t *jpeg, uint32_t jpeg_size, vision_r
     apply_yolo_detection_common(candidates, count, det.raw_candidate_count,
                                 det.inference_ms, COCO_MODEL_NAME,
                                 det.source_w, det.source_h, s_box_min_score, false, result);
-}
-
-static esp_err_t classify_coco_annotated_jpeg(const uint8_t *jpeg, uint32_t jpeg_size,
-                                              vision_result_t *result,
-                                              uint8_t **annotated_jpeg,
-                                              uint32_t *annotated_size)
-{
-    if (!result || !annotated_jpeg || !annotated_size) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    *annotated_jpeg = NULL;
-    *annotated_size = 0;
-    coco_espdl_result_t det = {0};
-    vision_detection_t candidates[APP_MAX_DETECTIONS] = {0};
-    size_t encoded_size = 0;
-    fill_yolo_pending(result, RECOGNITION_METHOD_COCO);
-    esp_err_t err = coco_espdl_detect_and_annotate_jpeg(
-        jpeg, jpeg_size, s_box_min_score, 82, &det, annotated_jpeg, &encoded_size);
-    if (err != ESP_OK) {
-        strlcpy(result->label, "coco-error", sizeof(result->label));
-        result->unknown_score = 100;
-        return err;
-    }
-    if (encoded_size > UINT32_MAX) {
-        coco_espdl_free_jpeg(*annotated_jpeg);
-        *annotated_jpeg = NULL;
-        return ESP_ERR_INVALID_SIZE;
-    }
-    uint32_t count = det.detection_count > APP_MAX_DETECTIONS ? APP_MAX_DETECTIONS : det.detection_count;
-    for (uint32_t i = 0; i < count; i++) {
-        candidates[i].class_id = det.detections[i].class_id;
-        candidates[i].score = det.detections[i].score;
-        candidates[i].x = det.detections[i].x > 0 ? (uint32_t)det.detections[i].x : 0;
-        candidates[i].y = det.detections[i].y > 0 ? (uint32_t)det.detections[i].y : 0;
-        candidates[i].w = det.detections[i].w > 0 ? (uint32_t)det.detections[i].w : 0;
-        candidates[i].h = det.detections[i].h > 0 ? (uint32_t)det.detections[i].h : 0;
-        strlcpy(candidates[i].label, det.detections[i].label, sizeof(candidates[i].label));
-    }
-    apply_yolo_detection_common(candidates, count, det.raw_candidate_count,
-                                det.inference_ms, COCO_MODEL_NAME,
-                                det.source_w, det.source_h, s_box_min_score, false, result);
-    *annotated_size = (uint32_t)encoded_size;
-    return ESP_OK;
 }
 
 static esp_err_t classify_validation_yolo_jpeg(const uint8_t *jpeg, uint32_t jpeg_size,
@@ -3171,7 +3215,7 @@ static esp_err_t recording_open_segment(recording_segment_t *seg, int64_t now_ms
 
     snprintf(seg->final_path, sizeof(seg->final_path), "%s/%s", RECORDING_DIR, seg->name);
     snprintf(seg->part_path, sizeof(seg->part_path), "%s/%s.part", RECORDING_DIR, seg->name);
-    uint32_t fps = kind == RECORDING_KIND_ANNOTATED ? 1U : CONFIG_APP_RECORDING_MAX_FPS;
+    uint32_t fps = kind == RECORDING_KIND_ANNOTATED ? 1U : CONFIG_APP_FIELD_RECORDING_MAX_FPS;
     if (fps == 0) {
         fps = 1;
     }
@@ -3335,7 +3379,7 @@ static void recording_write_item(recording_segment_t *seg, const recording_item_
 
 static void recording_maybe_queue(const uint8_t *jpeg, uint32_t jpeg_size, const frame_meta_t *meta)
 {
-    if (s_app_mode != APP_MODE_FIELD ||
+    if (s_storage_quiescing || s_app_mode != APP_MODE_FIELD ||
         !CONFIG_APP_RECORDING_ENABLE || !s_recording_enabled || !s_sd_mounted ||
         !storage_acceptance_ok() ||
         !s_recording_queue || !jpeg || !jpeg_size || !meta || meta->seq == 0) {
@@ -3343,7 +3387,7 @@ static void recording_maybe_queue(const uint8_t *jpeg, uint32_t jpeg_size, const
     }
 
     int64_t now_ms = esp_timer_get_time() / 1000;
-    uint32_t max_fps = CONFIG_APP_RECORDING_MAX_FPS;
+    uint32_t max_fps = CONFIG_APP_FIELD_RECORDING_MAX_FPS;
     int64_t min_interval_ms = max_fps > 0 ? 1000 / max_fps : 0;
     if (s_last_recording_frame_ms != 0 && now_ms - s_last_recording_frame_ms < min_interval_ms) {
         return;
@@ -3372,46 +3416,6 @@ static void recording_maybe_queue(const uint8_t *jpeg, uint32_t jpeg_size, const
         ESP_LOGI(TAG, "raw recording queue progress: queued=%" PRIu32
                  " seq=%" PRIu32 " jpeg=%" PRIu32,
                  s_recording_queued, meta->seq, jpeg_size);
-    }
-}
-
-static void recording_queue_owned(uint8_t *jpeg, uint32_t jpeg_size,
-                                  const frame_meta_t *meta, recording_kind_t kind)
-{
-    if (!jpeg) {
-        return;
-    }
-    if (s_app_mode != APP_MODE_FIELD || !s_recording_enabled || !storage_acceptance_ok() ||
-        !s_recording_queue || !jpeg_size || !meta) {
-        free(jpeg);
-        return;
-    }
-    int64_t now_ms = esp_timer_get_time() / 1000;
-    if (kind == RECORDING_KIND_ANNOTATED &&
-        s_last_annotated_recording_frame_ms != 0 &&
-        now_ms - s_last_annotated_recording_frame_ms < 1000) {
-        free(jpeg);
-        return;
-    }
-    if (kind == RECORDING_KIND_ANNOTATED) {
-        s_last_annotated_recording_frame_ms = now_ms;
-    }
-    recording_item_t item = {
-        .meta = *meta,
-        .jpeg = jpeg,
-        .jpeg_size = jpeg_size,
-        .kind = kind,
-    };
-    if (xQueueSend(s_recording_queue, &item, 0) != pdTRUE) {
-        free(jpeg);
-        s_recording_dropped++;
-        return;
-    }
-    s_recording_queued++;
-    if (kind == RECORDING_KIND_ANNOTATED) {
-        ESP_LOGI(TAG, "annotated recording frame queued: seq=%" PRIu32
-                 " jpeg=%" PRIu32 " detections=%" PRIu32,
-                 meta->seq, jpeg_size, meta->vision.detection_count);
     }
 }
 
@@ -3773,9 +3777,44 @@ static esp_err_t storage_write_selftest(void)
     return ESP_OK;
 }
 
+static void storage_ensure_usb_volume_label(void)
+{
+#if CONFIG_FATFS_USE_LABEL
+    if (!s_sd_card) {
+        return;
+    }
+    BYTE pdrv = ff_diskio_get_pdrv_card(s_sd_card);
+    if (pdrv == 0xff) {
+        ESP_LOGW(TAG, "cannot resolve TF FatFS drive for volume label");
+        return;
+    }
+    char drive[8];
+    char requested[24];
+    char label[24] = {0};
+    DWORD serial = 0;
+    snprintf(drive, sizeof(drive), "%u:", (unsigned)pdrv);
+    FRESULT result = f_getlabel(drive, label, &serial);
+    if (result != FR_OK) {
+        ESP_LOGW(TAG, "TF volume label read failed: fresult=%d", (int)result);
+        return;
+    }
+    if (strcmp(label, "P4_BUOY") == 0) {
+        return;
+    }
+    snprintf(requested, sizeof(requested), "%u:P4_BUOY", (unsigned)pdrv);
+    result = f_setlabel(requested);
+    if (result == FR_OK) {
+        ESP_LOGI(TAG, "TF volume label set to P4_BUOY");
+    } else {
+        ESP_LOGW(TAG, "TF volume label update failed: fresult=%d", (int)result);
+    }
+#endif
+}
+
 static esp_err_t storage_prepare_dirs_after_mount(const char *mode)
 {
     update_sd_info();
+    storage_ensure_usb_volume_label();
     strlcpy(s_sd_mount_mode, mode, sizeof(s_sd_mount_mode));
     s_sd_last_error[0] = '\0';
     s_sd_last_error_code = 0;
@@ -3865,7 +3904,7 @@ static esp_err_t __attribute__((unused)) storage_mount_sdmmc_width(int width, bo
     };
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     host.slot = SDMMC_HOST_SLOT_0;
-    host.max_freq_khz = 10000;
+    host.max_freq_khz = CONFIG_APP_SD_MAX_FREQ_KHZ;
     host.unaligned_multi_block_rw_max_chunk_size = 8;
     host.pwr_ctrl_handle = s_sd_pwr_ctrl;
 #if CONFIG_ESP_HOSTED_ENABLED && CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE
@@ -3891,8 +3930,9 @@ static esp_err_t __attribute__((unused)) storage_mount_sdmmc_width(int width, bo
     snprintf(mode, sizeof(mode), "sdmmc_%dbit", slot_config.width);
     s_sd_attempts++;
     ESP_LOGI(TAG,
-             "TF mount attempt #%" PRIu32 ": %s slot=0 clk=%d cmd=%d d0=%d d1=%d d2=%d d3=%d ldo=%d format_if_failed=%d",
-             s_sd_attempts, mode, CONFIG_APP_SD_PIN_CLK, CONFIG_APP_SD_PIN_CMD,
+             "TF mount attempt #%" PRIu32 ": %s slot=0 freq=%d kHz clk=%d cmd=%d d0=%d d1=%d d2=%d d3=%d ldo=%d format_if_failed=%d",
+             s_sd_attempts, mode, CONFIG_APP_SD_MAX_FREQ_KHZ,
+             CONFIG_APP_SD_PIN_CLK, CONFIG_APP_SD_PIN_CMD,
              CONFIG_APP_SD_PIN_D0, CONFIG_APP_SD_PIN_D1, CONFIG_APP_SD_PIN_D2,
              CONFIG_APP_SD_PIN_D3, CONFIG_APP_SD_LDO_IO_ID, format_if_failed);
 
@@ -3920,7 +3960,7 @@ static esp_err_t storage_mount_sdspi(spi_host_device_t spi_host, bool format_if_
     };
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
     host.slot = spi_host;
-    host.max_freq_khz = 10000;
+    host.max_freq_khz = CONFIG_APP_SD_MAX_FREQ_KHZ;
     host.unaligned_multi_block_rw_max_chunk_size = 8;
     host.pwr_ctrl_handle = s_sd_pwr_ctrl;
 
@@ -3930,7 +3970,7 @@ static esp_err_t storage_mount_sdspi(spi_host_device_t spi_host, bool format_if_
         .sclk_io_num = CONFIG_APP_SD_PIN_CLK,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
-        .max_transfer_sz = 4096,
+        .max_transfer_sz = 32 * 1024,
     };
 
     esp_err_t ret = spi_bus_initialize(host.slot, &bus_cfg, SPI_DMA_CH_AUTO);
@@ -3949,8 +3989,9 @@ static esp_err_t storage_mount_sdspi(spi_host_device_t spi_host, bool format_if_
     snprintf(mode, sizeof(mode), "sdspi%d", (int)spi_host + 1);
     s_sd_attempts++;
     ESP_LOGI(TAG,
-             "TF mount attempt #%" PRIu32 ": %s mosi/cmd=%d miso/d0=%d sclk=%d cs/d3=%d ldo=%d format_if_failed=%d",
-             s_sd_attempts, mode, CONFIG_APP_SD_PIN_CMD, CONFIG_APP_SD_PIN_D0,
+             "TF mount attempt #%" PRIu32 ": %s freq=%d kHz mosi/cmd=%d miso/d0=%d sclk=%d cs/d3=%d ldo=%d format_if_failed=%d",
+             s_sd_attempts, mode, CONFIG_APP_SD_MAX_FREQ_KHZ,
+             CONFIG_APP_SD_PIN_CMD, CONFIG_APP_SD_PIN_D0,
              CONFIG_APP_SD_PIN_CLK, CONFIG_APP_SD_PIN_D3, CONFIG_APP_SD_LDO_IO_ID, format_if_failed);
 
     ret = esp_vfs_fat_sdspi_mount(CONFIG_APP_SD_MOUNT_POINT, &host, &slot_config, &mount_config, &s_sd_card);
@@ -4031,9 +4072,9 @@ static esp_err_t storage_mount(void)
     esp_err_t ret = ESP_FAIL;
 
     /*
-     * Keep the Function EV Board TF socket on SPI2. The C6 transport remains
-     * on Hosted SDIO, so camera capture and card writes do not share the
-     * SDMMC host or its Slot 0 data lines.
+     * Prefer SDMMC Slot 0 for sustained field recording/export throughput.
+     * If the board revision or host state rejects SDMMC, fall back to the
+     * older SDSPI2 path so the service still comes up.
      */
     s_sd_format_requested = false;
     for (int attempt = 0; attempt < 3 && ret != ESP_OK; attempt++) {
@@ -4051,7 +4092,21 @@ static esp_err_t storage_mount(void)
         }
         vTaskDelay(pdMS_TO_TICKS(50));
         ret = storage_reset_card_power();
-        if (ret == ESP_OK) {
+        bool card_power_ok = ret == ESP_OK;
+        if (card_power_ok) {
+#if CONFIG_APP_SD_USE_SDMMC
+            ret = storage_mount_sdmmc_width(CONFIG_APP_SD_BUS_WIDTH, false);
+            if (ret != ESP_OK && CONFIG_APP_SD_BUS_WIDTH > 1) {
+                ESP_LOGW(TAG, "TF SDMMC %d-bit mount failed, trying SDMMC 1-bit before SPI fallback",
+                         CONFIG_APP_SD_BUS_WIDTH);
+                ret = storage_mount_sdmmc_width(1, false);
+            }
+            if (ret != ESP_OK) {
+                ESP_LOGW(TAG, "TF SDMMC mount failed, falling back to SDSPI2");
+            }
+#endif
+        }
+        if (card_power_ok && ret != ESP_OK) {
             ret = storage_mount_sdspi(SPI2_HOST, false);
         }
         if (ret == ESP_OK) {
@@ -4334,6 +4389,9 @@ static bool inference_worker_busy(void)
 static bool queue_yolo_inference(const uint8_t *jpeg, uint32_t jpeg_size,
                                  const frame_meta_t *meta, recognition_method_t method)
 {
+    if (s_storage_quiescing) {
+        return false;
+    }
     if (!s_inference_queue || !jpeg || !jpeg_size || !meta || !recognition_method_is_yolo(method)) {
         return false;
     }
@@ -4464,21 +4522,10 @@ static void inference_task(void *arg)
 
         if (!stale) {
             int64_t start_us = esp_timer_get_time();
-            uint8_t *annotated_jpeg = NULL;
-            uint32_t annotated_size = 0;
             if (job.method == RECOGNITION_METHOD_YOLO11) {
                 classify_yolo11_jpeg(job.jpeg, job.jpeg_size, &vision);
             } else if (job.method == RECOGNITION_METHOD_COCO) {
-                if (s_app_mode == APP_MODE_FIELD) {
-                    esp_err_t annotate_ret = classify_coco_annotated_jpeg(
-                        job.jpeg, job.jpeg_size, &vision, &annotated_jpeg, &annotated_size);
-                    if (annotate_ret != ESP_OK) {
-                        ESP_LOGW(TAG, "COCO annotated inference failed: %s",
-                                 esp_err_to_name(annotate_ret));
-                    }
-                } else {
-                    classify_coco_jpeg(job.jpeg, job.jpeg_size, &vision);
-                }
+                classify_coco_jpeg(job.jpeg, job.jpeg_size, &vision);
             } else {
                 classify_yolo26_jpeg(job.jpeg, job.jpeg_size, &vision);
             }
@@ -4488,14 +4535,6 @@ static void inference_task(void *arg)
             update_latest_vision_from_inference(&vision, job.method);
             history_maybe_queue(job.jpeg, job.jpeg_size, &job.meta, job.method, "camera",
                                 vision.detection_count > 0);
-            if (annotated_jpeg && annotated_size) {
-                recording_queue_owned(annotated_jpeg, annotated_size, &job.meta,
-                                      RECORDING_KIND_ANNOTATED);
-                annotated_jpeg = NULL;
-            }
-            if (annotated_jpeg) {
-                coco_espdl_free_jpeg(annotated_jpeg);
-            }
             update_inference_fps(esp_timer_get_time() / 1000);
             s_inference_jobs_completed++;
         }
@@ -4978,7 +5017,7 @@ static void load_runtime_settings(void)
     if (nvs_get_u32(nvs, "version", &version) != ESP_OK || version != SETTINGS_VERSION) {
         /*
          * NVS 会保留现场调参结果。升级到本版本后需要重置一次运行参数：
-         * - 网络恢复 AP+STA，保证手机固定访问 YOUR_AP_IP；
+         * - 网络恢复 AP+STA，保证手机固定访问 192.168.4.1；
          * - 新 TF 卡到位后恢复历史记录和分段录像默认开启；
          * - 主识别路线恢复 COCO，避免旧实验模型继续占用演示入口。
          */
@@ -5075,13 +5114,14 @@ static void load_runtime_settings(void)
 
 static void mark_network_activity(void)
 {
-    s_last_network_activity_ms = esp_timer_get_time() / 1000;
+    __atomic_store_n(&s_last_network_activity_ms, esp_timer_get_time() / 1000,
+                     __ATOMIC_RELEASE);
 }
 
 static void open_network_access_window(const char *reason)
 {
     int64_t now_ms = esp_timer_get_time() / 1000;
-    s_last_network_activity_ms = now_ms;
+    __atomic_store_n(&s_last_network_activity_ms, now_ms, __ATOMIC_RELEASE);
     s_network_boot_window_until_ms = now_ms + CONFIG_APP_NETWORK_BOOT_WINDOW_MS;
     ESP_LOGI(TAG, "network access window opened for %d ms%s%s",
              CONFIG_APP_NETWORK_BOOT_WINDOW_MS,
@@ -5146,9 +5186,25 @@ static esp_err_t root_get_handler(httpd_req_t *req)
     return http_send_cstr_chunked(req, s_index_html);
 }
 
+static bool export_mode_reject(httpd_req_t *req, const char *feature)
+{
+    if (s_app_mode != APP_MODE_EXPORT) {
+        return false;
+    }
+    httpd_resp_set_status(req, "409 Conflict");
+    httpd_resp_set_type(req, "text/plain");
+    char msg[128];
+    snprintf(msg, sizeof(msg), "%s disabled in export mode", feature ? feature : "feature");
+    httpd_resp_sendstr(req, msg);
+    return true;
+}
+
 static esp_err_t validate_get_handler(httpd_req_t *req)
 {
     record_http_request();
+    if (export_mode_reject(req, "validation")) {
+        return ESP_OK;
+    }
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return http_send_cstr_chunked(req, s_validate_html);
@@ -5495,6 +5551,9 @@ static esp_err_t validation_json_error(httpd_req_t *req, const char *status, con
 static esp_err_t validation_run_get_handler(httpd_req_t *req)
 {
     record_http_request();
+    if (export_mode_reject(req, "validation run")) {
+        return ESP_OK;
+    }
     char query[160] = {0};
     char sample_text[16] = {0};
     char method_text[16] = {0};
@@ -5696,7 +5755,7 @@ static esp_err_t healthz_get_handler(httpd_req_t *req)
     char json[192];
     snprintf(json, sizeof(json),
              "{\"ok\":true,\"mode\":\"%s\",\"tf_mounted\":%s,\"storage\":\"%s\"}",
-             s_app_mode == APP_MODE_SERVER ? "server" : "field",
+             app_mode_name(s_app_mode),
              s_sd_mounted ? "true" : "false", s_storage_backend);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
@@ -5716,7 +5775,7 @@ static esp_err_t status_get_handler(httpd_req_t *req)
      * /api/status 的 JSON 字段较多，不能放在 HTTP 任务栈上。
      * ESP-IDF 默认 httpd 任务栈不大，栈上 8KB 缓冲会让服务端接受连接后卡死。
      */
-    const size_t json_cap = 10240;
+    const size_t json_cap = 12288;
     char *json = (char *)alloc_psram_buffer(json_cap);
     if (!json) {
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no status buffer");
@@ -5724,10 +5783,15 @@ static esp_err_t status_get_handler(httpd_req_t *req)
     int64_t now_ms = esp_timer_get_time() / 1000;
     uint64_t epoch_ms = wall_clock_epoch_ms();
     int64_t age_ms = have_frame ? now_ms - meta.timestamp_ms : -1;
-    int64_t network_idle_ms = s_last_network_activity_ms > 0 ? now_ms - s_last_network_activity_ms : -1;
+    int64_t last_network_activity_ms = __atomic_load_n(
+        &s_last_network_activity_ms, __ATOMIC_ACQUIRE);
+    int64_t network_idle_ms = last_network_activity_ms > 0 ?
+                              now_ms - last_network_activity_ms : -1;
     int64_t network_boot_remaining_ms = s_network_boot_window_until_ms > now_ms ?
                                         s_network_boot_window_until_ms - now_ms : 0;
     power_state_t state = s_power_state;
+    usb_msc_export_status_t usb_status = {0};
+    usb_msc_export_get_status(&usb_status);
     uint32_t history_count = 0;
     uint32_t free_heap = 0;
     uint32_t min_free_heap = 0;
@@ -5739,9 +5803,16 @@ static esp_err_t status_get_handler(httpd_req_t *req)
     char dataset_labels_json[512];
     char ap_url[40] = {0};
     char sta_url[40] = {0};
+    char eth_url[40] = {0};
+    char mdns_url[64] = {0};
+    char access_urls[256] = {0};
+    char enrichment_json[768] = {0};
+    const char *primary_ip = s_ip_addr;
     dataset_run_status_t dataset_status;
+    recording_enrichment_status_t enrichment_status = {0};
     detections_to_json(detections_json, sizeof(detections_json), &meta.vision);
     dataset_status_copy(&dataset_status);
+    recording_enrichment_get_status(&enrichment_status);
     label_counts_to_json(dataset_labels_json, sizeof(dataset_labels_json), dataset_status.labels);
     bool tf_ready = storage_tf_ready();
     bool acceptance_ok = storage_acceptance_ok();
@@ -5750,6 +5821,33 @@ static esp_err_t status_get_handler(httpd_req_t *req)
     if (strcmp(s_sta_ip_addr, "0.0.0.0") != 0) {
         snprintf(sta_url, sizeof(sta_url), "http://%s/", s_sta_ip_addr);
     }
+    if (strcmp(s_eth_ip_addr, "0.0.0.0") != 0) {
+        snprintf(eth_url, sizeof(eth_url), "http://%s/", s_eth_ip_addr);
+        primary_ip = s_eth_ip_addr;
+    }
+    if (CONFIG_APP_MDNS_ENABLE && s_mdns_started) {
+        snprintf(mdns_url, sizeof(mdns_url), "http://%s.local/", CONFIG_APP_HOSTNAME);
+    }
+    snprintf(access_urls, sizeof(access_urls),
+             "{\"mdns\":\"%s\",\"ap\":\"%s\",\"sta\":\"%s\",\"eth\":\"%s\"}",
+             mdns_url, ap_url, sta_url, eth_url);
+    snprintf(enrichment_json, sizeof(enrichment_json),
+             "{\"enabled\":%s,\"running\":%s,\"cancelled\":%s,"
+             "\"raw_name\":\"%s\",\"output_name\":\"%s\","
+             "\"pass_stride\":%" PRIu32 ",\"completed_stride\":%" PRIu32
+             ",\"frame_index\":%" PRIu32 ",\"frame_count\":%" PRIu32
+             ",\"inferred_frames\":%" PRIu32 ",\"output_frames\":%" PRIu32
+             ",\"inference_coverage_x1000\":%" PRIu32
+             ",\"passes_completed\":%" PRIu32 ",\"last_error\":\"%s\"}",
+             enrichment_status.enabled ? "true" : "false",
+             enrichment_status.running ? "true" : "false",
+             enrichment_status.cancelled ? "true" : "false",
+             enrichment_status.raw_name, enrichment_status.output_name,
+             enrichment_status.pass_stride, enrichment_status.completed_stride,
+             enrichment_status.frame_index, enrichment_status.frame_count,
+             enrichment_status.inferred_frames, enrichment_status.output_frames,
+             enrichment_status.inference_coverage_x1000,
+             enrichment_status.passes_completed, enrichment_status.last_error);
 
     if (s_history_lock) {
         xSemaphoreTake(s_history_lock, portMAX_DELAY);
@@ -5764,15 +5862,23 @@ static esp_err_t status_get_handler(httpd_req_t *req)
     snprintf(json, json_cap,
              "{"
              "\"ip\":\"%s\",\"target\":\"%s\",\"power_mode\":\"%s\","
+             "\"app_mode\":\"%s\","
              "\"time_synced\":%s,\"time_source\":\"%s\",\"epoch_ms\":%" PRIu64 ","
              "\"network_mode\":\"%s\",\"recognition_method\":\"%s\",\"rescue_ap\":%s,"
-             "\"sta_ip\":\"%s\",\"ap_ip\":\"%s\",\"ap_clients\":%" PRIu32 ","
+             "\"sta_ip\":\"%s\",\"ap_ip\":\"%s\",\"eth_ip\":\"%s\",\"ap_clients\":%" PRIu32 ","
              "\"wifi_runtime_ready\":%s,\"wifi_started\":%s,\"wifi_init_failures\":%" PRIu32
              ",\"wifi_last_error\":\"%s\","
              "\"network_active\":%s,\"network_idle_ms\":%" PRId64 ","
              "\"network_boot_window_remaining_ms\":%" PRId64 ","
              "\"network_shutdown_for_idle\":%s,\"network_reopen_requires_reboot\":%s,"
-             "\"ap_url\":\"%s\",\"sta_url\":\"%s\","
+             "\"hostname\":\"%s\",\"mdns_url\":\"%s\","
+             "\"ap_url\":\"%s\",\"sta_url\":\"%s\",\"eth_url\":\"%s\",\"access_urls\":%s,"
+              "\"eth_enabled\":%s,\"eth_started\":%s,\"eth_link_up\":%s,"
+              "\"eth_got_ip\":%s,\"eth_static_fallback\":%s,\"eth_last_error\":\"%s\","
+              "\"usb_msc_enabled\":%s,\"usb_initialized\":%s,\"usb_host_connected\":%s,"
+              "\"usb_export_requested\":%s,\"usb_storage_owner\":\"%s\",\"usb_writable\":%s,"
+              "\"storage_quiescing\":%s,\"file_download_clients\":%" PRIu32
+              ",\"usb_last_error\":\"%s\",\"enrichment\":%s,"
              "\"config\":{\"box_min_score\":%" PRIu32 ",\"stream_max_fps\":%" PRIu32 ","
              "\"inference_interval_ms\":%" PRIu32 ",\"history_sample_interval_ms\":%" PRIu32 ","
              "\"jpeg_quality\":%" PRIu32 ","
@@ -5835,12 +5941,13 @@ static esp_err_t status_get_handler(httpd_req_t *req)
              "\"unknown_score\":%" PRIu32 ","
              "\"inference_ms\":%" PRId64 ",\"analysis_ms\":%" PRId64 "}"
              "}",
-             s_ip_addr, CONFIG_IDF_TARGET, power_state_name(state),
+             primary_ip, CONFIG_IDF_TARGET, power_state_name(state),
+             app_mode_name(s_app_mode),
              epoch_ms > 0 && s_time_source != TIME_SOURCE_UNSYNCED ? "true" : "false",
              time_source_name(s_time_source), epoch_ms,
              network_mode_name(s_network_mode), recognition_method_name(s_recognition_method),
              s_rescue_ap_active ? "true" : "false",
-             s_sta_ip_addr, s_ap_ip_addr, s_ap_clients,
+             s_sta_ip_addr, s_ap_ip_addr, s_eth_ip_addr, s_ap_clients,
              s_wifi_runtime_ready ? "true" : "false",
              s_wifi_started ? "true" : "false",
              s_wifi_init_failures, s_wifi_last_error,
@@ -5848,8 +5955,24 @@ static esp_err_t status_get_handler(httpd_req_t *req)
              network_boot_remaining_ms,
              s_network_shutdown_for_idle ? "true" : "false",
              s_network_shutdown_for_idle ? "true" : "false",
-             ap_url, sta_url,
-             s_box_min_score, s_stream_max_fps, (unsigned long)s_inference_interval_ms,
+             CONFIG_APP_HOSTNAME, mdns_url,
+             ap_url, sta_url, eth_url, access_urls,
+             CONFIG_APP_ETH_ENABLE ? "true" : "false",
+             s_eth_started ? "true" : "false",
+             s_eth_link_up ? "true" : "false",
+             s_eth_got_ip ? "true" : "false",
+              s_eth_static_fallback ? "true" : "false",
+              s_eth_last_error,
+              CONFIG_APP_USB_MSC_ENABLE ? "true" : "false",
+              usb_status.initialized ? "true" : "false",
+               usb_status.host_connected ? "true" : "false",
+               s_usb_export_requested ? "true" : "false",
+               s_usb_storage_ready ? "usb" : (s_sd_mounted ? "app" : "none"),
+               usb_status.writable ? "true" : "false",
+               s_storage_quiescing ? "true" : "false",
+               __atomic_load_n(&s_file_download_clients, __ATOMIC_ACQUIRE),
+               s_usb_last_error, enrichment_json,
+              s_box_min_score, s_stream_max_fps, (unsigned long)s_inference_interval_ms,
              s_history_sample_interval_ms, s_jpeg_quality,
              (unsigned long)active_yolo_input_size(), active_yolo_available() ? "true" : "false",
              yolo26_espdl_available() ? "true" : "false",
@@ -5928,6 +6051,9 @@ static esp_err_t status_get_handler(httpd_req_t *req)
 static esp_err_t frame_get_handler(httpd_req_t *req)
 {
     record_http_request();
+    if (export_mode_reject(req, "frame capture")) {
+        return ESP_OK;
+    }
     uint8_t *client_buf = alloc_psram_buffer(s_frame_capacity);
     if (!client_buf) {
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no frame buffer");
@@ -6553,16 +6679,39 @@ static esp_err_t storage_files_get_handler(httpd_req_t *req)
     return ret;
 }
 
+static esp_err_t http_socket_send_all(httpd_req_t *req, const char *buf, size_t len)
+{
+    int sockfd = httpd_req_to_sockfd(req);
+    if (sockfd < 0 || !buf) {
+        return ESP_FAIL;
+    }
+
+    size_t off = 0;
+    while (off < len) {
+        int sent = httpd_socket_send(req->handle, sockfd, buf + off, len - off, 0);
+        if (sent <= 0) {
+            return ESP_FAIL;
+        }
+        off += (size_t)sent;
+    }
+    return ESP_OK;
+}
+
 static esp_err_t send_file_response(httpd_req_t *req, const char *path, const char *type)
 {
+    if (s_storage_quiescing) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "storage is switching to USB ownership");
+    }
     struct stat st = {0};
     if (stat(path, &st) != 0 || st.st_size < 0) {
         return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "file not found");
     }
-    FILE *file = fopen(path, "rb");
-    if (!file) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
         return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "file not found");
     }
+    __atomic_add_fetch(&s_file_download_clients, 1, __ATOMIC_ACQ_REL);
 
     uint64_t start = 0;
     uint64_t end = st.st_size > 0 ? (uint64_t)st.st_size - 1U : 0;
@@ -6574,7 +6723,8 @@ static esp_err_t send_file_response(httpd_req_t *req, const char *path, const ch
         char *spec = range + 6;
         char *dash = strchr(spec, '-');
         if (!dash || strchr(dash + 1, ',')) {
-            fclose(file);
+            close(fd);
+            __atomic_sub_fetch(&s_file_download_clients, 1, __ATOMIC_ACQ_REL);
             httpd_resp_set_status(req, "416 Range Not Satisfiable");
             return httpd_resp_sendstr(req, "bad range");
         }
@@ -6592,7 +6742,8 @@ static esp_err_t send_file_response(httpd_req_t *req, const char *path, const ch
             start = (uint64_t)st.st_size - suffix;
         }
         if (start >= (uint64_t)st.st_size || end < start) {
-            fclose(file);
+            close(fd);
+            __atomic_sub_fetch(&s_file_download_clients, 1, __ATOMIC_ACQ_REL);
             httpd_resp_set_status(req, "416 Range Not Satisfiable");
             return httpd_resp_sendstr(req, "range outside file");
         }
@@ -6612,36 +6763,59 @@ static esp_err_t send_file_response(httpd_req_t *req, const char *path, const ch
         httpd_resp_set_status(req, "206 Partial Content");
         httpd_resp_set_hdr(req, "Content-Range", content_range);
     }
-    if (start > 0 && fseek(file, (long)start, SEEK_SET) != 0) {
-        fclose(file);
+    if (start > 0 && lseek(fd, (off_t)start, SEEK_SET) < 0) {
+        close(fd);
+        __atomic_sub_fetch(&s_file_download_clients, 1, __ATOMIC_ACQ_REL);
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "seek failed");
     }
 
     uint8_t *buf = malloc(HTTP_SAFE_CHUNK_BYTES);
     if (!buf) {
-        fclose(file);
+        close(fd);
+        __atomic_sub_fetch(&s_file_download_clients, 1, __ATOMIC_ACQ_REL);
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "out of memory");
     }
     esp_err_t ret = ESP_OK;
     uint64_t remaining = st.st_size > 0 ? end - start + 1U : 0;
-    while (remaining > 0) {
-        size_t want = remaining > HTTP_SAFE_CHUNK_BYTES ? HTTP_SAFE_CHUNK_BYTES : (size_t)remaining;
-        size_t n = fread(buf, 1, want, file);
-        if (n > 0) {
-            ret = http_send_chunk_part(req, (const char *)buf, n);
-            if (ret != ESP_OK) {
+    bool fixed_length = remaining <= (uint64_t)INT_MAX;
+    if (fixed_length) {
+        ret = httpd_resp_send(req, NULL, (ssize_t)remaining);
+        if (ret == ESP_OK) {
+            while (remaining > 0) {
+                size_t want = remaining > HTTP_SAFE_CHUNK_BYTES ? HTTP_SAFE_CHUNK_BYTES : (size_t)remaining;
+                ssize_t n = read(fd, buf, want);
+                if (n <= 0) {
+                    ret = ESP_FAIL;
+                    break;
+                }
+                ret = http_socket_send_all(req, (const char *)buf, (size_t)n);
+                if (ret != ESP_OK) {
+                    break;
+                }
+                remaining -= (uint64_t)n;
+            }
+        }
+    } else {
+        while (remaining > 0) {
+            size_t want = remaining > HTTP_SAFE_CHUNK_BYTES ? HTTP_SAFE_CHUNK_BYTES : (size_t)remaining;
+            ssize_t n = read(fd, buf, want);
+            if (n > 0) {
+                ret = http_send_chunk_part(req, (const char *)buf, (size_t)n);
+                if (ret != ESP_OK) {
+                    break;
+                }
+                remaining -= (uint64_t)n;
+            } else {
+                ret = ESP_FAIL;
                 break;
             }
-            remaining -= n;
-        } else {
-            ret = ESP_FAIL;
-            break;
         }
     }
     free(buf);
-    fclose(file);
+    close(fd);
+    __atomic_sub_fetch(&s_file_download_clients, 1, __ATOMIC_ACQ_REL);
 
-    if (ret == ESP_OK) {
+    if (ret == ESP_OK && !fixed_length) {
         ret = httpd_resp_send_chunk(req, NULL, 0);
     }
     return ret;
@@ -7373,7 +7547,8 @@ static esp_err_t field_mode_start_handler(httpd_req_t *req)
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
                                    "confirm=FIELD required");
     }
-    if (s_app_mode != APP_MODE_SERVER || s_network_shutdown_for_idle) {
+    if (s_app_mode == APP_MODE_FIELD || s_network_shutdown_for_idle ||
+        (s_app_mode != APP_MODE_SERVER && s_app_mode != APP_MODE_EXPORT)) {
         httpd_resp_set_status(req, "409 Conflict");
         return httpd_resp_sendstr(req, "field mode already active or pending");
     }
@@ -7387,6 +7562,32 @@ static esp_err_t field_mode_start_handler(httpd_req_t *req)
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return http_send_cstr_chunked(
         req, "{\"ok\":true,\"mode\":\"field_pending\",\"reboot_to_return\":\"server\"}");
+}
+
+static esp_err_t export_mode_start_handler(httpd_req_t *req)
+{
+    record_http_request();
+    char query[64] = {0};
+    char confirm[16] = {0};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+        httpd_query_key_value(query, "confirm", confirm, sizeof(confirm)) != ESP_OK ||
+        strcmp(confirm, "EXPORT") != 0) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                   "confirm=EXPORT required");
+    }
+    if (s_app_mode == APP_MODE_FIELD || s_network_shutdown_for_idle) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "field capture active; reboot before export");
+    }
+    if (!s_eth_started && eth_init_runtime() != ESP_OK) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "Ethernet unavailable");
+    }
+    s_export_mode_requested = true;
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return http_send_cstr_chunked(
+        req, "{\"ok\":true,\"mode\":\"export_pending\",\"note\":\"camera and Wi-Fi will stop; Ethernet HTTP remains active\"}");
 }
 
 static int compare_u32_for_qsort(const void *a, const void *b)
@@ -8772,6 +8973,10 @@ static esp_err_t ensure_dataset_parent_dirs(const char *dataset, const char *rel
 static esp_err_t dataset_file_put_handler(httpd_req_t *req)
 {
     record_http_request();
+    if (s_storage_quiescing) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "storage is switching to USB ownership");
+    }
     char query[256] = {0};
     char dataset[DATASET_NAME_MAX] = {0};
     char relpath[DATASET_PATH_MAX] = {0};
@@ -8832,6 +9037,9 @@ static esp_err_t dataset_file_put_handler(httpd_req_t *req)
 static esp_err_t dataset_run_start_handler(httpd_req_t *req)
 {
     record_http_request();
+    if (export_mode_reject(req, "dataset run")) {
+        return ESP_OK;
+    }
     char query[160] = {0};
     char dataset[DATASET_NAME_MAX] = BUILTIN_COCO_VIDEO_DATASET;
     char limit_text[12] = {0};
@@ -8962,6 +9170,10 @@ static esp_err_t dataset_run_results_handler(httpd_req_t *req)
 
 static esp_err_t stream_async_handler(httpd_req_t *req)
 {
+    if (s_storage_quiescing) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "storage is switching to USB ownership");
+    }
     /*
      * 每个 /stream 连接都会进入自己的 HTTP worker。这里不做摄像头采集，
      * 只按 stream_max_fps 复制最新 JPEG 并分块发送 MJPEG，因此两台设备同时访问时不会互相抢摄像头。
@@ -9080,6 +9292,9 @@ static esp_err_t queue_async_request(httpd_req_t *req, async_req_handler_t handl
 static esp_err_t stream_get_handler(httpd_req_t *req)
 {
     record_http_request();
+    if (export_mode_reject(req, "stream")) {
+        return ESP_OK;
+    }
     power_state_t state = s_power_state;
     if (state == POWER_STATE_STANDBY || state == POWER_STATE_STOPPING) {
         httpd_resp_set_status(req, "503 Service Unavailable");
@@ -9258,6 +9473,14 @@ static void recording_task(void *arg)
     while (true) {
         recording_item_t item = {0};
         if (xQueueReceive(s_recording_queue, &item, pdMS_TO_TICKS(1000)) == pdTRUE) {
+            if (item.finalize) {
+                recording_close_segment(&raw_segment);
+                recording_close_segment(&annotated_segment);
+                if (item.finalize_done) {
+                    xSemaphoreGive(item.finalize_done);
+                }
+                continue;
+            }
             if (s_app_mode == APP_MODE_FIELD && s_sd_mounted && s_recording_enabled) {
                 recording_segment_t *segment = item.kind == RECORDING_KIND_ANNOTATED ?
                                                &annotated_segment : &raw_segment;
@@ -9283,6 +9506,183 @@ static void recording_task(void *arg)
     }
 }
 
+static bool enrichment_should_cancel(void *arg)
+{
+    (void)arg;
+    if (!CONFIG_APP_ENRICHMENT_ENABLE || s_storage_quiescing ||
+        s_usb_export_requested || s_field_mode_requested || s_export_mode_requested ||
+        s_app_mode != APP_MODE_SERVER ||
+        !s_network_active || s_network_shutdown_for_idle ||
+        !s_sd_mounted || s_power_state != POWER_STATE_STANDBY ||
+        s_stream_clients > 0 ||
+        __atomic_load_n(&s_file_download_clients, __ATOMIC_ACQUIRE) > 0 ||
+        inference_worker_busy() ||
+        (s_inference_queue && uxQueueMessagesWaiting(s_inference_queue) > 0) ||
+        (s_history_queue && uxQueueMessagesWaiting(s_history_queue) > 0) ||
+        (s_recording_queue && uxQueueMessagesWaiting(s_recording_queue) > 0)) {
+        return true;
+    }
+
+    dataset_run_status_t dataset = {0};
+    dataset_status_copy(&dataset);
+    if (dataset.queued || dataset.running) {
+        return true;
+    }
+    int64_t now_ms = esp_timer_get_time() / 1000;
+    int64_t last_activity_ms = __atomic_load_n(
+        &s_last_network_activity_ms, __ATOMIC_ACQUIRE);
+    return last_activity_ms <= 0 ||
+           now_ms - last_activity_ms < CONFIG_APP_ENRICHMENT_IDLE_MS;
+}
+
+static void enrichment_task(void *arg)
+{
+    (void)arg;
+    while (true) {
+        if (enrichment_should_cancel(NULL)) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+        if (xSemaphoreTake(s_storage_lock, pdMS_TO_TICKS(1000)) != pdTRUE) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+        esp_err_t ret = ESP_ERR_INVALID_STATE;
+        if (!enrichment_should_cancel(NULL)) {
+            ret = recording_enrichment_process_next(
+                RECORDING_DIR, CONFIG_APP_ENRICHMENT_INITIAL_STRIDE,
+                s_box_min_score, s_jpeg_quality,
+                enrichment_should_cancel, NULL);
+            if (ret == ESP_OK) {
+                reconcile_recording_indexes();
+                update_sd_info();
+            }
+        }
+        xSemaphoreGive(s_storage_lock);
+
+        uint32_t delay_ms = ret == ESP_OK ? 1000U :
+                            (ret == ESP_ERR_NOT_FOUND ? 10000U : 2000U);
+        vTaskDelay(pdMS_TO_TICKS(delay_ms));
+    }
+}
+
+static esp_err_t usb_mode_start_handler(httpd_req_t *req)
+{
+    record_http_request();
+#if !CONFIG_APP_USB_MSC_ENABLE
+    return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "USB MSC disabled");
+#else
+    char query[64] = {0};
+    char confirm[16] = {0};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+        httpd_query_key_value(query, "confirm", confirm, sizeof(confirm)) != ESP_OK ||
+        strcmp(confirm, "USB") != 0) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                   "confirm=USB required");
+    }
+    if (s_app_mode == APP_MODE_USB_EXPORT || s_storage_quiescing) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "USB export already active or pending");
+    }
+    s_usb_export_requested = true;
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return http_send_cstr_chunked(
+        req,
+        "{\"ok\":true,\"mode\":\"usb_export_pending\","
+        "\"note\":\"camera and network will stop; safe eject and reboot are required\"}");
+#endif
+}
+
+static esp_err_t storage_init_usb_sdmmc_card(void)
+{
+    if (s_usb_sd_card) {
+        return ESP_OK;
+    }
+
+    sd_pwr_ctrl_ldo_config_t ldo_config = {
+        .ldo_chan_id = CONFIG_APP_SD_LDO_IO_ID,
+    };
+    esp_err_t ret = sd_pwr_ctrl_new_on_chip_ldo(&ldo_config, &s_sd_pwr_ctrl);
+    ESP_RETURN_ON_ERROR(ret, TAG, "USB TF LDO init failed");
+    vTaskDelay(pdMS_TO_TICKS(50));
+    ESP_GOTO_ON_ERROR(storage_reset_card_power(), fail_ldo, TAG, "USB TF power reset failed");
+
+    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    host.slot = SDMMC_HOST_SLOT_0;
+    host.max_freq_khz = CONFIG_APP_USB_MSC_SD_FREQ_KHZ;
+    host.unaligned_multi_block_rw_max_chunk_size = 8;
+    host.pwr_ctrl_handle = s_sd_pwr_ctrl;
+
+    bool host_initialized_here = false;
+    ret = host.init();
+    if (ret == ESP_OK) {
+        host_initialized_here = true;
+    } else if (ret == ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "SDMMC host already initialized before USB handoff");
+        ret = ESP_OK;
+    }
+    ESP_GOTO_ON_ERROR(ret, fail_ldo, TAG, "USB SDMMC host init failed");
+
+    sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+    slot_config.width = 4;
+    slot_config.clk = CONFIG_APP_SD_PIN_CLK;
+    slot_config.cmd = CONFIG_APP_SD_PIN_CMD;
+    slot_config.d0 = CONFIG_APP_SD_PIN_D0;
+    slot_config.d1 = CONFIG_APP_SD_PIN_D1;
+    slot_config.d2 = CONFIG_APP_SD_PIN_D2;
+    slot_config.d3 = CONFIG_APP_SD_PIN_D3;
+    slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+    ret = sdmmc_host_init_slot(host.slot, &slot_config);
+    ESP_GOTO_ON_ERROR(ret, fail_host, TAG, "USB SDMMC slot init failed");
+
+    s_usb_sd_card = calloc(1, sizeof(*s_usb_sd_card));
+    ESP_GOTO_ON_FALSE(s_usb_sd_card, ESP_ERR_NO_MEM, fail_host, TAG,
+                      "USB SDMMC card allocation failed");
+    ret = sdmmc_card_init(&host, s_usb_sd_card);
+    ESP_GOTO_ON_ERROR(ret, fail_card, TAG, "USB SDMMC card init failed");
+
+    ESP_LOGI(TAG, "USB TF ready: SDMMC 4-bit at %d kHz", CONFIG_APP_USB_MSC_SD_FREQ_KHZ);
+    sdmmc_card_print_info(stdout, s_usb_sd_card);
+    return ESP_OK;
+
+fail_card:
+    free(s_usb_sd_card);
+    s_usb_sd_card = NULL;
+fail_host:
+    if (host_initialized_here) {
+        if (host.flags & SDMMC_HOST_FLAG_DEINIT_ARG) {
+            host.deinit_p(host.slot);
+        } else {
+            host.deinit();
+        }
+    }
+fail_ldo:
+    if (s_sd_pwr_ctrl) {
+        sd_pwr_ctrl_del_on_chip_ldo(s_sd_pwr_ctrl);
+        s_sd_pwr_ctrl = NULL;
+    }
+    return ret;
+}
+
+static esp_err_t recording_finalize_sync(TickType_t timeout)
+{
+    if (!s_recording_queue || !s_recording_finalize_done) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    while (xSemaphoreTake(s_recording_finalize_done, 0) == pdTRUE) {
+    }
+    recording_item_t item = {
+        .finalize = true,
+        .finalize_done = s_recording_finalize_done,
+    };
+    if (xQueueSend(s_recording_queue, &item, timeout) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    return xSemaphoreTake(s_recording_finalize_done, timeout) == pdTRUE ?
+           ESP_OK : ESP_ERR_TIMEOUT;
+}
+
 static void start_async_workers(void)
 {
     s_async_worker_ready = xSemaphoreCreateCounting(CONFIG_APP_MAX_STREAM_CLIENTS, 0);
@@ -9305,6 +9705,14 @@ static void stop_webserver(void)
         return;
     }
 
+    if (s_mdns_started) {
+#if CONFIG_APP_MDNS_ENABLE
+        mdns_free();
+#endif
+        s_mdns_started = false;
+        ESP_LOGI(TAG, "mDNS stopped");
+    }
+
     httpd_handle_t server = s_server;
     s_server = NULL;
     esp_err_t ret = httpd_stop(server);
@@ -9315,10 +9723,47 @@ static void stop_webserver(void)
     }
 }
 
+static esp_err_t mdns_start_runtime(void)
+{
+#if CONFIG_APP_MDNS_ENABLE
+    if (s_mdns_started) {
+        return ESP_OK;
+    }
+    esp_err_t ret = mdns_init();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "mDNS init failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    ret = mdns_hostname_set(CONFIG_APP_HOSTNAME);
+    if (ret == ESP_OK) {
+        ret = mdns_instance_name_set("ESP32-P4 Buoy Vision");
+    }
+    if (ret == ESP_OK) {
+        mdns_txt_item_t txt[] = {
+            {"board", CONFIG_IDF_TARGET},
+            {"path", "/"},
+        };
+        ret = mdns_service_add("ESP32-P4 Buoy Vision", "_http", "_tcp", 80,
+                               txt, sizeof(txt) / sizeof(txt[0]));
+    }
+    if (ret != ESP_OK) {
+        mdns_free();
+        ESP_LOGW(TAG, "mDNS advertise failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    s_mdns_started = true;
+    ESP_LOGI(TAG, "mDNS URL: http://%s.local/", CONFIG_APP_HOSTNAME);
+    return ESP_OK;
+#else
+    return ESP_OK;
+#endif
+}
+
 static void start_webserver(void)
 {
     if (s_server) {
         ESP_LOGI(TAG, "HTTP server already running");
+        mdns_start_runtime();
         return;
     }
 
@@ -9335,6 +9780,7 @@ static void start_webserver(void)
     config.uri_match_fn = httpd_uri_match_wildcard;
 
     ESP_ERROR_CHECK(httpd_start(&s_server, &config));
+    mdns_start_runtime();
     open_network_access_window("HTTP server ready");
 
     const httpd_uri_t root = {
@@ -9487,6 +9933,21 @@ static void start_webserver(void)
         .method = HTTP_POST,
         .handler = field_mode_start_handler,
     };
+    const httpd_uri_t export_mode_start = {
+        .uri = "/api/mode/export",
+        .method = HTTP_POST,
+        .handler = export_mode_start_handler,
+    };
+    const httpd_uri_t usb_mode_start = {
+        .uri = "/api/mode/usb",
+        .method = HTTP_POST,
+        .handler = usb_mode_start_handler,
+    };
+    const httpd_uri_t usb_mode_start_get = {
+        .uri = "/api/mode/usb",
+        .method = HTTP_GET,
+        .handler = usb_mode_start_handler,
+    };
     const httpd_uri_t datasets = {
         .uri = "/api/datasets",
         .method = HTTP_GET,
@@ -9593,6 +10054,9 @@ static void start_webserver(void)
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &storage_format));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &storage_remount));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &field_mode_start));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &export_mode_start));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &usb_mode_start));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &usb_mode_start_get));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &datasets));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &dataset_file));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &dataset_run_start));
@@ -9612,6 +10076,66 @@ static void start_webserver(void)
 
 static void event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
+    if (event_base == ETH_EVENT) {
+        esp_eth_handle_t eth_handle = event_data ? *(esp_eth_handle_t *)event_data : NULL;
+        switch (event_id) {
+        case ETHERNET_EVENT_START:
+            s_eth_started = true;
+            s_eth_runtime_ready = true;
+            strlcpy(s_eth_last_error, "ok", sizeof(s_eth_last_error));
+            ESP_LOGI(TAG, "Ethernet Started");
+            break;
+        case ETHERNET_EVENT_CONNECTED: {
+            uint8_t mac_addr[6] = {0};
+            if (eth_handle) {
+                esp_eth_ioctl(eth_handle, ETH_CMD_G_MAC_ADDR, mac_addr);
+            }
+            s_eth_link_up = true;
+            s_eth_got_ip = false;
+            s_eth_static_fallback = false;
+            s_eth_link_up_ms = esp_timer_get_time() / 1000;
+            strlcpy(s_eth_ip_addr, "0.0.0.0", sizeof(s_eth_ip_addr));
+            mark_network_activity();
+            ESP_LOGI(TAG, "Ethernet Link Up");
+            ESP_LOGI(TAG, "Ethernet HW Addr %02x:%02x:%02x:%02x:%02x:%02x",
+                     mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3],
+                     mac_addr[4], mac_addr[5]);
+            break;
+        }
+        case ETHERNET_EVENT_DISCONNECTED:
+            s_eth_link_up = false;
+            s_eth_got_ip = false;
+            s_eth_static_fallback = false;
+            s_eth_link_up_ms = 0;
+            strlcpy(s_eth_ip_addr, "0.0.0.0", sizeof(s_eth_ip_addr));
+            ESP_LOGI(TAG, "Ethernet Link Down");
+            break;
+        case ETHERNET_EVENT_STOP:
+            s_eth_started = false;
+            s_eth_runtime_ready = false;
+            s_eth_link_up = false;
+            s_eth_got_ip = false;
+            ESP_LOGI(TAG, "Ethernet Stopped");
+            break;
+        default:
+            break;
+        }
+        return;
+    }
+
+    if (event_base == IP_EVENT && event_id == IP_EVENT_ETH_GOT_IP) {
+        ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+        snprintf(s_eth_ip_addr, sizeof(s_eth_ip_addr), IPSTR, IP2STR(&event->ip_info.ip));
+        s_eth_got_ip = true;
+        mark_network_activity();
+        ESP_LOGI(TAG, "Ethernet Got IP Address");
+        ESP_LOGI(TAG, "ETHIP:" IPSTR, IP2STR(&event->ip_info.ip));
+        ESP_LOGI(TAG, "ETHMASK:" IPSTR, IP2STR(&event->ip_info.netmask));
+        ESP_LOGI(TAG, "ETHGW:" IPSTR, IP2STR(&event->ip_info.gw));
+        ESP_LOGI(TAG, "ETH URL: http://%s/", s_eth_ip_addr);
+        return;
+    }
+
     if (s_network_shutdown_for_idle && event_base == WIFI_EVENT) {
         return;
     }
@@ -9692,6 +10216,194 @@ static bool parse_ipv4_addr_text(const char *text, esp_ip4_addr_t *addr)
     return true;
 }
 
+static esp_err_t eth_apply_static_fallback(void)
+{
+#if CONFIG_APP_ETH_ENABLE
+    if (!s_eth_netif) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    esp_netif_ip_info_t ip_info = {0};
+    ESP_RETURN_ON_FALSE(parse_ipv4_addr_text(CONFIG_APP_ETH_STATIC_FALLBACK_IP, &ip_info.ip),
+                        ESP_ERR_INVALID_ARG, TAG, "bad Ethernet fallback IP");
+    ESP_RETURN_ON_FALSE(parse_ipv4_addr_text(CONFIG_APP_ETH_STATIC_FALLBACK_NETMASK, &ip_info.netmask),
+                        ESP_ERR_INVALID_ARG, TAG, "bad Ethernet fallback netmask");
+    IP4_ADDR(&ip_info.gw, 0, 0, 0, 0);
+
+    esp_err_t stop_ret = esp_netif_dhcpc_stop(s_eth_netif);
+    if (stop_ret != ESP_OK && stop_ret != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) {
+        ESP_LOGW(TAG, "Ethernet DHCP client stop returned %s", esp_err_to_name(stop_ret));
+    }
+    ESP_RETURN_ON_ERROR(esp_netif_set_ip_info(s_eth_netif, &ip_info),
+                        TAG, "set Ethernet static fallback IP failed");
+
+    snprintf(s_eth_ip_addr, sizeof(s_eth_ip_addr), IPSTR, IP2STR(&ip_info.ip));
+    s_eth_got_ip = true;
+    s_eth_static_fallback = true;
+    s_network_active = true;
+    mark_network_activity();
+    strlcpy(s_eth_last_error, "static fallback", sizeof(s_eth_last_error));
+    ESP_LOGW(TAG, "ETH static fallback: http://%s/", s_eth_ip_addr);
+    return ESP_OK;
+#else
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
+}
+
+static void eth_dhcp_fallback_tick(int64_t now_ms)
+{
+#if CONFIG_APP_ETH_ENABLE
+    if (!s_eth_started || !s_eth_link_up || s_eth_got_ip || s_eth_static_fallback ||
+        !s_eth_netif || CONFIG_APP_ETH_DHCP_TIMEOUT_MS <= 0 || s_eth_link_up_ms <= 0) {
+        return;
+    }
+    if (now_ms - s_eth_link_up_ms < CONFIG_APP_ETH_DHCP_TIMEOUT_MS) {
+        return;
+    }
+    esp_err_t ret = eth_apply_static_fallback();
+    if (ret != ESP_OK) {
+        snprintf(s_eth_last_error, sizeof(s_eth_last_error), "%s", esp_err_to_name(ret));
+        ESP_LOGW(TAG, "Ethernet static fallback failed: %s", s_eth_last_error);
+    }
+#else
+    (void)now_ms;
+#endif
+}
+
+static esp_err_t eth_init_runtime(void)
+{
+#if CONFIG_APP_ETH_ENABLE
+    if (s_eth_handle && s_eth_started) {
+        return ESP_OK;
+    }
+
+    esp_err_t ret = ESP_OK;
+    eth_mac_config_t mac_config = ETH_MAC_DEFAULT_CONFIG();
+    eth_phy_config_t phy_config = ETH_PHY_DEFAULT_CONFIG();
+    phy_config.phy_addr = APP_ETH_PHY_ADDR;
+    phy_config.reset_gpio_num = APP_ETH_PHY_RST_GPIO;
+
+    eth_esp32_emac_config_t emac_config = ETH_ESP32_EMAC_DEFAULT_CONFIG();
+    emac_config.smi_gpio.mdc_num = APP_ETH_MDC_GPIO;
+    emac_config.smi_gpio.mdio_num = APP_ETH_MDIO_GPIO;
+    emac_config.interface = EMAC_DATA_INTERFACE_RMII;
+    emac_config.clock_config.rmii.clock_mode = EMAC_CLK_EXT_IN;
+    emac_config.clock_config.rmii.clock_gpio = APP_ETH_RMII_CLK_GPIO;
+#if defined(SOC_EMAC_USE_MULTI_IO_MUX) && SOC_EMAC_USE_MULTI_IO_MUX
+    emac_config.emac_dataif_gpio.rmii.tx_en_num = APP_ETH_RMII_TX_EN_GPIO;
+    emac_config.emac_dataif_gpio.rmii.txd0_num = APP_ETH_RMII_TXD0_GPIO;
+    emac_config.emac_dataif_gpio.rmii.txd1_num = APP_ETH_RMII_TXD1_GPIO;
+    emac_config.emac_dataif_gpio.rmii.crs_dv_num = APP_ETH_RMII_CRS_DV_GPIO;
+    emac_config.emac_dataif_gpio.rmii.rxd0_num = APP_ETH_RMII_RXD0_GPIO;
+    emac_config.emac_dataif_gpio.rmii.rxd1_num = APP_ETH_RMII_RXD1_GPIO;
+#endif
+
+    esp_eth_mac_t *mac = esp_eth_mac_new_esp32(&emac_config, &mac_config);
+    if (!mac) {
+        ret = ESP_FAIL;
+        goto fail;
+    }
+    /*
+     * ESP-IDF 6.x uses the generic IEEE 802.3 PHY driver for IP101-class PHYs.
+     * The board-specific identity is still captured by the IP101GRI address,
+     * reset GPIO, RMII pins, and MDC/MDIO pins above.
+     */
+    esp_eth_phy_t *phy = esp_eth_phy_new_generic(&phy_config);
+    if (!phy) {
+        mac->del(mac);
+        ret = ESP_FAIL;
+        goto fail;
+    }
+
+    esp_eth_config_t eth_config = ETH_DEFAULT_CONFIG(mac, phy);
+    ret = esp_eth_driver_install(&eth_config, &s_eth_handle);
+    if (ret != ESP_OK) {
+        mac->del(mac);
+        phy->del(phy);
+        goto fail;
+    }
+
+    if (!s_eth_netif) {
+        esp_netif_config_t netif_cfg = ESP_NETIF_DEFAULT_ETH();
+        s_eth_netif = esp_netif_new(&netif_cfg);
+        if (!s_eth_netif) {
+            ret = ESP_ERR_NO_MEM;
+            goto fail;
+        }
+    }
+
+    s_eth_glue = esp_eth_new_netif_glue(s_eth_handle);
+    if (!s_eth_glue) {
+        ret = ESP_ERR_NO_MEM;
+        goto fail;
+    }
+    ret = esp_netif_attach(s_eth_netif, s_eth_glue);
+    if (ret != ESP_OK) {
+        goto fail;
+    }
+
+    if (!s_eth_handlers_registered) {
+        ret = esp_event_handler_instance_register(ETH_EVENT, ESP_EVENT_ANY_ID,
+                                                  &event_handler, NULL, NULL);
+        if (ret != ESP_OK) {
+            goto fail;
+        }
+        ret = esp_event_handler_instance_register(IP_EVENT, IP_EVENT_ETH_GOT_IP,
+                                                  &event_handler, NULL, NULL);
+        if (ret != ESP_OK) {
+            goto fail;
+        }
+        s_eth_handlers_registered = true;
+    }
+
+    ret = esp_eth_start(s_eth_handle);
+    if (ret != ESP_OK) {
+        goto fail;
+    }
+
+    s_eth_runtime_ready = true;
+    s_network_active = true;
+    strlcpy(s_eth_last_error, "ok", sizeof(s_eth_last_error));
+    ESP_LOGI(TAG, "Ethernet runtime started; DHCP timeout=%d ms, fallback=http://%s/",
+             CONFIG_APP_ETH_DHCP_TIMEOUT_MS, CONFIG_APP_ETH_STATIC_FALLBACK_IP);
+    return ESP_OK;
+
+fail:
+    s_eth_runtime_ready = false;
+    snprintf(s_eth_last_error, sizeof(s_eth_last_error), "%s", esp_err_to_name(ret));
+    ESP_LOGW(TAG, "Ethernet runtime init failed: %s", s_eth_last_error);
+    return ret;
+#else
+    strlcpy(s_eth_last_error, "disabled", sizeof(s_eth_last_error));
+    return ESP_OK;
+#endif
+}
+
+static void eth_stop_runtime(const char *reason)
+{
+#if CONFIG_APP_ETH_ENABLE
+    if (!s_eth_handle || !s_eth_started) {
+        return;
+    }
+    esp_err_t ret = esp_eth_stop(s_eth_handle);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "Ethernet stop requested: %s", reason ? reason : "shutdown");
+    } else {
+        ESP_LOGW(TAG, "Ethernet stop failed: %s", esp_err_to_name(ret));
+    }
+    s_eth_started = false;
+    s_eth_runtime_ready = false;
+    s_eth_link_up = false;
+    s_eth_got_ip = false;
+    s_eth_static_fallback = false;
+    s_eth_link_up_ms = 0;
+    strlcpy(s_eth_ip_addr, "0.0.0.0", sizeof(s_eth_ip_addr));
+    strlcpy(s_eth_last_error, reason ? reason : "stopped", sizeof(s_eth_last_error));
+#else
+    (void)reason;
+#endif
+}
+
 static esp_err_t configure_ap_static_ip(void)
 {
     if (!s_ap_netif) {
@@ -9724,7 +10436,7 @@ static esp_err_t wifi_apply_mode(network_mode_t mode)
     /*
      * Wi-Fi 模式切换会短暂断开当前连接，所以调用者要先让摄像头 standby。
      * 这里按“停止 -> 配置 STA/AP -> 启动 -> 等待 STA 结果”的顺序执行；
-     * SoftAP 的 IP 固定使用 esp_netif 默认的 YOUR_AP_IP，方便手机野外直连。
+     * SoftAP 的 IP 固定使用 esp_netif 默认的 192.168.4.1，方便手机野外直连。
      */
     if (!s_wifi_event_group) {
         s_wifi_event_group = xEventGroupCreate();
@@ -9992,6 +10704,19 @@ static void wifi_shutdown_for_storage_window(void)
     strlcpy(s_sta_ip_addr, "0.0.0.0", sizeof(s_sta_ip_addr));
 }
 
+static void wifi_stop_for_export_mode(void)
+{
+    s_ap_clients = 0;
+    if (s_wifi_started) {
+        esp_err_t ret = esp_wifi_stop();
+        ESP_LOGI(TAG, "Wi-Fi stop for export mode: %s", esp_err_to_name(ret));
+        s_wifi_started = false;
+    }
+    s_wifi_runtime_ready = false;
+    strlcpy(s_ip_addr, s_eth_ip_addr[0] ? s_eth_ip_addr : "0.0.0.0", sizeof(s_ip_addr));
+    strlcpy(s_sta_ip_addr, "0.0.0.0", sizeof(s_sta_ip_addr));
+}
+
 static void storage_service_task(void *arg)
 {
     storage_service_request_t req;
@@ -10088,20 +10813,61 @@ static void storage_service_task(void *arg)
     }
 }
 
+static esp_err_t wait_for_enrichment_idle(uint32_t timeout_ms)
+{
+    int64_t deadline_ms = esp_timer_get_time() / 1000 + timeout_ms;
+    while (esp_timer_get_time() / 1000 < deadline_ms) {
+        recording_enrichment_status_t enrichment = {0};
+        recording_enrichment_get_status(&enrichment);
+        if (!enrichment.running) {
+            return ESP_OK;
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    return ESP_ERR_TIMEOUT;
+}
+
 static void enter_offline_tf_capture_mode(void)
 {
     ESP_LOGI(TAG, "entering offline TF capture mode after idle network window");
+    s_storage_quiescing = true;
     set_storage_service_state(STORAGE_SERVICE_STOPPING_NETWORK,
-                              "idle timeout; closing HTTP and Wi-Fi for TF recording");
+                              "closing HTTP, Wi-Fi and Ethernet for field recording");
     wifi_shutdown_for_storage_window();
+    eth_stop_runtime("field capture");
+    if (wait_for_enrichment_idle(10000) != ESP_OK) {
+        set_storage_service_state(STORAGE_SERVICE_ERROR,
+                                  "enrichment did not stop; reboot required");
+        ESP_LOGE(TAG, "FIELD transition aborted because enrichment did not stop");
+        return;
+    }
+    coco_espdl_release_background();
+
+    s_storage_quiescing = false;
+    s_app_mode = APP_MODE_FIELD;
+    s_recognition_method = RECOGNITION_METHOD_COCO;
+    s_vision_enabled = true;
+    s_history_enabled = false;
+    s_recording_enabled = true;
+    s_box_min_score = 50;
+    s_inference_interval_ms = 0;
+    s_jpeg_quality = 70;
+    s_last_inference_ms = 0;
+    s_last_recording_frame_ms = 0;
 
     set_storage_service_state(STORAGE_SERVICE_HOSTED_DOWN,
                               "idle timeout; deinitializing ESP-Hosted transport");
 #if CONFIG_ESP_HOSTED_ENABLED
-    esp_err_t hosted_ret = (esp_err_t)esp_hosted_deinit();
+    bool tf_on_sdmmc = strcmp(s_storage_backend, "tf_sdmmc") == 0;
+    esp_err_t hosted_ret = ESP_OK;
+    if (tf_on_sdmmc) {
+        ESP_LOGI(TAG, "keeping ESP-Hosted SDMMC host initialized because TF is mounted via SDMMC");
+    } else {
+        hosted_ret = (esp_err_t)esp_hosted_deinit();
 #if CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE
-    s_hosted_sdmmc_host_active = false;
+        s_hosted_sdmmc_host_active = false;
 #endif
+    }
     if (hosted_ret != ESP_OK) {
         ESP_LOGW(TAG, "esp_hosted_deinit for offline TF capture returned %s",
                  esp_err_to_name(hosted_ret));
@@ -10116,9 +10882,10 @@ static void enter_offline_tf_capture_mode(void)
     esp_err_t mount_ret = ESP_OK;
     if (s_sd_mounted && s_sd_card && storage_acceptance_ok()) {
         /*
-         * TF already runs on independent SDSPI2. Reusing the healthy mount
-         * avoids a FatFS drive-slot leak seen when unmounting and immediately
-         * mounting the same card during the server-to-field transition.
+         * Reuse the healthy mount during the server-to-field transition.
+         * This avoids a FatFS drive-slot leak seen when unmounting and
+         * immediately mounting the same card, and preserves SDMMC bus state
+         * when the TF socket is running in 4-bit mode.
          */
         char mount_mode[sizeof(s_sd_mount_mode)];
         strlcpy(mount_mode, s_sd_mount_mode, sizeof(mount_mode));
@@ -10139,21 +10906,6 @@ static void enter_offline_tf_capture_mode(void)
         set_storage_service_state(STORAGE_SERVICE_AVAILABLE,
                                   "offline TF capture active via %s; reboot to reopen AP+STA",
                                   s_sd_mount_mode);
-        s_recognition_method = RECOGNITION_METHOD_COCO;
-        s_vision_enabled = true;
-        s_history_enabled = true;
-        s_recording_enabled = true;
-        s_box_min_score = 50;
-        s_inference_interval_ms = 1000;
-        s_last_inference_ms = 0;
-        s_last_recording_frame_ms = 0;
-        s_last_annotated_recording_frame_ms = 0;
-        /*
-         * Keep server mode as the recording gate until directory recovery is
-         * complete. Otherwise the live camera can create a .part file while
-         * recover_incomplete_recordings() is still scanning the same folder.
-         */
-        s_app_mode = APP_MODE_FIELD;
         camera_cmd_t wake = CAMERA_CMD_WAKE;
         xQueueSend(s_camera_cmd_queue, &wake, pdMS_TO_TICKS(100));
         ESP_LOGI(TAG, "offline TF capture active via %s; reboot to reopen AP+STA",
@@ -10167,8 +10919,168 @@ static void enter_offline_tf_capture_mode(void)
     }
 }
 
+static void enter_export_mode(void)
+{
+    ESP_LOGI(TAG, "entering export mode: stopping capture and Wi-Fi, keeping Ethernet HTTP");
+    s_app_mode = APP_MODE_EXPORT;
+    s_vision_enabled = false;
+    s_recording_enabled = false;
+    s_history_enabled = false;
+    s_inference_interval_ms = 600000;
+    s_stream_clients = 0;
+    s_last_recording_frame_ms = 0;
+
+    camera_cmd_t standby = CAMERA_CMD_STANDBY;
+    xQueueSend(s_camera_cmd_queue, &standby, pdMS_TO_TICKS(100));
+
+    /*
+     * Give recording_task one pass to close active .part files after the
+     * app_mode/recording gate changed, then keep the HTTP server open on ETH.
+     */
+    vTaskDelay(pdMS_TO_TICKS(1200));
+
+    if (wait_for_enrichment_idle(10000) != ESP_OK) {
+        ESP_LOGE(TAG, "EXPORT transition continuing after enrichment stop timeout");
+    }
+    coco_espdl_release_background();
+
+    wifi_stop_for_export_mode();
+    if (!s_eth_started) {
+        esp_err_t eth_ret = eth_init_runtime();
+        if (eth_ret != ESP_OK) {
+            ESP_LOGW(TAG, "export mode Ethernet init failed: %s", esp_err_to_name(eth_ret));
+        }
+    }
+    start_webserver();
+    s_network_active = true;
+    s_network_shutdown_for_idle = false;
+    mark_network_activity();
+    open_network_access_window("export mode");
+    set_storage_service_state(STORAGE_SERVICE_IDLE,
+                              "export mode active; Ethernet HTTP download only");
+}
+
+static void usb_host_event_callback(bool connected, void *arg)
+{
+    (void)arg;
+    if (connected && CONFIG_APP_USB_MSC_AUTO_EXPORT &&
+        s_app_mode != APP_MODE_USB_EXPORT && !s_storage_quiescing) {
+        ESP_LOGI(TAG, "USB1 host detected; queueing writable TF export");
+        s_usb_export_requested = true;
+    }
+}
+
+static void cancel_dataset_for_storage_handoff(void)
+{
+    if (!s_dataset_lock) {
+        return;
+    }
+    xSemaphoreTake(s_dataset_lock, portMAX_DELAY);
+    if (s_dataset_status.queued || s_dataset_status.running) {
+        s_dataset_status.cancel = true;
+    }
+    xSemaphoreGive(s_dataset_lock);
+}
+
+static esp_err_t wait_for_usb_quiescence(uint32_t timeout_ms)
+{
+    int64_t deadline_ms = esp_timer_get_time() / 1000 + timeout_ms;
+    while (esp_timer_get_time() / 1000 < deadline_ms) {
+        dataset_run_status_t dataset = {0};
+        recording_enrichment_status_t enrichment = {0};
+        dataset_status_copy(&dataset);
+        recording_enrichment_get_status(&enrichment);
+        bool camera_idle = s_power_state == POWER_STATE_STANDBY ||
+                           s_power_state == POWER_STATE_ERROR;
+        bool queues_idle = (!s_history_queue || uxQueueMessagesWaiting(s_history_queue) == 0) &&
+                           (!s_recording_queue || uxQueueMessagesWaiting(s_recording_queue) == 0) &&
+                           (!s_inference_queue || uxQueueMessagesWaiting(s_inference_queue) == 0);
+        if (camera_idle && queues_idle && !inference_worker_busy() &&
+            !dataset.queued && !dataset.running && !enrichment.running &&
+            __atomic_load_n(&s_file_download_clients, __ATOMIC_ACQUIRE) == 0) {
+            return ESP_OK;
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    return ESP_ERR_TIMEOUT;
+}
+
+static void enter_usb_export_mode(void)
+{
+#if CONFIG_APP_USB_MSC_ENABLE
+    ESP_LOGI(TAG, "entering writable USB TF export mode");
+    s_storage_quiescing = true;
+    s_storage_mount_allowed = false;
+    s_vision_enabled = false;
+    s_history_enabled = false;
+    cancel_dataset_for_storage_handoff();
+
+    camera_cmd_t standby = CAMERA_CMD_STANDBY;
+    xQueueSend(s_camera_cmd_queue, &standby, pdMS_TO_TICKS(100));
+
+    /* Let a manual HTTP request finish before its transport disappears. */
+    vTaskDelay(pdMS_TO_TICKS(500));
+    wifi_shutdown_for_storage_window();
+    eth_stop_runtime("USB mass storage");
+
+    esp_err_t ret = wait_for_usb_quiescence(8000);
+    if (ret == ESP_OK) {
+        ret = recording_finalize_sync(pdMS_TO_TICKS(5000));
+    }
+    if (ret != ESP_OK) {
+        snprintf(s_usb_last_error, sizeof(s_usb_last_error),
+                 "quiesce failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "%s; TF remains with application until reboot", s_usb_last_error);
+        return;
+    }
+    coco_espdl_release_background();
+
+    s_recording_enabled = false;
+    s_stream_clients = 0;
+    s_last_recording_frame_ms = 0;
+    s_app_mode = APP_MODE_USB_EXPORT;
+    s_network_active = false;
+    s_network_shutdown_for_idle = true;
+
+    storage_unmount("USB mass-storage handoff");
+
+#if CONFIG_ESP_HOSTED_ENABLED
+    esp_err_t hosted_ret = (esp_err_t)esp_hosted_deinit();
+#if CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE
+    s_hosted_sdmmc_host_active = false;
+#endif
+    if (hosted_ret != ESP_OK) {
+        ESP_LOGW(TAG, "ESP-Hosted deinit for USB returned %s", esp_err_to_name(hosted_ret));
+    }
+    vTaskDelay(pdMS_TO_TICKS(300));
+#endif
+
+    ret = storage_init_usb_sdmmc_card();
+    if (ret == ESP_OK) {
+        ret = usb_msc_export_attach_sdmmc(s_usb_sd_card);
+    }
+    if (ret != ESP_OK) {
+        snprintf(s_usb_last_error, sizeof(s_usb_last_error),
+                 "TF attach failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "%s; reboot to restore application storage", s_usb_last_error);
+        return;
+    }
+
+    s_usb_storage_ready = true;
+    strlcpy(s_usb_last_error, "ok", sizeof(s_usb_last_error));
+    set_storage_service_state(STORAGE_SERVICE_AVAILABLE,
+                              "USB host owns writable TF; safe eject then reboot");
+    ESP_LOGI(TAG, "USB writable TF ready; safe eject, wait 2 seconds, then reboot");
+#endif
+}
+
 static void network_watchdog_tick(void)
 {
+    if (s_usb_export_requested) {
+        s_usb_export_requested = false;
+        enter_usb_export_mode();
+        return;
+    }
     if (!s_network_active || s_network_shutdown_for_idle) {
         return;
     }
@@ -10178,13 +11090,25 @@ static void network_watchdog_tick(void)
         enter_offline_tf_capture_mode();
         return;
     }
+    if (s_export_mode_requested) {
+        s_export_mode_requested = false;
+        ESP_LOGI(TAG, "manual EXPORT_MODE request accepted");
+        enter_export_mode();
+        return;
+    }
+#if CONFIG_APP_ETH_ENABLE
+    if (s_eth_started) {
+        return;
+    }
+#endif
 
     int64_t now_ms = esp_timer_get_time() / 1000;
     if (s_network_boot_window_until_ms > 0 && now_ms < s_network_boot_window_until_ms) {
         return;
     }
 
-    int64_t last_activity_ms = s_last_network_activity_ms;
+    int64_t last_activity_ms = __atomic_load_n(
+        &s_last_network_activity_ms, __ATOMIC_ACQUIRE);
     int64_t idle_ms = last_activity_ms > 0 ? now_ms - last_activity_ms : now_ms;
     if (s_ap_clients > 0 || s_stream_clients > 0 ||
         idle_ms < CONFIG_APP_NETWORK_IDLE_TIMEOUT_MS) {
@@ -10209,6 +11133,12 @@ static void network_task(void *arg)
         network_mode_t mode;
         if (xQueueReceive(s_netmode_queue, &mode,
                           pdMS_TO_TICKS(CONFIG_APP_NETWORK_WATCHDOG_PERIOD_MS)) == pdTRUE) {
+            if (s_app_mode == APP_MODE_EXPORT || s_app_mode == APP_MODE_FIELD ||
+                s_app_mode == APP_MODE_USB_EXPORT) {
+                ESP_LOGW(TAG, "ignoring network mode switch while app_mode=%s",
+                         app_mode_name(s_app_mode));
+                continue;
+            }
             if (mode == s_network_mode) {
                 continue;
             }
@@ -10226,7 +11156,10 @@ static void network_task(void *arg)
             }
         } else {
             int64_t now_ms = esp_timer_get_time() / 1000;
+            eth_dhcp_fallback_tick(now_ms);
             if (s_storage_mount_allowed && !s_wifi_runtime_ready && !s_network_shutdown_for_idle &&
+                s_app_mode != APP_MODE_EXPORT && s_app_mode != APP_MODE_FIELD &&
+                s_app_mode != APP_MODE_USB_EXPORT &&
                 now_ms - last_wifi_retry_ms >= 10000) {
                 last_wifi_retry_ms = now_ms;
                 ESP_LOGI(TAG, "retrying Wi-Fi runtime startup");
@@ -10259,6 +11192,15 @@ static void network_task(void *arg)
     }
 }
 
+static void eth_fallback_task(void *arg)
+{
+    (void)arg;
+    while (true) {
+        eth_dhcp_fallback_tick(esp_timer_get_time() / 1000);
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+}
+
 void app_main(void)
 {
     esp_err_t ret = nvs_flash_init();
@@ -10268,7 +11210,7 @@ void app_main(void)
     }
     load_runtime_settings();
     int64_t boot_now_ms = esp_timer_get_time() / 1000;
-    s_last_network_activity_ms = boot_now_ms;
+    __atomic_store_n(&s_last_network_activity_ms, boot_now_ms, __ATOMIC_RELEASE);
     s_network_boot_window_until_ms = 0;
     strlcpy(s_ap_ip_addr, CONFIG_APP_AP_STATIC_IP, sizeof(s_ap_ip_addr));
     ESP_LOGI(TAG,
@@ -10324,6 +11266,10 @@ void app_main(void)
     s_recording_queue = xQueueCreate(CONFIG_APP_RECORDING_QUEUE_DEPTH, sizeof(recording_item_t));
     ESP_ERROR_CHECK(s_recording_queue ? ESP_OK : ESP_ERR_NO_MEM);
 
+    s_recording_finalize_done = xSemaphoreCreateBinary();
+    ESP_ERROR_CHECK(s_recording_finalize_done ? ESP_OK : ESP_ERR_NO_MEM);
+    recording_enrichment_init(CONFIG_APP_ENRICHMENT_ENABLE);
+
     s_inference_queue = xQueueCreate(1, sizeof(inference_job_t));
     ESP_ERROR_CHECK(s_inference_queue ? ESP_OK : ESP_ERR_NO_MEM);
 
@@ -10348,6 +11294,13 @@ void app_main(void)
                                           NULL, CONFIG_APP_HISTORY_TASK_PRIORITY,
                                           &s_recording_task_handle);
     ESP_ERROR_CHECK(recording_ok == pdTRUE ? ESP_OK : ESP_ERR_NO_MEM);
+
+#if CONFIG_APP_ENRICHMENT_ENABLE
+    BaseType_t enrichment_ok = xTaskCreate(enrichment_task, "recording_enrich",
+                                           CONFIG_APP_ENRICHMENT_TASK_STACK_SIZE,
+                                           NULL, 1, &s_enrichment_task_handle);
+    ESP_ERROR_CHECK(enrichment_ok == pdTRUE ? ESP_OK : ESP_ERR_NO_MEM);
+#endif
 
     BaseType_t inference_ok = xTaskCreate(inference_task, "inference_task",
                                           CONFIG_APP_INFERENCE_TASK_STACK_SIZE,
@@ -10387,12 +11340,44 @@ void app_main(void)
         ESP_LOGE(TAG, "TF SDSPI mount failed before Wi-Fi startup: %s",
                  esp_err_to_name(storage_ret));
     }
+#if CONFIG_APP_USB_MSC_ENABLE
+    esp_err_t usb_ret = usb_msc_export_init(usb_host_event_callback, NULL);
+    if (usb_ret != ESP_OK) {
+        snprintf(s_usb_last_error, sizeof(s_usb_last_error), "%s", esp_err_to_name(usb_ret));
+        ESP_LOGE(TAG, "USB MSC initialization failed: %s", s_usb_last_error);
+    } else {
+        strlcpy(s_usb_last_error, "waiting for USB1 host", sizeof(s_usb_last_error));
+    }
+#else
+    strlcpy(s_usb_last_error, "disabled", sizeof(s_usb_last_error));
+#endif
+    esp_err_t eth_ret = eth_init_runtime();
+    if (eth_ret != ESP_OK) {
+        ESP_LOGE(TAG, "Ethernet runtime unavailable: %s", esp_err_to_name(eth_ret));
+    }
+    bool eth_available = false;
+#if CONFIG_APP_ETH_ENABLE
+    eth_available = eth_ret == ESP_OK;
+    if (eth_available) {
+        BaseType_t eth_task_ok = xTaskCreate(eth_fallback_task, "eth_fallback",
+                                             3072, NULL, 4,
+                                             &s_eth_fallback_task_handle);
+        ESP_ERROR_CHECK(eth_task_ok == pdTRUE ? ESP_OK : ESP_ERR_NO_MEM);
+        start_webserver();
+        ESP_LOGI(TAG, "Ethernet HTTP server active; DHCP pending, fallback=http://%s/",
+                 CONFIG_APP_ETH_STATIC_FALLBACK_IP);
+    }
+#endif
     esp_err_t wifi_ret = wifi_init_runtime();
     if (wifi_ret == ESP_OK) {
         start_webserver();
-        ESP_LOGI(TAG, "Camera web server: http://%s/", s_ip_addr);
-    } else {
+        ESP_LOGI(TAG, "Camera web server started; AP=http://%s/ STA=%s ETH=%s",
+                 s_ap_ip_addr, s_sta_ip_addr, s_eth_ip_addr);
+    } else if (!eth_available) {
         ESP_LOGE(TAG, "Wi-Fi runtime unavailable: %s; AP+STA HTTP access needs ESP-Hosted/C6, serial image validation stays active",
+                 esp_err_to_name(wifi_ret));
+    } else {
+        ESP_LOGW(TAG, "Wi-Fi runtime unavailable: %s; Ethernet HTTP remains active",
                  esp_err_to_name(wifi_ret));
     }
 

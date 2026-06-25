@@ -10,11 +10,11 @@ menu "Wi-Fi Camera Web Control"
 
     config APP_AP_SSID
         string "SoftAP SSID"
-        default "YOUR_AP_SSID"
+        default "P4_Buoy_Lab"
 
     config APP_AP_PASSWORD
         string "SoftAP password"
-        default "YOUR_WIFI_OR_AP_PASSWORD"
+        default "change-me-please"
 
     config APP_AP_CHANNEL
         int "SoftAP channel"
@@ -28,7 +28,7 @@ menu "Wi-Fi Camera Web Control"
 
     config APP_AP_STATIC_IP
         string "SoftAP static IPv4 address"
-        default "YOUR_AP_IP"
+        default "192.168.4.1"
         help
             Static SoftAP address used for direct phone access.
 
@@ -38,7 +38,7 @@ menu "Wi-Fi Camera Web Control"
 
     config APP_AP_GATEWAY
         string "SoftAP IPv4 gateway"
-        default "YOUR_AP_IP"
+        default "192.168.4.1"
 
     config APP_DEFAULT_NETWORK_MODE
         int "Default network mode: 0 STA, 1 SoftAP, 2 AP+STA"
@@ -67,6 +67,69 @@ menu "Wi-Fi Camera Web Control"
         int "Network idle watchdog period in milliseconds"
         default 5000
         range 1000 60000
+
+    config APP_ETH_ENABLE
+        bool "Enable Ethernet file-transfer interface"
+        default y
+        help
+            Start the onboard ESP32-P4 Ethernet interface alongside Wi-Fi.
+            This is intended for wired recording download and maintenance.
+
+    config APP_ETH_DHCP_TIMEOUT_MS
+        int "Ethernet DHCP timeout before static fallback"
+        default 8000
+        range 1000 60000
+        help
+            If Ethernet link is up but DHCP does not assign an address within
+            this time, the firmware switches the Ethernet netif to the static
+            fallback address below. This makes direct board-to-PC cables usable
+            when the PC does not provide DHCP.
+
+    config APP_ETH_STATIC_FALLBACK_IP
+        string "Ethernet static fallback IPv4 address"
+        default "169.254.100.2"
+
+    config APP_ETH_STATIC_FALLBACK_NETMASK
+        string "Ethernet static fallback IPv4 netmask"
+        default "255.255.0.0"
+
+    config APP_MDNS_ENABLE
+        bool "Enable mDNS fixed local hostname"
+        default y
+        help
+            Advertise the HTTP server as http://<hostname>.local/ on active
+            network interfaces. IP addresses remain available as fallbacks.
+
+    config APP_HOSTNAME
+        string "mDNS hostname"
+        default "p4-buoy"
+
+    config APP_USB_MSC_ENABLE
+        bool "Enable USB1 high-speed TF mass storage"
+        default y
+        help
+            Expose the TF card as a writable USB mass-storage device on the
+            ESP32-P4 high-speed OTG port. The application and USB host never
+            own the filesystem at the same time.
+
+    config APP_USB_MSC_AUTO_EXPORT
+        bool "Automatically enter USB export after host enumeration"
+        depends on APP_USB_MSC_ENABLE
+        default y
+
+    config APP_USB_MSC_SD_FREQ_KHZ
+        int "USB export SDMMC frequency in kHz"
+        depends on APP_USB_MSC_ENABLE
+        default 40000
+        range 400 40000
+        help
+            This affects only USB mass-storage mode. Field capture continues
+            to use APP_SD_MAX_FREQ_KHZ.
+
+    config APP_USB_MSC_PRODUCT_NAME
+        string "USB mass-storage product name"
+        depends on APP_USB_MSC_ENABLE
+        default "P4 Buoy TF Storage"
 
     config APP_STORAGE_TIMESHARE_BOOT_PROBE_MS
         int "Automatic boot TF maintenance probe delay in milliseconds"
@@ -108,6 +171,13 @@ menu "Wi-Fi Camera Web Control"
         range 65536 1048576
         help
             Maximum bytes reserved for the cached JPEG frame and each stream client's copy buffer.
+
+    config APP_FILE_DOWNLOAD_CHUNK_BYTES
+        int "HTTP file download chunk bytes"
+        default 65536
+        range 8192 262144
+        help
+            Buffer size used when reading TF files and sending HTTP chunks.
 
     config APP_STREAM_MAX_FPS
         int "Maximum MJPEG FPS per client"
@@ -185,6 +255,15 @@ menu "Wi-Fi Camera Web Control"
         int "TF card SDMMC bus width"
         default 4
         range 1 4
+
+    config APP_SD_MAX_FREQ_KHZ
+        int "TF card bus max frequency in kHz"
+        default 20000
+        range 400 40000
+        help
+            Maximum TF card bus frequency used by both SDMMC and SDSPI mounts.
+            20000 is the IDF default speed; raise only after board-side signal
+            integrity has been verified.
 
     config APP_SD_PIN_CMD
         int "TF card SDMMC CMD pin"
@@ -280,6 +359,35 @@ menu "Wi-Fi Camera Web Control"
         help
             The live stream can run faster. This limit protects TF write bandwidth and
             keeps COCO inference responsive while still providing reviewable video.
+
+    config APP_FIELD_RECORDING_MAX_FPS
+        int "Maximum raw AVI FPS in field capture mode"
+        default 12
+        range 1 30
+        help
+            Field mode shuts down network services and prioritizes raw AVI capture.
+
+    config APP_ENRICHMENT_ENABLE
+        bool "Enable idle annotated-video enrichment"
+        default y
+
+    config APP_ENRICHMENT_IDLE_MS
+        int "Idle time before annotated-video enrichment"
+        depends on APP_ENRICHMENT_ENABLE
+        default 15000
+        range 5000 600000
+
+    config APP_ENRICHMENT_INITIAL_STRIDE
+        int "Initial inference stride for annotated video"
+        depends on APP_ENRICHMENT_ENABLE
+        default 8
+        range 1 32
+
+    config APP_ENRICHMENT_TASK_STACK_SIZE
+        int "Annotated-video enrichment task stack size"
+        depends on APP_ENRICHMENT_ENABLE
+        default 16384
+        range 8192 32768
 
     config APP_RECORDING_MAX_SEGMENTS
         int "Maximum AVI recording segments kept on TF card"

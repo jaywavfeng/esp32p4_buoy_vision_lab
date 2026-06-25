@@ -2,6 +2,8 @@ idf_component_register(
     SRCS
         "camera_web_main.c"
         "avi_mjpeg_writer.c"
+        "recording_enrichment.c"
+        "usb_msc_export.c"
         "yolo26_espdl_bridge.cpp"
         "yolo11_espdl_bridge.cpp"
         "coco_espdl_bridge.cpp"
@@ -9,6 +11,7 @@ idf_component_register(
     PRIV_REQUIRES
         esp-dl
         esp_event
+        esp_eth
         esp_http_server
         esp_netif
         esp_system
@@ -17,6 +20,7 @@ idf_component_register(
         esp_video
         example_video_common
         fatfs
+        mdns
         wear_levelling
         sdmmc
         esp_driver_sdmmc
@@ -27,6 +31,7 @@ idf_component_register(
         yolo26
         coco_detect
         nvs_flash
+        esp_tinyusb
 )
 
 idf_build_get_property(component_targets __COMPONENT_TARGETS)

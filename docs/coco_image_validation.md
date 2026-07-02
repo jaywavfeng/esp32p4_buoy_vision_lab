@@ -123,16 +123,14 @@ demo_04: 000000275198.jpg, COCO annotations 26 objects / 8 classes, PC detected 
 
 ## Validation Images
 
-The firmware embeds these images in flash:
+The firmware embeds these current validation images in flash:
 
-- `test_assets/phone_gallery/images/coke_01.jpg`
-- `test_assets/phone_gallery/images/sprite_01.jpg`
 - `test_assets/video_frames_320/images/demo_01.jpg` from COCO val2017 `000000018380.jpg`
 - `test_assets/video_frames_320/images/demo_02.jpg` from COCO val2017 `000000189475.jpg`
 - `test_assets/video_frames_320/images/demo_03.jpg` from COCO val2017 `000000416104.jpg`
 - `test_assets/video_frames_320/images/demo_04.jpg` from COCO val2017 `000000275198.jpg`
 
-The Coke/Sprite images remain available only for comparing the old custom models. Use `method=coco&sample=demo_01..demo_04` for the current fast board validation path.
+Use `method=coco&sample=demo_01..demo_04` for the current COCO board validation path. TinyCNN uses the separate `test_assets/tinycls_marine_demo` assets selected by board-side Top-1 checks.
 
 ## HTTP Entry Points
 

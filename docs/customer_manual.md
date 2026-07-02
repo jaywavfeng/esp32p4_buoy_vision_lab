@@ -22,11 +22,11 @@
 
 - `采集帧率`：摄像头采集速度。
 - `传输帧率`：网页 MJPEG 推流速度。
-- `推理延时`：最近一次 COCO/YOLO 推理耗时。
+- `推理延时`：最近一次 Fish31/TinyCNN/COCO 推理耗时。
 - `板端识别`：当前目标类别、置信度、检测框数量和模型信息。
 - `存储`：当前后端、TF 卡挂载状态、历史数量、录像段数量、当前录像文件和剩余空间。`storage_backend=flash_fat` 表示正在使用内部 fallback，`tf_sdmmc/tf_sdspi` 表示真 TF。
 
-默认识别方法为 `COCO YOLO11n 320`。如果画面误框多，可提高“框阈值”；如果漏检，可降低阈值。
+默认识别方法为 `Fish31 MobileNetV3 224`。Fish31/TinyCNN 是分类模型，主要查看 Top-1 和 Top-K 置信度；COCO 是检测模型，如果画面误框多，可提高“框阈值”，如果漏检，可降低阈值。
 
 ## 3. 监控记录、录像与删除
 
@@ -77,7 +77,7 @@ data/tf_datasets/coco_video/summary.json
 TF卡根目录/esp32p4/datasets/coco_video
 ```
 
-打开 `/validate` 后，默认“真实 COCO 视频验证”不依赖 TF 卡。固件内置了商店过道公开视频的 16 张连续帧，板端逐帧运行 COCO YOLO11n 320；页面在下方结果框实时显示最新标注帧，完成后以 1 FPS 循环播放，并提供播放/暂停控制。
+打开 `/validate` 后，可在 `Fish31 MobileNetV3`、`TinyCNN Marine`、`COCO YOLO11n` 三套验证之间切换。Fish31/TinyCNN 使用板端筛选过的分类样例，页面显示 Top-1 横幅和 Top-K；COCO 使用商店过道公开视频的 16 张连续帧，页面显示检测框。三套内置视频验证都不依赖 TF 卡。
 
 TF 卡上的 `coco_video` 是可选长数据集，只通过 API 或后续扩展运行，不再由四张图片自动填充。图片验证中的 `demo_01~04` 保持为独立的 COCO classic 单图入口。
 

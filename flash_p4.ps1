@@ -1,5 +1,5 @@
 param(
-    [string]$Port = "COM3",
+    [string]$Port = "",
     [switch]$Monitor
 )
 
@@ -21,6 +21,63 @@ $env:ESP_ROM_ELF_DIR = "C:\Espressif\tools\esp-rom-elfs\20241011"
 $env:GIT_CONFIG_COUNT = "1"
 $env:GIT_CONFIG_KEY_0 = "safe.directory"
 $env:GIT_CONFIG_VALUE_0 = "C:/esp/v6.0.1/esp-idf"
+
+function Find-EspSerialPort {
+    $ports = @(Get-CimInstance Win32_SerialPort -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.DeviceID -and (
+                $_.Name -match "USB|UART|JTAG|Serial|CP210|CH340|CH343|WCH|Silicon Labs|Espressif|ESP32" -or
+                $_.Description -match "USB|UART|JTAG|Serial|CP210|CH340|CH343|WCH|Silicon Labs|Espressif|ESP32"
+            )
+        } |
+        Sort-Object DeviceID)
+
+    if ($ports.Count -eq 0) {
+        $ports = @(Get-PnpDevice -Class Ports -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.FriendlyName -match "USB|UART|JTAG|Serial|CP210|CH340|CH343|WCH|Silicon Labs|Espressif|ESP32"
+            } |
+            ForEach-Object {
+                if ($_.FriendlyName -match "\(COM[0-9]+\)") {
+                    [pscustomobject]@{
+                        DeviceID = $Matches[0].Trim("()")
+                        Name = $_.FriendlyName
+                    }
+                }
+            } |
+            Sort-Object DeviceID)
+    }
+
+    if ($ports.Count -eq 0) {
+        $ports = @([System.IO.Ports.SerialPort]::GetPortNames() |
+            Sort-Object |
+            ForEach-Object {
+                [pscustomobject]@{
+                    DeviceID = $_
+                    Name = "Serial port $_"
+                }
+            })
+    }
+
+    if ($ports.Count -eq 1) {
+        return $ports[0].DeviceID
+    }
+    if ($ports.Count -gt 1) {
+        Write-Host "Detected serial ports:"
+        $ports | ForEach-Object { Write-Host ("  {0}  {1}" -f $_.DeviceID, $_.Name) }
+        return $ports[0].DeviceID
+    }
+    return $null
+}
+
+$Port = $Port.Trim()
+if (-not $Port) {
+    $Port = Find-EspSerialPort
+}
+if (-not $Port) {
+    throw "No ESP32-P4 UART/USB serial port detected. Connect the board serial port or rerun with -Port COMx."
+}
+Write-Host "Flashing ESP32-P4 on $Port"
 
 $ToolPath = @(
     "C:\Espressif\tools\ccache\4.12.1\ccache-4.12.1-windows-x86_64",

@@ -96,7 +96,7 @@ RXD1=30
 手动绑定本机以太网 APIPA 地址：
 
 ```powershell
-.\tools\download_recordings_eth.ps1 -BaseUrl http://169.254.100.2 -InterfaceAddress 169.254.12.109 -Limit 5
+.\tools\download_recordings_eth.ps1 -BaseUrl http://169.254.100.2 -InterfaceAddress <host-apipa-ip> -Limit 5
 ```
 
 ## FIELD 模式
@@ -234,7 +234,7 @@ curl.exe http://169.254.100.2/api/recordings?limit=20
 Range：
 
 ```powershell
-curl.exe --interface 169.254.12.109 --fail -D - -H "Range: bytes=0-1023" -o NUL http://169.254.100.2/recording/<name>.avi
+curl.exe --interface <host-apipa-ip> --fail -D - -H "Range: bytes=0-1023" -o NUL http://169.254.100.2/recording/<name>.avi
 ```
 
 下载：

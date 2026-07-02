@@ -1,0 +1,6204 @@
+{
+  "generated_at": "2026-07-02T06:10:36+00:00",
+  "source_policy": "iNaturalist Creative Commons candidates because data/fish31_cls is absent",
+  "score_min": 70,
+  "board": {
+    "base_url": "http://169.254.100.2",
+    "interface": "",
+    "status_model": {
+      "name": "fish31-mbv3s075-224-p4",
+      "bytes": 1184144,
+      "input_size": 224,
+      "class_count": 31,
+      "max_detections": 8,
+      "nms_threshold": 70
+    },
+    "recognition_method": "fish31"
+  },
+  "selected_samples": [
+    {
+      "candidate_id": "0054_fish_23",
+      "label": "fish_23",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "684738750.jpg",
+      "source_url": "https://www.inaturalist.org/observations/374611932",
+      "candidate_sha256": "26609b918ad5106625e734525befa1cdf986dab569559ad3d65c8ebf978f4f28",
+      "board_top1": "fish_23",
+      "board_score": 99,
+      "board_top_k": [
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 99
+        },
+        {
+          "label": "fish_14",
+          "class_id": 13,
+          "score": 0
+        },
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 0
+        }
+      ],
+      "inference_ms": 158,
+      "analysis_ms": 339,
+      "run_id": "fish31_candidates_88277088_0000287218",
+      "slot": "fish31_01",
+      "sha256": "26609b918ad5106625e734525befa1cdf986dab569559ad3d65c8ebf978f4f28"
+    },
+    {
+      "candidate_id": "0001_fish_15",
+      "label": "fish_15",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "689714509.jpg",
+      "source_url": "https://www.inaturalist.org/observations/377184607",
+      "candidate_sha256": "d140527fea932b614c59826b6d69fd5bae0b9dcf70fc4f656a71478f41096c16",
+      "board_top1": "fish_15",
+      "board_score": 98,
+      "board_top_k": [
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 98
+        },
+        {
+          "label": "algae_substrate",
+          "class_id": 29,
+          "score": 0
+        },
+        {
+          "label": "benthic_invertebrate",
+          "class_id": 27,
+          "score": 0
+        }
+      ],
+      "inference_ms": 164,
+      "analysis_ms": 203,
+      "run_id": "fish31_candidates_88277088_0000151998",
+      "slot": "fish31_02",
+      "sha256": "d140527fea932b614c59826b6d69fd5bae0b9dcf70fc4f656a71478f41096c16"
+    },
+    {
+      "candidate_id": "0018_fish_19",
+      "label": "fish_19",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "668566522.jpg",
+      "source_url": "https://www.inaturalist.org/observations/366158891",
+      "candidate_sha256": "678da59990f15faf9bf347d7f98f45451cc0076672a349283bfbcc90fd880c4a",
+      "board_top1": "fish_19",
+      "board_score": 98,
+      "board_top_k": [
+        {
+          "label": "fish_19",
+          "class_id": 18,
+          "score": 98
+        },
+        {
+          "label": "fish_02",
+          "class_id": 1,
+          "score": 0
+        },
+        {
+          "label": "fish_07",
+          "class_id": 6,
+          "score": 0
+        }
+      ],
+      "inference_ms": 167,
+      "analysis_ms": 262,
+      "run_id": "fish31_candidates_88277088_0000193896",
+      "slot": "fish31_03",
+      "sha256": "678da59990f15faf9bf347d7f98f45451cc0076672a349283bfbcc90fd880c4a"
+    },
+    {
+      "candidate_id": "0039_fish_21",
+      "label": "fish_21",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "685906813.jpg",
+      "source_url": "https://www.inaturalist.org/observations/375221218",
+      "candidate_sha256": "a9dfe05b91fc68fd86765192b72bf99cfe4e3c6805952b3a4d42bc0da565ed11",
+      "board_top1": "fish_21",
+      "board_score": 98,
+      "board_top_k": [
+        {
+          "label": "fish_21",
+          "class_id": 20,
+          "score": 98
+        },
+        {
+          "label": "fish_20",
+          "class_id": 19,
+          "score": 1
+        },
+        {
+          "label": "live_coral",
+          "class_id": 25,
+          "score": 0
+        }
+      ],
+      "inference_ms": 157,
+      "analysis_ms": 348,
+      "run_id": "fish31_candidates_88277088_0000249629",
+      "slot": "fish31_04",
+      "sha256": "a9dfe05b91fc68fd86765192b72bf99cfe4e3c6805952b3a4d42bc0da565ed11"
+    }
+  ],
+  "selected_video_frames": [
+    {
+      "candidate_id": "0054_fish_23",
+      "label": "fish_23",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "684738750.jpg",
+      "source_url": "https://www.inaturalist.org/observations/374611932",
+      "candidate_sha256": "26609b918ad5106625e734525befa1cdf986dab569559ad3d65c8ebf978f4f28",
+      "board_top1": "fish_23",
+      "board_score": 99,
+      "board_top_k": [
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 99
+        },
+        {
+          "label": "fish_14",
+          "class_id": 13,
+          "score": 0
+        },
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 0
+        }
+      ],
+      "inference_ms": 158,
+      "analysis_ms": 339,
+      "run_id": "fish31_candidates_88277088_0000287218",
+      "frame": 1,
+      "sha256": "26609b918ad5106625e734525befa1cdf986dab569559ad3d65c8ebf978f4f28"
+    },
+    {
+      "candidate_id": "0001_fish_15",
+      "label": "fish_15",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "689714509.jpg",
+      "source_url": "https://www.inaturalist.org/observations/377184607",
+      "candidate_sha256": "d140527fea932b614c59826b6d69fd5bae0b9dcf70fc4f656a71478f41096c16",
+      "board_top1": "fish_15",
+      "board_score": 98,
+      "board_top_k": [
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 98
+        },
+        {
+          "label": "algae_substrate",
+          "class_id": 29,
+          "score": 0
+        },
+        {
+          "label": "benthic_invertebrate",
+          "class_id": 27,
+          "score": 0
+        }
+      ],
+      "inference_ms": 164,
+      "analysis_ms": 203,
+      "run_id": "fish31_candidates_88277088_0000151998",
+      "frame": 2,
+      "sha256": "d140527fea932b614c59826b6d69fd5bae0b9dcf70fc4f656a71478f41096c16"
+    },
+    {
+      "candidate_id": "0018_fish_19",
+      "label": "fish_19",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "668566522.jpg",
+      "source_url": "https://www.inaturalist.org/observations/366158891",
+      "candidate_sha256": "678da59990f15faf9bf347d7f98f45451cc0076672a349283bfbcc90fd880c4a",
+      "board_top1": "fish_19",
+      "board_score": 98,
+      "board_top_k": [
+        {
+          "label": "fish_19",
+          "class_id": 18,
+          "score": 98
+        },
+        {
+          "label": "fish_02",
+          "class_id": 1,
+          "score": 0
+        },
+        {
+          "label": "fish_07",
+          "class_id": 6,
+          "score": 0
+        }
+      ],
+      "inference_ms": 167,
+      "analysis_ms": 262,
+      "run_id": "fish31_candidates_88277088_0000193896",
+      "frame": 3,
+      "sha256": "678da59990f15faf9bf347d7f98f45451cc0076672a349283bfbcc90fd880c4a"
+    },
+    {
+      "candidate_id": "0039_fish_21",
+      "label": "fish_21",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "685906813.jpg",
+      "source_url": "https://www.inaturalist.org/observations/375221218",
+      "candidate_sha256": "a9dfe05b91fc68fd86765192b72bf99cfe4e3c6805952b3a4d42bc0da565ed11",
+      "board_top1": "fish_21",
+      "board_score": 98,
+      "board_top_k": [
+        {
+          "label": "fish_21",
+          "class_id": 20,
+          "score": 98
+        },
+        {
+          "label": "fish_20",
+          "class_id": 19,
+          "score": 1
+        },
+        {
+          "label": "live_coral",
+          "class_id": 25,
+          "score": 0
+        }
+      ],
+      "inference_ms": 157,
+      "analysis_ms": 348,
+      "run_id": "fish31_candidates_88277088_0000249629",
+      "frame": 4,
+      "sha256": "a9dfe05b91fc68fd86765192b72bf99cfe4e3c6805952b3a4d42bc0da565ed11"
+    },
+    {
+      "candidate_id": "0054_fish_23",
+      "label": "fish_23",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "684738750.jpg",
+      "source_url": "https://www.inaturalist.org/observations/374611932",
+      "candidate_sha256": "26609b918ad5106625e734525befa1cdf986dab569559ad3d65c8ebf978f4f28",
+      "board_top1": "fish_23",
+      "board_score": 99,
+      "board_top_k": [
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 99
+        },
+        {
+          "label": "fish_14",
+          "class_id": 13,
+          "score": 0
+        },
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 0
+        }
+      ],
+      "inference_ms": 158,
+      "analysis_ms": 339,
+      "run_id": "fish31_candidates_88277088_0000287218",
+      "frame": 5,
+      "sha256": "26609b918ad5106625e734525befa1cdf986dab569559ad3d65c8ebf978f4f28"
+    },
+    {
+      "candidate_id": "0001_fish_15",
+      "label": "fish_15",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "689714509.jpg",
+      "source_url": "https://www.inaturalist.org/observations/377184607",
+      "candidate_sha256": "d140527fea932b614c59826b6d69fd5bae0b9dcf70fc4f656a71478f41096c16",
+      "board_top1": "fish_15",
+      "board_score": 98,
+      "board_top_k": [
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 98
+        },
+        {
+          "label": "algae_substrate",
+          "class_id": 29,
+          "score": 0
+        },
+        {
+          "label": "benthic_invertebrate",
+          "class_id": 27,
+          "score": 0
+        }
+      ],
+      "inference_ms": 164,
+      "analysis_ms": 203,
+      "run_id": "fish31_candidates_88277088_0000151998",
+      "frame": 6,
+      "sha256": "d140527fea932b614c59826b6d69fd5bae0b9dcf70fc4f656a71478f41096c16"
+    },
+    {
+      "candidate_id": "0018_fish_19",
+      "label": "fish_19",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "668566522.jpg",
+      "source_url": "https://www.inaturalist.org/observations/366158891",
+      "candidate_sha256": "678da59990f15faf9bf347d7f98f45451cc0076672a349283bfbcc90fd880c4a",
+      "board_top1": "fish_19",
+      "board_score": 98,
+      "board_top_k": [
+        {
+          "label": "fish_19",
+          "class_id": 18,
+          "score": 98
+        },
+        {
+          "label": "fish_02",
+          "class_id": 1,
+          "score": 0
+        },
+        {
+          "label": "fish_07",
+          "class_id": 6,
+          "score": 0
+        }
+      ],
+      "inference_ms": 167,
+      "analysis_ms": 262,
+      "run_id": "fish31_candidates_88277088_0000193896",
+      "frame": 7,
+      "sha256": "678da59990f15faf9bf347d7f98f45451cc0076672a349283bfbcc90fd880c4a"
+    },
+    {
+      "candidate_id": "0039_fish_21",
+      "label": "fish_21",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "685906813.jpg",
+      "source_url": "https://www.inaturalist.org/observations/375221218",
+      "candidate_sha256": "a9dfe05b91fc68fd86765192b72bf99cfe4e3c6805952b3a4d42bc0da565ed11",
+      "board_top1": "fish_21",
+      "board_score": 98,
+      "board_top_k": [
+        {
+          "label": "fish_21",
+          "class_id": 20,
+          "score": 98
+        },
+        {
+          "label": "fish_20",
+          "class_id": 19,
+          "score": 1
+        },
+        {
+          "label": "live_coral",
+          "class_id": 25,
+          "score": 0
+        }
+      ],
+      "inference_ms": 157,
+      "analysis_ms": 348,
+      "run_id": "fish31_candidates_88277088_0000249629",
+      "frame": 8,
+      "sha256": "a9dfe05b91fc68fd86765192b72bf99cfe4e3c6805952b3a4d42bc0da565ed11"
+    },
+    {
+      "candidate_id": "0054_fish_23",
+      "label": "fish_23",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "684738750.jpg",
+      "source_url": "https://www.inaturalist.org/observations/374611932",
+      "candidate_sha256": "26609b918ad5106625e734525befa1cdf986dab569559ad3d65c8ebf978f4f28",
+      "board_top1": "fish_23",
+      "board_score": 99,
+      "board_top_k": [
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 99
+        },
+        {
+          "label": "fish_14",
+          "class_id": 13,
+          "score": 0
+        },
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 0
+        }
+      ],
+      "inference_ms": 158,
+      "analysis_ms": 339,
+      "run_id": "fish31_candidates_88277088_0000287218",
+      "frame": 9,
+      "sha256": "26609b918ad5106625e734525befa1cdf986dab569559ad3d65c8ebf978f4f28"
+    },
+    {
+      "candidate_id": "0001_fish_15",
+      "label": "fish_15",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "689714509.jpg",
+      "source_url": "https://www.inaturalist.org/observations/377184607",
+      "candidate_sha256": "d140527fea932b614c59826b6d69fd5bae0b9dcf70fc4f656a71478f41096c16",
+      "board_top1": "fish_15",
+      "board_score": 98,
+      "board_top_k": [
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 98
+        },
+        {
+          "label": "algae_substrate",
+          "class_id": 29,
+          "score": 0
+        },
+        {
+          "label": "benthic_invertebrate",
+          "class_id": 27,
+          "score": 0
+        }
+      ],
+      "inference_ms": 164,
+      "analysis_ms": 203,
+      "run_id": "fish31_candidates_88277088_0000151998",
+      "frame": 10,
+      "sha256": "d140527fea932b614c59826b6d69fd5bae0b9dcf70fc4f656a71478f41096c16"
+    },
+    {
+      "candidate_id": "0018_fish_19",
+      "label": "fish_19",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "668566522.jpg",
+      "source_url": "https://www.inaturalist.org/observations/366158891",
+      "candidate_sha256": "678da59990f15faf9bf347d7f98f45451cc0076672a349283bfbcc90fd880c4a",
+      "board_top1": "fish_19",
+      "board_score": 98,
+      "board_top_k": [
+        {
+          "label": "fish_19",
+          "class_id": 18,
+          "score": 98
+        },
+        {
+          "label": "fish_02",
+          "class_id": 1,
+          "score": 0
+        },
+        {
+          "label": "fish_07",
+          "class_id": 6,
+          "score": 0
+        }
+      ],
+      "inference_ms": 167,
+      "analysis_ms": 262,
+      "run_id": "fish31_candidates_88277088_0000193896",
+      "frame": 11,
+      "sha256": "678da59990f15faf9bf347d7f98f45451cc0076672a349283bfbcc90fd880c4a"
+    },
+    {
+      "candidate_id": "0039_fish_21",
+      "label": "fish_21",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "685906813.jpg",
+      "source_url": "https://www.inaturalist.org/observations/375221218",
+      "candidate_sha256": "a9dfe05b91fc68fd86765192b72bf99cfe4e3c6805952b3a4d42bc0da565ed11",
+      "board_top1": "fish_21",
+      "board_score": 98,
+      "board_top_k": [
+        {
+          "label": "fish_21",
+          "class_id": 20,
+          "score": 98
+        },
+        {
+          "label": "fish_20",
+          "class_id": 19,
+          "score": 1
+        },
+        {
+          "label": "live_coral",
+          "class_id": 25,
+          "score": 0
+        }
+      ],
+      "inference_ms": 157,
+      "analysis_ms": 348,
+      "run_id": "fish31_candidates_88277088_0000249629",
+      "frame": 12,
+      "sha256": "a9dfe05b91fc68fd86765192b72bf99cfe4e3c6805952b3a4d42bc0da565ed11"
+    },
+    {
+      "candidate_id": "0054_fish_23",
+      "label": "fish_23",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "684738750.jpg",
+      "source_url": "https://www.inaturalist.org/observations/374611932",
+      "candidate_sha256": "26609b918ad5106625e734525befa1cdf986dab569559ad3d65c8ebf978f4f28",
+      "board_top1": "fish_23",
+      "board_score": 99,
+      "board_top_k": [
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 99
+        },
+        {
+          "label": "fish_14",
+          "class_id": 13,
+          "score": 0
+        },
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 0
+        }
+      ],
+      "inference_ms": 158,
+      "analysis_ms": 339,
+      "run_id": "fish31_candidates_88277088_0000287218",
+      "frame": 13,
+      "sha256": "26609b918ad5106625e734525befa1cdf986dab569559ad3d65c8ebf978f4f28"
+    },
+    {
+      "candidate_id": "0001_fish_15",
+      "label": "fish_15",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "689714509.jpg",
+      "source_url": "https://www.inaturalist.org/observations/377184607",
+      "candidate_sha256": "d140527fea932b614c59826b6d69fd5bae0b9dcf70fc4f656a71478f41096c16",
+      "board_top1": "fish_15",
+      "board_score": 98,
+      "board_top_k": [
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 98
+        },
+        {
+          "label": "algae_substrate",
+          "class_id": 29,
+          "score": 0
+        },
+        {
+          "label": "benthic_invertebrate",
+          "class_id": 27,
+          "score": 0
+        }
+      ],
+      "inference_ms": 164,
+      "analysis_ms": 203,
+      "run_id": "fish31_candidates_88277088_0000151998",
+      "frame": 14,
+      "sha256": "d140527fea932b614c59826b6d69fd5bae0b9dcf70fc4f656a71478f41096c16"
+    },
+    {
+      "candidate_id": "0018_fish_19",
+      "label": "fish_19",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "668566522.jpg",
+      "source_url": "https://www.inaturalist.org/observations/366158891",
+      "candidate_sha256": "678da59990f15faf9bf347d7f98f45451cc0076672a349283bfbcc90fd880c4a",
+      "board_top1": "fish_19",
+      "board_score": 98,
+      "board_top_k": [
+        {
+          "label": "fish_19",
+          "class_id": 18,
+          "score": 98
+        },
+        {
+          "label": "fish_02",
+          "class_id": 1,
+          "score": 0
+        },
+        {
+          "label": "fish_07",
+          "class_id": 6,
+          "score": 0
+        }
+      ],
+      "inference_ms": 167,
+      "analysis_ms": 262,
+      "run_id": "fish31_candidates_88277088_0000193896",
+      "frame": 15,
+      "sha256": "678da59990f15faf9bf347d7f98f45451cc0076672a349283bfbcc90fd880c4a"
+    },
+    {
+      "candidate_id": "0039_fish_21",
+      "label": "fish_21",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "685906813.jpg",
+      "source_url": "https://www.inaturalist.org/observations/375221218",
+      "candidate_sha256": "a9dfe05b91fc68fd86765192b72bf99cfe4e3c6805952b3a4d42bc0da565ed11",
+      "board_top1": "fish_21",
+      "board_score": 98,
+      "board_top_k": [
+        {
+          "label": "fish_21",
+          "class_id": 20,
+          "score": 98
+        },
+        {
+          "label": "fish_20",
+          "class_id": 19,
+          "score": 1
+        },
+        {
+          "label": "live_coral",
+          "class_id": 25,
+          "score": 0
+        }
+      ],
+      "inference_ms": 157,
+      "analysis_ms": 348,
+      "run_id": "fish31_candidates_88277088_0000249629",
+      "frame": 16,
+      "sha256": "a9dfe05b91fc68fd86765192b72bf99cfe4e3c6805952b3a4d42bc0da565ed11"
+    }
+  ],
+  "candidates": [
+    {
+      "candidate_id": "0001_fish_15",
+      "label": "fish_15",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "689714509.jpg",
+      "source_url": "https://www.inaturalist.org/observations/377184607",
+      "candidate_sha256": "d140527fea932b614c59826b6d69fd5bae0b9dcf70fc4f656a71478f41096c16",
+      "board_top1": "fish_15",
+      "board_score": 98,
+      "board_top_k": [
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 98
+        },
+        {
+          "label": "algae_substrate",
+          "class_id": 29,
+          "score": 0
+        },
+        {
+          "label": "benthic_invertebrate",
+          "class_id": 27,
+          "score": 0
+        }
+      ],
+      "inference_ms": 164,
+      "analysis_ms": 203,
+      "run_id": "fish31_candidates_88277088_0000151998",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000151998",
+        "processed": 1,
+        "analysis_ms": 203,
+        "p95_analysis_ms": 203,
+        "top1": "fish_15",
+        "score": 98,
+        "top_k": [
+          {
+            "label": "fish_15",
+            "class_id": 14,
+            "score": 98
+          },
+          {
+            "label": "algae_substrate",
+            "class_id": 29,
+            "score": 0
+          },
+          {
+            "label": "benthic_invertebrate",
+            "class_id": 27,
+            "score": 0
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000151998",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000151998",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000151998&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 203,
+          "p95_analysis_ms": 203,
+          "max_analysis_ms": 203,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000151998&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_15",
+              "count": 1
+            }
+          ],
+          "started_ms": 152001,
+          "finished_ms": 152772,
+          "error": ""
+        },
+        "inference_ms": 164,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0002_fish_15",
+      "label": "fish_15",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "689714505.jpg",
+      "source_url": "https://www.inaturalist.org/observations/377184607",
+      "candidate_sha256": "47d0c554106f94cac2da19a26c15e3a01fb7b1cde571e8fde7caf7ba955695b0",
+      "board_top1": "fish_15",
+      "board_score": 32,
+      "board_top_k": [
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 32
+        },
+        {
+          "label": "fish_21",
+          "class_id": 20,
+          "score": 28
+        },
+        {
+          "label": "sand_seabed",
+          "class_id": 23,
+          "score": 9
+        }
+      ],
+      "inference_ms": 158,
+      "analysis_ms": 267,
+      "run_id": "fish31_candidates_88277088_0000153775",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000153775",
+        "processed": 1,
+        "analysis_ms": 267,
+        "p95_analysis_ms": 267,
+        "top1": "fish_15",
+        "score": 32,
+        "top_k": [
+          {
+            "label": "fish_15",
+            "class_id": 14,
+            "score": 32
+          },
+          {
+            "label": "fish_21",
+            "class_id": 20,
+            "score": 28
+          },
+          {
+            "label": "sand_seabed",
+            "class_id": 23,
+            "score": 9
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000153775",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000153775",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000153775&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 0,
+          "avg_analysis_ms": 267,
+          "p95_analysis_ms": 267,
+          "max_analysis_ms": 267,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000153775&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_15",
+              "count": 1
+            }
+          ],
+          "started_ms": 153777,
+          "finished_ms": 154882,
+          "error": ""
+        },
+        "inference_ms": 158,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0003_fish_15",
+      "label": "fish_15",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "689714523.jpg",
+      "source_url": "https://www.inaturalist.org/observations/377184607",
+      "candidate_sha256": "e74e3ebd872b42d85a5f89fde811dbbd2dc8ccd29c270b8ff379b1d6fea12c3d",
+      "board_top1": "fish_23",
+      "board_score": 62,
+      "board_top_k": [
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 62
+        },
+        {
+          "label": "sand_seabed",
+          "class_id": 23,
+          "score": 16
+        },
+        {
+          "label": "fish_20",
+          "class_id": 19,
+          "score": 7
+        }
+      ],
+      "inference_ms": 166,
+      "analysis_ms": 311,
+      "run_id": "fish31_candidates_88277088_0000156149",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000156149",
+        "processed": 1,
+        "analysis_ms": 311,
+        "p95_analysis_ms": 311,
+        "top1": "fish_23",
+        "score": 62,
+        "top_k": [
+          {
+            "label": "fish_23",
+            "class_id": 22,
+            "score": 62
+          },
+          {
+            "label": "sand_seabed",
+            "class_id": 23,
+            "score": 16
+          },
+          {
+            "label": "fish_20",
+            "class_id": 19,
+            "score": 7
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000156149",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000156149",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000156149&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 311,
+          "p95_analysis_ms": 311,
+          "max_analysis_ms": 311,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000156149&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_23",
+              "count": 1
+            }
+          ],
+          "started_ms": 156152,
+          "finished_ms": 157590,
+          "error": ""
+        },
+        "inference_ms": 166,
+        "matched": false
+      }
+    },
+    {
+      "candidate_id": "0004_fish_15",
+      "label": "fish_15",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "689714524.jpg",
+      "source_url": "https://www.inaturalist.org/observations/377184607",
+      "candidate_sha256": "cbddb20d64e30ca6d0fbbc0e173571cc5d151e213042e463c938cec583409d08",
+      "board_top1": "fish_23",
+      "board_score": 19,
+      "board_top_k": [
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 19
+        },
+        {
+          "label": "algae_substrate",
+          "class_id": 29,
+          "score": 19
+        },
+        {
+          "label": "live_coral",
+          "class_id": 25,
+          "score": 13
+        }
+      ],
+      "inference_ms": 165,
+      "analysis_ms": 270,
+      "run_id": "fish31_candidates_88277088_0000158861",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000158861",
+        "processed": 1,
+        "analysis_ms": 270,
+        "p95_analysis_ms": 270,
+        "top1": "fish_23",
+        "score": 19,
+        "top_k": [
+          {
+            "label": "fish_23",
+            "class_id": 22,
+            "score": 19
+          },
+          {
+            "label": "algae_substrate",
+            "class_id": 29,
+            "score": 19
+          },
+          {
+            "label": "live_coral",
+            "class_id": 25,
+            "score": 13
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000158861",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000158861",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000158861&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 0,
+          "avg_analysis_ms": 270,
+          "p95_analysis_ms": 270,
+          "max_analysis_ms": 270,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000158861&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_23",
+              "count": 1
+            }
+          ],
+          "started_ms": 158862,
+          "finished_ms": 160331,
+          "error": ""
+        },
+        "inference_ms": 165,
+        "matched": false
+      }
+    },
+    {
+      "candidate_id": "0005_fish_15",
+      "label": "fish_15",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "689714636.jpg",
+      "source_url": "https://www.inaturalist.org/observations/377184607",
+      "candidate_sha256": "68b674f4c93a85c960d9476d89cceea7b26ee330bd4138b6802fc57530e34a4b",
+      "board_top1": "fish_21",
+      "board_score": 52,
+      "board_top_k": [
+        {
+          "label": "fish_21",
+          "class_id": 20,
+          "score": 52
+        },
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 38
+        },
+        {
+          "label": "algae_substrate",
+          "class_id": 29,
+          "score": 1
+        }
+      ],
+      "inference_ms": 165,
+      "analysis_ms": 217,
+      "run_id": "fish31_candidates_88277088_0000161661",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000161661",
+        "processed": 1,
+        "analysis_ms": 217,
+        "p95_analysis_ms": 217,
+        "top1": "fish_21",
+        "score": 52,
+        "top_k": [
+          {
+            "label": "fish_21",
+            "class_id": 20,
+            "score": 52
+          },
+          {
+            "label": "fish_15",
+            "class_id": 14,
+            "score": 38
+          },
+          {
+            "label": "algae_substrate",
+            "class_id": 29,
+            "score": 1
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000161661",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000161661",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000161661&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 217,
+          "p95_analysis_ms": 217,
+          "max_analysis_ms": 217,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000161661&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_21",
+              "count": 1
+            }
+          ],
+          "started_ms": 161664,
+          "finished_ms": 163072,
+          "error": ""
+        },
+        "inference_ms": 165,
+        "matched": false
+      }
+    },
+    {
+      "candidate_id": "0006_fish_15",
+      "label": "fish_15",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "689710856.jpg",
+      "source_url": "https://www.inaturalist.org/observations/377183146",
+      "candidate_sha256": "38875c64640e3e689782c707a22ff07e8cb32c7bbc8fa54ba92a4bf723d636a4",
+      "board_top1": "fish_15",
+      "board_score": 56,
+      "board_top_k": [
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 56
+        },
+        {
+          "label": "benthic_invertebrate",
+          "class_id": 27,
+          "score": 25
+        },
+        {
+          "label": "dead_bleached_coral",
+          "class_id": 26,
+          "score": 4
+        }
+      ],
+      "inference_ms": 165,
+      "analysis_ms": 228,
+      "run_id": "fish31_candidates_88277088_0000164027",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000164027",
+        "processed": 1,
+        "analysis_ms": 228,
+        "p95_analysis_ms": 228,
+        "top1": "fish_15",
+        "score": 56,
+        "top_k": [
+          {
+            "label": "fish_15",
+            "class_id": 14,
+            "score": 56
+          },
+          {
+            "label": "benthic_invertebrate",
+            "class_id": 27,
+            "score": 25
+          },
+          {
+            "label": "dead_bleached_coral",
+            "class_id": 26,
+            "score": 4
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000164027",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000164027",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000164027&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 228,
+          "p95_analysis_ms": 228,
+          "max_analysis_ms": 228,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000164027&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_15",
+              "count": 1
+            }
+          ],
+          "started_ms": 164030,
+          "finished_ms": 165443,
+          "error": ""
+        },
+        "inference_ms": 165,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0007_fish_15",
+      "label": "fish_15",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "689710910.jpg",
+      "source_url": "https://www.inaturalist.org/observations/377183146",
+      "candidate_sha256": "c2cd5e225262059d3d930d789561000461209041864fbfccdd3b3e666eb82e3a",
+      "board_top1": "fish_15",
+      "board_score": 70,
+      "board_top_k": [
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 70
+        },
+        {
+          "label": "benthic_invertebrate",
+          "class_id": 27,
+          "score": 16
+        },
+        {
+          "label": "fish_21",
+          "class_id": 20,
+          "score": 2
+        }
+      ],
+      "inference_ms": 165,
+      "analysis_ms": 228,
+      "run_id": "fish31_candidates_88277088_0000166416",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000166416",
+        "processed": 1,
+        "analysis_ms": 228,
+        "p95_analysis_ms": 228,
+        "top1": "fish_15",
+        "score": 70,
+        "top_k": [
+          {
+            "label": "fish_15",
+            "class_id": 14,
+            "score": 70
+          },
+          {
+            "label": "benthic_invertebrate",
+            "class_id": 27,
+            "score": 16
+          },
+          {
+            "label": "fish_21",
+            "class_id": 20,
+            "score": 2
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000166416",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000166416",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000166416&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 228,
+          "p95_analysis_ms": 228,
+          "max_analysis_ms": 228,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000166416&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_15",
+              "count": 1
+            }
+          ],
+          "started_ms": 166420,
+          "finished_ms": 167822,
+          "error": ""
+        },
+        "inference_ms": 165,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0008_fish_15",
+      "label": "fish_15",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "689711021.jpg",
+      "source_url": "https://www.inaturalist.org/observations/377183146",
+      "candidate_sha256": "eb8058737c9aede1527756500030bf511493e613c687d3822c305b408cd690cc",
+      "board_top1": "fish_15",
+      "board_score": 36,
+      "board_top_k": [
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 36
+        },
+        {
+          "label": "dead_bleached_coral",
+          "class_id": 26,
+          "score": 30
+        },
+        {
+          "label": "algae_substrate",
+          "class_id": 29,
+          "score": 21
+        }
+      ],
+      "inference_ms": 160,
+      "analysis_ms": 307,
+      "run_id": "fish31_candidates_88277088_0000169057",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000169057",
+        "processed": 1,
+        "analysis_ms": 307,
+        "p95_analysis_ms": 307,
+        "top1": "fish_15",
+        "score": 36,
+        "top_k": [
+          {
+            "label": "fish_15",
+            "class_id": 14,
+            "score": 36
+          },
+          {
+            "label": "dead_bleached_coral",
+            "class_id": 26,
+            "score": 30
+          },
+          {
+            "label": "algae_substrate",
+            "class_id": 29,
+            "score": 21
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000169057",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000169057",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000169057&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 0,
+          "avg_analysis_ms": 307,
+          "p95_analysis_ms": 307,
+          "max_analysis_ms": 307,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000169057&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_15",
+              "count": 1
+            }
+          ],
+          "started_ms": 169059,
+          "finished_ms": 170566,
+          "error": ""
+        },
+        "inference_ms": 160,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0009_fish_15",
+      "label": "fish_15",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "689711022.jpg",
+      "source_url": "https://www.inaturalist.org/observations/377183146",
+      "candidate_sha256": "85afcf112eb90fca955f4ce3cdf14d0a69abee7e0d2ae7b7837313c5ef70560d",
+      "board_top1": "algae_substrate",
+      "board_score": 74,
+      "board_top_k": [
+        {
+          "label": "algae_substrate",
+          "class_id": 29,
+          "score": 74
+        },
+        {
+          "label": "dead_bleached_coral",
+          "class_id": 26,
+          "score": 12
+        },
+        {
+          "label": "rubble_rock_seabed",
+          "class_id": 24,
+          "score": 4
+        }
+      ],
+      "inference_ms": 166,
+      "analysis_ms": 241,
+      "run_id": "fish31_candidates_88277088_0000171503",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000171503",
+        "processed": 1,
+        "analysis_ms": 241,
+        "p95_analysis_ms": 241,
+        "top1": "algae_substrate",
+        "score": 74,
+        "top_k": [
+          {
+            "label": "algae_substrate",
+            "class_id": 29,
+            "score": 74
+          },
+          {
+            "label": "dead_bleached_coral",
+            "class_id": 26,
+            "score": 12
+          },
+          {
+            "label": "rubble_rock_seabed",
+            "class_id": 24,
+            "score": 4
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000171503",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000171503",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000171503&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 241,
+          "p95_analysis_ms": 241,
+          "max_analysis_ms": 241,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000171503&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "algae_substrate",
+              "count": 1
+            }
+          ],
+          "started_ms": 171505,
+          "finished_ms": 172944,
+          "error": ""
+        },
+        "inference_ms": 166,
+        "matched": false
+      }
+    },
+    {
+      "candidate_id": "0010_fish_15",
+      "label": "fish_15",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "689711027.jpg",
+      "source_url": "https://www.inaturalist.org/observations/377183146",
+      "candidate_sha256": "d08a7e799878ded0f0f05671079131ed547b0708e3072adf938c0989447ca010",
+      "board_top1": "benthic_invertebrate",
+      "board_score": 42,
+      "board_top_k": [
+        {
+          "label": "benthic_invertebrate",
+          "class_id": 27,
+          "score": 42
+        },
+        {
+          "label": "fish_21",
+          "class_id": 20,
+          "score": 25
+        },
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 9
+        }
+      ],
+      "inference_ms": 161,
+      "analysis_ms": 304,
+      "run_id": "fish31_candidates_88277088_0000174216",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000174216",
+        "processed": 1,
+        "analysis_ms": 304,
+        "p95_analysis_ms": 304,
+        "top1": "benthic_invertebrate",
+        "score": 42,
+        "top_k": [
+          {
+            "label": "benthic_invertebrate",
+            "class_id": 27,
+            "score": 42
+          },
+          {
+            "label": "fish_21",
+            "class_id": 20,
+            "score": 25
+          },
+          {
+            "label": "fish_15",
+            "class_id": 14,
+            "score": 9
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000174216",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000174216",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000174216&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 0,
+          "avg_analysis_ms": 304,
+          "p95_analysis_ms": 304,
+          "max_analysis_ms": 304,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000174216&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "benthic_invertebrate",
+              "count": 1
+            }
+          ],
+          "started_ms": 174219,
+          "finished_ms": 175731,
+          "error": ""
+        },
+        "inference_ms": 161,
+        "matched": false
+      }
+    },
+    {
+      "candidate_id": "0011_fish_15",
+      "label": "fish_15",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "689333889.jpg",
+      "source_url": "https://www.inaturalist.org/observations/376986510",
+      "candidate_sha256": "cc9b8e1f8500e8d528cd7fc00c90255aaafe9085795f79eb99048a184108a3f0",
+      "board_top1": "fish_15",
+      "board_score": 96,
+      "board_top_k": [
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 96
+        },
+        {
+          "label": "seagrass",
+          "class_id": 28,
+          "score": 2
+        },
+        {
+          "label": "live_coral",
+          "class_id": 25,
+          "score": 1
+        }
+      ],
+      "inference_ms": 160,
+      "analysis_ms": 305,
+      "run_id": "fish31_candidates_88277088_0000176613",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000176613",
+        "processed": 1,
+        "analysis_ms": 305,
+        "p95_analysis_ms": 305,
+        "top1": "fish_15",
+        "score": 96,
+        "top_k": [
+          {
+            "label": "fish_15",
+            "class_id": 14,
+            "score": 96
+          },
+          {
+            "label": "seagrass",
+            "class_id": 28,
+            "score": 2
+          },
+          {
+            "label": "live_coral",
+            "class_id": 25,
+            "score": 1
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000176613",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000176613",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000176613&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 305,
+          "p95_analysis_ms": 305,
+          "max_analysis_ms": 305,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000176613&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_15",
+              "count": 1
+            }
+          ],
+          "started_ms": 176615,
+          "finished_ms": 178118,
+          "error": ""
+        },
+        "inference_ms": 160,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0012_fish_15",
+      "label": "fish_15",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "688583499.jpg",
+      "source_url": "https://www.inaturalist.org/observations/376601390",
+      "candidate_sha256": "b260a570eaf9866c62ae3c085cd1234ec3020d51e5fc6cca9e4de32b2bf7f2e3",
+      "board_top1": "fish_15",
+      "board_score": 65,
+      "board_top_k": [
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 65
+        },
+        {
+          "label": "fish_20",
+          "class_id": 19,
+          "score": 14
+        },
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 5
+        }
+      ],
+      "inference_ms": 158,
+      "analysis_ms": 339,
+      "run_id": "fish31_candidates_88277088_0000179284",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000179284",
+        "processed": 1,
+        "analysis_ms": 339,
+        "p95_analysis_ms": 339,
+        "top1": "fish_15",
+        "score": 65,
+        "top_k": [
+          {
+            "label": "fish_15",
+            "class_id": 14,
+            "score": 65
+          },
+          {
+            "label": "fish_20",
+            "class_id": 19,
+            "score": 14
+          },
+          {
+            "label": "fish_23",
+            "class_id": 22,
+            "score": 5
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000179284",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000179284",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000179284&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 339,
+          "p95_analysis_ms": 339,
+          "max_analysis_ms": 339,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000179284&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_15",
+              "count": 1
+            }
+          ],
+          "started_ms": 179285,
+          "finished_ms": 180827,
+          "error": ""
+        },
+        "inference_ms": 158,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0013_fish_19",
+      "label": "fish_19",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "682733969.jpg",
+      "source_url": "https://www.inaturalist.org/observations/373579062",
+      "candidate_sha256": "519122663a03898df728618921bd4acfc3895f6beda430b4b99b0499854c3c1a",
+      "board_top1": "fish_19",
+      "board_score": 95,
+      "board_top_k": [
+        {
+          "label": "fish_19",
+          "class_id": 18,
+          "score": 95
+        },
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 2
+        },
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 1
+        }
+      ],
+      "inference_ms": 161,
+      "analysis_ms": 273,
+      "run_id": "fish31_candidates_88277088_0000181675",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000181675",
+        "processed": 1,
+        "analysis_ms": 273,
+        "p95_analysis_ms": 273,
+        "top1": "fish_19",
+        "score": 95,
+        "top_k": [
+          {
+            "label": "fish_19",
+            "class_id": 18,
+            "score": 95
+          },
+          {
+            "label": "fish_15",
+            "class_id": 14,
+            "score": 2
+          },
+          {
+            "label": "fish_23",
+            "class_id": 22,
+            "score": 1
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000181675",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000181675",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000181675&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 273,
+          "p95_analysis_ms": 273,
+          "max_analysis_ms": 273,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000181675&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_19",
+              "count": 1
+            }
+          ],
+          "started_ms": 181677,
+          "finished_ms": 183160,
+          "error": ""
+        },
+        "inference_ms": 161,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0014_fish_19",
+      "label": "fish_19",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "682733893.jpg",
+      "source_url": "https://www.inaturalist.org/observations/373579062",
+      "candidate_sha256": "a1b0059e5408dacfa52c8aa4f00ba3979bad109a7381bc459c05a8664d6f6f94",
+      "board_top1": "fish_19",
+      "board_score": 90,
+      "board_top_k": [
+        {
+          "label": "fish_19",
+          "class_id": 18,
+          "score": 90
+        },
+        {
+          "label": "fish_07",
+          "class_id": 6,
+          "score": 2
+        },
+        {
+          "label": "complex_underwater_bg",
+          "class_id": 30,
+          "score": 1
+        }
+      ],
+      "inference_ms": 166,
+      "analysis_ms": 260,
+      "run_id": "fish31_candidates_88277088_0000184039",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000184039",
+        "processed": 1,
+        "analysis_ms": 260,
+        "p95_analysis_ms": 260,
+        "top1": "fish_19",
+        "score": 90,
+        "top_k": [
+          {
+            "label": "fish_19",
+            "class_id": 18,
+            "score": 90
+          },
+          {
+            "label": "fish_07",
+            "class_id": 6,
+            "score": 2
+          },
+          {
+            "label": "complex_underwater_bg",
+            "class_id": 30,
+            "score": 1
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000184039",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000184039",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000184039&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 260,
+          "p95_analysis_ms": 260,
+          "max_analysis_ms": 260,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000184039&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_19",
+              "count": 1
+            }
+          ],
+          "started_ms": 184041,
+          "finished_ms": 185504,
+          "error": ""
+        },
+        "inference_ms": 166,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0015_fish_19",
+      "label": "fish_19",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "682734138.jpg",
+      "source_url": "https://www.inaturalist.org/observations/373579062",
+      "candidate_sha256": "98197c2be7e15ef15b4792e454f4fd8593d7ff6720098332e093e31071e1fe13",
+      "board_top1": "fish_19",
+      "board_score": 57,
+      "board_top_k": [
+        {
+          "label": "fish_19",
+          "class_id": 18,
+          "score": 57
+        },
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 37
+        },
+        {
+          "label": "fish_21",
+          "class_id": 20,
+          "score": 1
+        }
+      ],
+      "inference_ms": 167,
+      "analysis_ms": 222,
+      "run_id": "fish31_candidates_88277088_0000186447",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000186447",
+        "processed": 1,
+        "analysis_ms": 222,
+        "p95_analysis_ms": 222,
+        "top1": "fish_19",
+        "score": 57,
+        "top_k": [
+          {
+            "label": "fish_19",
+            "class_id": 18,
+            "score": 57
+          },
+          {
+            "label": "fish_23",
+            "class_id": 22,
+            "score": 37
+          },
+          {
+            "label": "fish_21",
+            "class_id": 20,
+            "score": 1
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000186447",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000186447",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000186447&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 222,
+          "p95_analysis_ms": 222,
+          "max_analysis_ms": 222,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000186447&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_19",
+              "count": 1
+            }
+          ],
+          "started_ms": 186449,
+          "finished_ms": 187890,
+          "error": ""
+        },
+        "inference_ms": 167,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0016_fish_19",
+      "label": "fish_19",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "672588344.jpg",
+      "source_url": "https://www.inaturalist.org/observations/368280488",
+      "candidate_sha256": "337944c794ff449e603b180bedef8ac72f4c06927010ddb82e4416655a0945b8",
+      "board_top1": "fish_19",
+      "board_score": 90,
+      "board_top_k": [
+        {
+          "label": "fish_19",
+          "class_id": 18,
+          "score": 90
+        },
+        {
+          "label": "rubble_rock_seabed",
+          "class_id": 24,
+          "score": 2
+        },
+        {
+          "label": "live_coral",
+          "class_id": 25,
+          "score": 2
+        }
+      ],
+      "inference_ms": 160,
+      "analysis_ms": 325,
+      "run_id": "fish31_candidates_88277088_0000189091",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000189091",
+        "processed": 1,
+        "analysis_ms": 325,
+        "p95_analysis_ms": 325,
+        "top1": "fish_19",
+        "score": 90,
+        "top_k": [
+          {
+            "label": "fish_19",
+            "class_id": 18,
+            "score": 90
+          },
+          {
+            "label": "rubble_rock_seabed",
+            "class_id": 24,
+            "score": 2
+          },
+          {
+            "label": "live_coral",
+            "class_id": 25,
+            "score": 2
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000189091",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000189091",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000189091&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 325,
+          "p95_analysis_ms": 325,
+          "max_analysis_ms": 325,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000189091&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_19",
+              "count": 1
+            }
+          ],
+          "started_ms": 189092,
+          "finished_ms": 190618,
+          "error": ""
+        },
+        "inference_ms": 160,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0017_fish_19",
+      "label": "fish_19",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "668710124.jpg",
+      "source_url": "https://www.inaturalist.org/observations/366228933",
+      "candidate_sha256": "d70df612f841b89dc32fdfa3294e71fbc7ff11e2ac85dedededea504b19e6a9e",
+      "board_top1": "fish_19",
+      "board_score": 93,
+      "board_top_k": [
+        {
+          "label": "fish_19",
+          "class_id": 18,
+          "score": 93
+        },
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 1
+        },
+        {
+          "label": "fish_21",
+          "class_id": 20,
+          "score": 1
+        }
+      ],
+      "inference_ms": 161,
+      "analysis_ms": 312,
+      "run_id": "fish31_candidates_88277088_0000191460",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000191460",
+        "processed": 1,
+        "analysis_ms": 312,
+        "p95_analysis_ms": 312,
+        "top1": "fish_19",
+        "score": 93,
+        "top_k": [
+          {
+            "label": "fish_19",
+            "class_id": 18,
+            "score": 93
+          },
+          {
+            "label": "fish_23",
+            "class_id": 22,
+            "score": 1
+          },
+          {
+            "label": "fish_21",
+            "class_id": 20,
+            "score": 1
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000191460",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000191460",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000191460&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 312,
+          "p95_analysis_ms": 312,
+          "max_analysis_ms": 312,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000191460&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_19",
+              "count": 1
+            }
+          ],
+          "started_ms": 191462,
+          "finished_ms": 193001,
+          "error": ""
+        },
+        "inference_ms": 161,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0018_fish_19",
+      "label": "fish_19",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "668566522.jpg",
+      "source_url": "https://www.inaturalist.org/observations/366158891",
+      "candidate_sha256": "678da59990f15faf9bf347d7f98f45451cc0076672a349283bfbcc90fd880c4a",
+      "board_top1": "fish_19",
+      "board_score": 98,
+      "board_top_k": [
+        {
+          "label": "fish_19",
+          "class_id": 18,
+          "score": 98
+        },
+        {
+          "label": "fish_02",
+          "class_id": 1,
+          "score": 0
+        },
+        {
+          "label": "fish_07",
+          "class_id": 6,
+          "score": 0
+        }
+      ],
+      "inference_ms": 167,
+      "analysis_ms": 262,
+      "run_id": "fish31_candidates_88277088_0000193896",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000193896",
+        "processed": 1,
+        "analysis_ms": 262,
+        "p95_analysis_ms": 262,
+        "top1": "fish_19",
+        "score": 98,
+        "top_k": [
+          {
+            "label": "fish_19",
+            "class_id": 18,
+            "score": 98
+          },
+          {
+            "label": "fish_02",
+            "class_id": 1,
+            "score": 0
+          },
+          {
+            "label": "fish_07",
+            "class_id": 6,
+            "score": 0
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000193896",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000193896",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000193896&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 262,
+          "p95_analysis_ms": 262,
+          "max_analysis_ms": 262,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000193896&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_19",
+              "count": 1
+            }
+          ],
+          "started_ms": 193898,
+          "finished_ms": 195387,
+          "error": ""
+        },
+        "inference_ms": 167,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0019_fish_19",
+      "label": "fish_19",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "663090311.jpg",
+      "source_url": "https://www.inaturalist.org/observations/363261785",
+      "candidate_sha256": "734e199054e9387881302e290615c81ee227f00dc88c8e5c89ef6bc8e1b3b0b3",
+      "board_top1": "fish_19",
+      "board_score": 93,
+      "board_top_k": [
+        {
+          "label": "fish_19",
+          "class_id": 18,
+          "score": 93
+        },
+        {
+          "label": "fish_05",
+          "class_id": 4,
+          "score": 0
+        },
+        {
+          "label": "fish_06",
+          "class_id": 5,
+          "score": 0
+        }
+      ],
+      "inference_ms": 161,
+      "analysis_ms": 303,
+      "run_id": "fish31_candidates_88277088_0000196621",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000196621",
+        "processed": 1,
+        "analysis_ms": 303,
+        "p95_analysis_ms": 303,
+        "top1": "fish_19",
+        "score": 93,
+        "top_k": [
+          {
+            "label": "fish_19",
+            "class_id": 18,
+            "score": 93
+          },
+          {
+            "label": "fish_05",
+            "class_id": 4,
+            "score": 0
+          },
+          {
+            "label": "fish_06",
+            "class_id": 5,
+            "score": 0
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000196621",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000196621",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000196621&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 303,
+          "p95_analysis_ms": 303,
+          "max_analysis_ms": 303,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000196621&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_19",
+              "count": 1
+            }
+          ],
+          "started_ms": 196623,
+          "finished_ms": 198167,
+          "error": ""
+        },
+        "inference_ms": 161,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0020_fish_19",
+      "label": "fish_19",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "660966422.jpg",
+      "source_url": "https://www.inaturalist.org/observations/362152154",
+      "candidate_sha256": "879a3850bc4d0e54bb7e9678844675c19538931ddcae33bb5cd8d2a0dd7c38a4",
+      "board_top1": "fish_19",
+      "board_score": 76,
+      "board_top_k": [
+        {
+          "label": "fish_19",
+          "class_id": 18,
+          "score": 76
+        },
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 15
+        },
+        {
+          "label": "fish_20",
+          "class_id": 19,
+          "score": 1
+        }
+      ],
+      "inference_ms": 167,
+      "analysis_ms": 270,
+      "run_id": "fish31_candidates_88277088_0000199390",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000199390",
+        "processed": 1,
+        "analysis_ms": 270,
+        "p95_analysis_ms": 270,
+        "top1": "fish_19",
+        "score": 76,
+        "top_k": [
+          {
+            "label": "fish_19",
+            "class_id": 18,
+            "score": 76
+          },
+          {
+            "label": "fish_23",
+            "class_id": 22,
+            "score": 15
+          },
+          {
+            "label": "fish_20",
+            "class_id": 19,
+            "score": 1
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000199390",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000199390",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000199390&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 270,
+          "p95_analysis_ms": 270,
+          "max_analysis_ms": 270,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000199390&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_19",
+              "count": 1
+            }
+          ],
+          "started_ms": 199392,
+          "finished_ms": 200902,
+          "error": ""
+        },
+        "inference_ms": 167,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0021_fish_19",
+      "label": "fish_19",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "654691091.jpg",
+      "source_url": "https://www.inaturalist.org/observations/358855963",
+      "candidate_sha256": "39bd0f817bcddb812d52db35244e192f78310ef80051a387dd18e7d188b771f7",
+      "board_top1": "fish_19",
+      "board_score": 69,
+      "board_top_k": [
+        {
+          "label": "fish_19",
+          "class_id": 18,
+          "score": 69
+        },
+        {
+          "label": "fish_21",
+          "class_id": 20,
+          "score": 18
+        },
+        {
+          "label": "fish_20",
+          "class_id": 19,
+          "score": 3
+        }
+      ],
+      "inference_ms": 167,
+      "analysis_ms": 239,
+      "run_id": "fish31_candidates_88277088_0000202161",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000202161",
+        "processed": 1,
+        "analysis_ms": 239,
+        "p95_analysis_ms": 239,
+        "top1": "fish_19",
+        "score": 69,
+        "top_k": [
+          {
+            "label": "fish_19",
+            "class_id": 18,
+            "score": 69
+          },
+          {
+            "label": "fish_21",
+            "class_id": 20,
+            "score": 18
+          },
+          {
+            "label": "fish_20",
+            "class_id": 19,
+            "score": 3
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000202161",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000202161",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000202161&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 239,
+          "p95_analysis_ms": 239,
+          "max_analysis_ms": 239,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000202161&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_19",
+              "count": 1
+            }
+          ],
+          "started_ms": 202163,
+          "finished_ms": 203653,
+          "error": ""
+        },
+        "inference_ms": 167,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0022_fish_19",
+      "label": "fish_19",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "654691161.jpg",
+      "source_url": "https://www.inaturalist.org/observations/358855963",
+      "candidate_sha256": "e3799d3ac36b43bf8b9088604a5e631f2d480ee5186878bde5654146eb0e8e45",
+      "board_top1": "fish_19",
+      "board_score": 42,
+      "board_top_k": [
+        {
+          "label": "fish_19",
+          "class_id": 18,
+          "score": 42
+        },
+        {
+          "label": "benthic_invertebrate",
+          "class_id": 27,
+          "score": 31
+        },
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 8
+        }
+      ],
+      "inference_ms": 167,
+      "analysis_ms": 220,
+      "run_id": "fish31_candidates_88277088_0000204548",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000204548",
+        "processed": 1,
+        "analysis_ms": 220,
+        "p95_analysis_ms": 220,
+        "top1": "fish_19",
+        "score": 42,
+        "top_k": [
+          {
+            "label": "fish_19",
+            "class_id": 18,
+            "score": 42
+          },
+          {
+            "label": "benthic_invertebrate",
+            "class_id": 27,
+            "score": 31
+          },
+          {
+            "label": "fish_23",
+            "class_id": 22,
+            "score": 8
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000204548",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000204548",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000204548&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 0,
+          "avg_analysis_ms": 220,
+          "p95_analysis_ms": 220,
+          "max_analysis_ms": 220,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000204548&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_19",
+              "count": 1
+            }
+          ],
+          "started_ms": 204550,
+          "finished_ms": 206034,
+          "error": ""
+        },
+        "inference_ms": 167,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0023_fish_19",
+      "label": "fish_19",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "652706615.jpg",
+      "source_url": "https://www.inaturalist.org/observations/357834498",
+      "candidate_sha256": "835bea2fbe99c45a5d587312e16380e9cedf3983d0b57c6abb4cb5f990fd33af",
+      "board_top1": "fish_23",
+      "board_score": 84,
+      "board_top_k": [
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 84
+        },
+        {
+          "label": "fish_19",
+          "class_id": 18,
+          "score": 12
+        },
+        {
+          "label": "complex_underwater_bg",
+          "class_id": 30,
+          "score": 0
+        }
+      ],
+      "inference_ms": 165,
+      "analysis_ms": 195,
+      "run_id": "fish31_candidates_88277088_0000207185",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000207185",
+        "processed": 1,
+        "analysis_ms": 195,
+        "p95_analysis_ms": 195,
+        "top1": "fish_23",
+        "score": 84,
+        "top_k": [
+          {
+            "label": "fish_23",
+            "class_id": 22,
+            "score": 84
+          },
+          {
+            "label": "fish_19",
+            "class_id": 18,
+            "score": 12
+          },
+          {
+            "label": "complex_underwater_bg",
+            "class_id": 30,
+            "score": 0
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000207185",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000207185",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000207185&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 195,
+          "p95_analysis_ms": 195,
+          "max_analysis_ms": 195,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000207185&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_23",
+              "count": 1
+            }
+          ],
+          "started_ms": 207185,
+          "finished_ms": 208591,
+          "error": ""
+        },
+        "inference_ms": 165,
+        "matched": false
+      }
+    },
+    {
+      "candidate_id": "0024_fish_19",
+      "label": "fish_19",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "649282486.jpg",
+      "source_url": "https://www.inaturalist.org/observations/356042705",
+      "candidate_sha256": "3900c52a62aaabeedb4ee815d97d63e5624472747654040be1ecd42d35ef68a1",
+      "board_top1": "fish_19",
+      "board_score": 92,
+      "board_top_k": [
+        {
+          "label": "fish_19",
+          "class_id": 18,
+          "score": 92
+        },
+        {
+          "label": "fish_13",
+          "class_id": 12,
+          "score": 1
+        },
+        {
+          "label": "fish_04",
+          "class_id": 3,
+          "score": 0
+        }
+      ],
+      "inference_ms": 157,
+      "analysis_ms": 365,
+      "run_id": "fish31_candidates_88277088_0000209530",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000209530",
+        "processed": 1,
+        "analysis_ms": 365,
+        "p95_analysis_ms": 365,
+        "top1": "fish_19",
+        "score": 92,
+        "top_k": [
+          {
+            "label": "fish_19",
+            "class_id": 18,
+            "score": 92
+          },
+          {
+            "label": "fish_13",
+            "class_id": 12,
+            "score": 1
+          },
+          {
+            "label": "fish_04",
+            "class_id": 3,
+            "score": 0
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000209530",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000209530",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000209530&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 365,
+          "p95_analysis_ms": 365,
+          "max_analysis_ms": 365,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000209530&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_19",
+              "count": 1
+            }
+          ],
+          "started_ms": 209532,
+          "finished_ms": 211116,
+          "error": ""
+        },
+        "inference_ms": 157,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0025_fish_20",
+      "label": "fish_20",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "689907998.jpg",
+      "source_url": "https://www.inaturalist.org/observations/377283715",
+      "candidate_sha256": "4dbb765f315c8566a88d58906993d942cdbad3dd35b96ff96bd85de86c1949c8",
+      "board_top1": "fish_20",
+      "board_score": 95,
+      "board_top_k": [
+        {
+          "label": "fish_20",
+          "class_id": 19,
+          "score": 95
+        },
+        {
+          "label": "dead_bleached_coral",
+          "class_id": 26,
+          "score": 0
+        },
+        {
+          "label": "sand_seabed",
+          "class_id": 23,
+          "score": 0
+        }
+      ],
+      "inference_ms": 167,
+      "analysis_ms": 229,
+      "run_id": "fish31_candidates_88277088_0000211828",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000211828",
+        "processed": 1,
+        "analysis_ms": 229,
+        "p95_analysis_ms": 229,
+        "top1": "fish_20",
+        "score": 95,
+        "top_k": [
+          {
+            "label": "fish_20",
+            "class_id": 19,
+            "score": 95
+          },
+          {
+            "label": "dead_bleached_coral",
+            "class_id": 26,
+            "score": 0
+          },
+          {
+            "label": "sand_seabed",
+            "class_id": 23,
+            "score": 0
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000211828",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000211828",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000211828&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 229,
+          "p95_analysis_ms": 229,
+          "max_analysis_ms": 229,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000211828&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_20",
+              "count": 1
+            }
+          ],
+          "started_ms": 211832,
+          "finished_ms": 213291,
+          "error": ""
+        },
+        "inference_ms": 167,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0026_fish_20",
+      "label": "fish_20",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "689366727.jpg",
+      "source_url": "https://www.inaturalist.org/observations/377004763",
+      "candidate_sha256": "a74d3383a5c0a27b7e0f73f6d8658b4140fc4bc92a9f87509103f16f9500bdd2",
+      "board_top1": "live_coral",
+      "board_score": 39,
+      "board_top_k": [
+        {
+          "label": "live_coral",
+          "class_id": 25,
+          "score": 39
+        },
+        {
+          "label": "complex_underwater_bg",
+          "class_id": 30,
+          "score": 18
+        },
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 14
+        }
+      ],
+      "inference_ms": 164,
+      "analysis_ms": 263,
+      "run_id": "fish31_candidates_88277088_0000214557",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000214557",
+        "processed": 1,
+        "analysis_ms": 263,
+        "p95_analysis_ms": 263,
+        "top1": "live_coral",
+        "score": 39,
+        "top_k": [
+          {
+            "label": "live_coral",
+            "class_id": 25,
+            "score": 39
+          },
+          {
+            "label": "complex_underwater_bg",
+            "class_id": 30,
+            "score": 18
+          },
+          {
+            "label": "fish_23",
+            "class_id": 22,
+            "score": 14
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000214557",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000214557",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000214557&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 0,
+          "avg_analysis_ms": 263,
+          "p95_analysis_ms": 263,
+          "max_analysis_ms": 263,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000214557&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "live_coral",
+              "count": 1
+            }
+          ],
+          "started_ms": 214559,
+          "finished_ms": 216059,
+          "error": ""
+        },
+        "inference_ms": 164,
+        "matched": false
+      }
+    },
+    {
+      "candidate_id": "0027_fish_20",
+      "label": "fish_20",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "688994010.jpg",
+      "source_url": "https://www.inaturalist.org/observations/376886141",
+      "candidate_sha256": "e0aca37d7312774ba99c0c8d3ba6b8ac23392dcd8946b1ac62942dcc9eb964dd",
+      "board_top1": "fish_20",
+      "board_score": 45,
+      "board_top_k": [
+        {
+          "label": "fish_20",
+          "class_id": 19,
+          "score": 45
+        },
+        {
+          "label": "fish_19",
+          "class_id": 18,
+          "score": 18
+        },
+        {
+          "label": "live_coral",
+          "class_id": 25,
+          "score": 9
+        }
+      ],
+      "inference_ms": 161,
+      "analysis_ms": 298,
+      "run_id": "fish31_candidates_88277088_0000217258",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000217258",
+        "processed": 1,
+        "analysis_ms": 298,
+        "p95_analysis_ms": 298,
+        "top1": "fish_20",
+        "score": 45,
+        "top_k": [
+          {
+            "label": "fish_20",
+            "class_id": 19,
+            "score": 45
+          },
+          {
+            "label": "fish_19",
+            "class_id": 18,
+            "score": 18
+          },
+          {
+            "label": "live_coral",
+            "class_id": 25,
+            "score": 9
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000217258",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000217258",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000217258&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 0,
+          "avg_analysis_ms": 298,
+          "p95_analysis_ms": 298,
+          "max_analysis_ms": 298,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000217258&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_20",
+              "count": 1
+            }
+          ],
+          "started_ms": 217260,
+          "finished_ms": 218812,
+          "error": ""
+        },
+        "inference_ms": 161,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0028_fish_20",
+      "label": "fish_20",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "689039838.jpg",
+      "source_url": "https://www.inaturalist.org/observations/376832530",
+      "candidate_sha256": "6daa12c0a8f0f95ac86180f66b2207cef852c0ace188d4c5e6da9c16f441ffce",
+      "board_top1": "fish_20",
+      "board_score": 83,
+      "board_top_k": [
+        {
+          "label": "fish_20",
+          "class_id": 19,
+          "score": 83
+        },
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 13
+        },
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 1
+        }
+      ],
+      "inference_ms": 160,
+      "analysis_ms": 294,
+      "run_id": "fish31_candidates_88277088_0000219972",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000219972",
+        "processed": 1,
+        "analysis_ms": 294,
+        "p95_analysis_ms": 294,
+        "top1": "fish_20",
+        "score": 83,
+        "top_k": [
+          {
+            "label": "fish_20",
+            "class_id": 19,
+            "score": 83
+          },
+          {
+            "label": "fish_23",
+            "class_id": 22,
+            "score": 13
+          },
+          {
+            "label": "fish_15",
+            "class_id": 14,
+            "score": 1
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000219972",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000219972",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000219972&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 294,
+          "p95_analysis_ms": 294,
+          "max_analysis_ms": 294,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000219972&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_20",
+              "count": 1
+            }
+          ],
+          "started_ms": 219974,
+          "finished_ms": 221521,
+          "error": ""
+        },
+        "inference_ms": 160,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0029_fish_20",
+      "label": "fish_20",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "689033808.jpg",
+      "source_url": "https://www.inaturalist.org/observations/376829725",
+      "candidate_sha256": "b268235b09f095c891f77e1c5b812521d385d1f9c53d546c1b4266b7f6fa85d8",
+      "board_top1": "live_coral",
+      "board_score": 73,
+      "board_top_k": [
+        {
+          "label": "live_coral",
+          "class_id": 25,
+          "score": 73
+        },
+        {
+          "label": "fish_20",
+          "class_id": 19,
+          "score": 10
+        },
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 4
+        }
+      ],
+      "inference_ms": 165,
+      "analysis_ms": 232,
+      "run_id": "fish31_candidates_88277088_0000222807",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000222807",
+        "processed": 1,
+        "analysis_ms": 232,
+        "p95_analysis_ms": 232,
+        "top1": "live_coral",
+        "score": 73,
+        "top_k": [
+          {
+            "label": "live_coral",
+            "class_id": 25,
+            "score": 73
+          },
+          {
+            "label": "fish_20",
+            "class_id": 19,
+            "score": 10
+          },
+          {
+            "label": "fish_23",
+            "class_id": 22,
+            "score": 4
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000222807",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000222807",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000222807&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 232,
+          "p95_analysis_ms": 232,
+          "max_analysis_ms": 232,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000222807&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "live_coral",
+              "count": 1
+            }
+          ],
+          "started_ms": 222809,
+          "finished_ms": 224301,
+          "error": ""
+        },
+        "inference_ms": 165,
+        "matched": false
+      }
+    },
+    {
+      "candidate_id": "0030_fish_20",
+      "label": "fish_20",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "689336450.jpg",
+      "source_url": "https://www.inaturalist.org/observations/376829725",
+      "candidate_sha256": "4061c2537fae7a1d0274b7f2e68684f2695c3ff4ee98adb04ff4e1458c74705a",
+      "board_top1": "fish_23",
+      "board_score": 96,
+      "board_top_k": [
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 96
+        },
+        {
+          "label": "sand_seabed",
+          "class_id": 23,
+          "score": 1
+        },
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 1
+        }
+      ],
+      "inference_ms": 161,
+      "analysis_ms": 303,
+      "run_id": "fish31_candidates_88277088_0000225494",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000225494",
+        "processed": 1,
+        "analysis_ms": 303,
+        "p95_analysis_ms": 303,
+        "top1": "fish_23",
+        "score": 96,
+        "top_k": [
+          {
+            "label": "fish_23",
+            "class_id": 22,
+            "score": 96
+          },
+          {
+            "label": "sand_seabed",
+            "class_id": 23,
+            "score": 1
+          },
+          {
+            "label": "fish_15",
+            "class_id": 14,
+            "score": 1
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000225494",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000225494",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000225494&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 303,
+          "p95_analysis_ms": 303,
+          "max_analysis_ms": 303,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000225494&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_23",
+              "count": 1
+            }
+          ],
+          "started_ms": 225497,
+          "finished_ms": 227069,
+          "error": ""
+        },
+        "inference_ms": 161,
+        "matched": false
+      }
+    },
+    {
+      "candidate_id": "0031_fish_20",
+      "label": "fish_20",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "689336441.jpg",
+      "source_url": "https://www.inaturalist.org/observations/376829725",
+      "candidate_sha256": "a4d53f130a8278ecfb33d1bf42655304c1f85de8497ecd9d9f6d86ca30468727",
+      "board_top1": "live_coral",
+      "board_score": 57,
+      "board_top_k": [
+        {
+          "label": "live_coral",
+          "class_id": 25,
+          "score": 57
+        },
+        {
+          "label": "fish_19",
+          "class_id": 18,
+          "score": 14
+        },
+        {
+          "label": "fish_20",
+          "class_id": 19,
+          "score": 7
+        }
+      ],
+      "inference_ms": 159,
+      "analysis_ms": 354,
+      "run_id": "fish31_candidates_88277088_0000228179",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000228179",
+        "processed": 1,
+        "analysis_ms": 354,
+        "p95_analysis_ms": 354,
+        "top1": "live_coral",
+        "score": 57,
+        "top_k": [
+          {
+            "label": "live_coral",
+            "class_id": 25,
+            "score": 57
+          },
+          {
+            "label": "fish_19",
+            "class_id": 18,
+            "score": 14
+          },
+          {
+            "label": "fish_20",
+            "class_id": 19,
+            "score": 7
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000228179",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000228179",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000228179&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 354,
+          "p95_analysis_ms": 354,
+          "max_analysis_ms": 354,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000228179&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "live_coral",
+              "count": 1
+            }
+          ],
+          "started_ms": 228180,
+          "finished_ms": 229796,
+          "error": ""
+        },
+        "inference_ms": 159,
+        "matched": false
+      }
+    },
+    {
+      "candidate_id": "0032_fish_20",
+      "label": "fish_20",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "688850931.jpg",
+      "source_url": "https://www.inaturalist.org/observations/376735576",
+      "candidate_sha256": "c067a90fb750e1af6a6a6a3b55a85c596a4070da31ce264cb326375b77bbe6ee",
+      "board_top1": "fish_20",
+      "board_score": 92,
+      "board_top_k": [
+        {
+          "label": "fish_20",
+          "class_id": 19,
+          "score": 92
+        },
+        {
+          "label": "live_coral",
+          "class_id": 25,
+          "score": 4
+        },
+        {
+          "label": "sand_seabed",
+          "class_id": 23,
+          "score": 1
+        }
+      ],
+      "inference_ms": 160,
+      "analysis_ms": 291,
+      "run_id": "fish31_candidates_88277088_0000230961",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000230961",
+        "processed": 1,
+        "analysis_ms": 291,
+        "p95_analysis_ms": 291,
+        "top1": "fish_20",
+        "score": 92,
+        "top_k": [
+          {
+            "label": "fish_20",
+            "class_id": 19,
+            "score": 92
+          },
+          {
+            "label": "live_coral",
+            "class_id": 25,
+            "score": 4
+          },
+          {
+            "label": "sand_seabed",
+            "class_id": 23,
+            "score": 1
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000230961",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000230961",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000230961&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 291,
+          "p95_analysis_ms": 291,
+          "max_analysis_ms": 291,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000230961&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_20",
+              "count": 1
+            }
+          ],
+          "started_ms": 230963,
+          "finished_ms": 232531,
+          "error": ""
+        },
+        "inference_ms": 160,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0033_fish_20",
+      "label": "fish_20",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "688850933.jpg",
+      "source_url": "https://www.inaturalist.org/observations/376735576",
+      "candidate_sha256": "f10e9eb535ed58e694dc22dfb1bb6c9fa1096f9d4706bfc24a5db80a9183b20a",
+      "board_top1": "fish_15",
+      "board_score": 33,
+      "board_top_k": [
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 33
+        },
+        {
+          "label": "fish_20",
+          "class_id": 19,
+          "score": 24
+        },
+        {
+          "label": "sand_seabed",
+          "class_id": 23,
+          "score": 10
+        }
+      ],
+      "inference_ms": 165,
+      "analysis_ms": 216,
+      "run_id": "fish31_candidates_88277088_0000233791",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000233791",
+        "processed": 1,
+        "analysis_ms": 216,
+        "p95_analysis_ms": 216,
+        "top1": "fish_15",
+        "score": 33,
+        "top_k": [
+          {
+            "label": "fish_15",
+            "class_id": 14,
+            "score": 33
+          },
+          {
+            "label": "fish_20",
+            "class_id": 19,
+            "score": 24
+          },
+          {
+            "label": "sand_seabed",
+            "class_id": 23,
+            "score": 10
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000233791",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000233791",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000233791&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 0,
+          "avg_analysis_ms": 216,
+          "p95_analysis_ms": 216,
+          "max_analysis_ms": 216,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000233791&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_15",
+              "count": 1
+            }
+          ],
+          "started_ms": 233794,
+          "finished_ms": 235273,
+          "error": ""
+        },
+        "inference_ms": 165,
+        "matched": false
+      }
+    },
+    {
+      "candidate_id": "0034_fish_20",
+      "label": "fish_20",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "688850986.jpg",
+      "source_url": "https://www.inaturalist.org/observations/376735576",
+      "candidate_sha256": "20a6d404fe4eb79ff73995c9ee449ef32115d811ad85b3b28592693d18a8f9de",
+      "board_top1": "fish_20",
+      "board_score": 59,
+      "board_top_k": [
+        {
+          "label": "fish_20",
+          "class_id": 19,
+          "score": 59
+        },
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 23
+        },
+        {
+          "label": "sand_seabed",
+          "class_id": 23,
+          "score": 4
+        }
+      ],
+      "inference_ms": 158,
+      "analysis_ms": 349,
+      "run_id": "fish31_candidates_88277088_0000236183",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000236183",
+        "processed": 1,
+        "analysis_ms": 349,
+        "p95_analysis_ms": 349,
+        "top1": "fish_20",
+        "score": 59,
+        "top_k": [
+          {
+            "label": "fish_20",
+            "class_id": 19,
+            "score": 59
+          },
+          {
+            "label": "fish_15",
+            "class_id": 14,
+            "score": 23
+          },
+          {
+            "label": "sand_seabed",
+            "class_id": 23,
+            "score": 4
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000236183",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000236183",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000236183&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 349,
+          "p95_analysis_ms": 349,
+          "max_analysis_ms": 349,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000236183&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_20",
+              "count": 1
+            }
+          ],
+          "started_ms": 236197,
+          "finished_ms": 237820,
+          "error": ""
+        },
+        "inference_ms": 158,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0035_fish_20",
+      "label": "fish_20",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "688789829.jpg",
+      "source_url": "https://www.inaturalist.org/observations/376705006",
+      "candidate_sha256": "3b63d6967cfe5ec24065036bb871c4e9b586ef7ba77d62ac7bb6585319265735",
+      "board_top1": "sand_seabed",
+      "board_score": 36,
+      "board_top_k": [
+        {
+          "label": "sand_seabed",
+          "class_id": 23,
+          "score": 36
+        },
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 21
+        },
+        {
+          "label": "seagrass",
+          "class_id": 28,
+          "score": 15
+        }
+      ],
+      "inference_ms": 161,
+      "analysis_ms": 266,
+      "run_id": "fish31_candidates_88277088_0000238858",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000238858",
+        "processed": 1,
+        "analysis_ms": 266,
+        "p95_analysis_ms": 266,
+        "top1": "sand_seabed",
+        "score": 36,
+        "top_k": [
+          {
+            "label": "sand_seabed",
+            "class_id": 23,
+            "score": 36
+          },
+          {
+            "label": "fish_15",
+            "class_id": 14,
+            "score": 21
+          },
+          {
+            "label": "seagrass",
+            "class_id": 28,
+            "score": 15
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000238858",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000238858",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000238858&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 0,
+          "avg_analysis_ms": 266,
+          "p95_analysis_ms": 266,
+          "max_analysis_ms": 266,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000238858&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "sand_seabed",
+              "count": 1
+            }
+          ],
+          "started_ms": 238860,
+          "finished_ms": 240382,
+          "error": ""
+        },
+        "inference_ms": 161,
+        "matched": false
+      }
+    },
+    {
+      "candidate_id": "0036_fish_20",
+      "label": "fish_20",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "688443325.jpg",
+      "source_url": "https://www.inaturalist.org/observations/376546462",
+      "candidate_sha256": "84a3947b6b6797ce37e162495160c027138e87ebea52a33b747b94e6a150ed92",
+      "board_top1": "fish_20",
+      "board_score": 85,
+      "board_top_k": [
+        {
+          "label": "fish_20",
+          "class_id": 19,
+          "score": 85
+        },
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 12
+        },
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 0
+        }
+      ],
+      "inference_ms": 163,
+      "analysis_ms": 286,
+      "run_id": "fish31_candidates_88277088_0000241612",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000241612",
+        "processed": 1,
+        "analysis_ms": 286,
+        "p95_analysis_ms": 286,
+        "top1": "fish_20",
+        "score": 85,
+        "top_k": [
+          {
+            "label": "fish_20",
+            "class_id": 19,
+            "score": 85
+          },
+          {
+            "label": "fish_15",
+            "class_id": 14,
+            "score": 12
+          },
+          {
+            "label": "fish_23",
+            "class_id": 22,
+            "score": 0
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000241612",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000241612",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000241612&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 286,
+          "p95_analysis_ms": 286,
+          "max_analysis_ms": 286,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000241612&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_20",
+              "count": 1
+            }
+          ],
+          "started_ms": 241614,
+          "finished_ms": 243160,
+          "error": ""
+        },
+        "inference_ms": 163,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0037_fish_21",
+      "label": "fish_21",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "689336742.jpg",
+      "source_url": "https://www.inaturalist.org/observations/376831822",
+      "candidate_sha256": "6fefec6bce5ccd86457972f2eb36c6b69206ccf2d4f8f54fc11014e54f7b0894",
+      "board_top1": "fish_21",
+      "board_score": 50,
+      "board_top_k": [
+        {
+          "label": "fish_21",
+          "class_id": 20,
+          "score": 50
+        },
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 33
+        },
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 5
+        }
+      ],
+      "inference_ms": 160,
+      "analysis_ms": 305,
+      "run_id": "fish31_candidates_88277088_0000244373",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000244373",
+        "processed": 1,
+        "analysis_ms": 305,
+        "p95_analysis_ms": 305,
+        "top1": "fish_21",
+        "score": 50,
+        "top_k": [
+          {
+            "label": "fish_21",
+            "class_id": 20,
+            "score": 50
+          },
+          {
+            "label": "fish_23",
+            "class_id": 22,
+            "score": 33
+          },
+          {
+            "label": "fish_15",
+            "class_id": 14,
+            "score": 5
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000244373",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000244373",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000244373&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 305,
+          "p95_analysis_ms": 305,
+          "max_analysis_ms": 305,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000244373&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_21",
+              "count": 1
+            }
+          ],
+          "started_ms": 244375,
+          "finished_ms": 245920,
+          "error": ""
+        },
+        "inference_ms": 160,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0038_fish_21",
+      "label": "fish_21",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "689336737.jpg",
+      "source_url": "https://www.inaturalist.org/observations/376831822",
+      "candidate_sha256": "a288a78276bfa8631c1a29697a1a57ca3cd4063c61bc04016d9449cb60f57450",
+      "board_top1": "fish_21",
+      "board_score": 26,
+      "board_top_k": [
+        {
+          "label": "fish_21",
+          "class_id": 20,
+          "score": 26
+        },
+        {
+          "label": "benthic_invertebrate",
+          "class_id": 27,
+          "score": 21
+        },
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 12
+        }
+      ],
+      "inference_ms": 160,
+      "analysis_ms": 270,
+      "run_id": "fish31_candidates_88277088_0000247173",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000247173",
+        "processed": 1,
+        "analysis_ms": 270,
+        "p95_analysis_ms": 270,
+        "top1": "fish_21",
+        "score": 26,
+        "top_k": [
+          {
+            "label": "fish_21",
+            "class_id": 20,
+            "score": 26
+          },
+          {
+            "label": "benthic_invertebrate",
+            "class_id": 27,
+            "score": 21
+          },
+          {
+            "label": "fish_23",
+            "class_id": 22,
+            "score": 12
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000247173",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000247173",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000247173&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 0,
+          "avg_analysis_ms": 270,
+          "p95_analysis_ms": 270,
+          "max_analysis_ms": 270,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000247173&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_21",
+              "count": 1
+            }
+          ],
+          "started_ms": 247175,
+          "finished_ms": 248704,
+          "error": ""
+        },
+        "inference_ms": 160,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0039_fish_21",
+      "label": "fish_21",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "685906813.jpg",
+      "source_url": "https://www.inaturalist.org/observations/375221218",
+      "candidate_sha256": "a9dfe05b91fc68fd86765192b72bf99cfe4e3c6805952b3a4d42bc0da565ed11",
+      "board_top1": "fish_21",
+      "board_score": 98,
+      "board_top_k": [
+        {
+          "label": "fish_21",
+          "class_id": 20,
+          "score": 98
+        },
+        {
+          "label": "fish_20",
+          "class_id": 19,
+          "score": 1
+        },
+        {
+          "label": "live_coral",
+          "class_id": 25,
+          "score": 0
+        }
+      ],
+      "inference_ms": 157,
+      "analysis_ms": 348,
+      "run_id": "fish31_candidates_88277088_0000249629",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000249629",
+        "processed": 1,
+        "analysis_ms": 348,
+        "p95_analysis_ms": 348,
+        "top1": "fish_21",
+        "score": 98,
+        "top_k": [
+          {
+            "label": "fish_21",
+            "class_id": 20,
+            "score": 98
+          },
+          {
+            "label": "fish_20",
+            "class_id": 19,
+            "score": 1
+          },
+          {
+            "label": "live_coral",
+            "class_id": 25,
+            "score": 0
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000249629",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000249629",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000249629&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 348,
+          "p95_analysis_ms": 348,
+          "max_analysis_ms": 348,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000249629&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_21",
+              "count": 1
+            }
+          ],
+          "started_ms": 249635,
+          "finished_ms": 251248,
+          "error": ""
+        },
+        "inference_ms": 157,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0040_fish_21",
+      "label": "fish_21",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "684585447.jpg",
+      "source_url": "https://www.inaturalist.org/observations/374532699",
+      "candidate_sha256": "7ab307ed912c49e0520a9308fd67b028e209386326f12238c4b0b48551a63217",
+      "board_top1": "fish_21",
+      "board_score": 96,
+      "board_top_k": [
+        {
+          "label": "fish_21",
+          "class_id": 20,
+          "score": 96
+        },
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 2
+        },
+        {
+          "label": "fish_03",
+          "class_id": 2,
+          "score": 0
+        }
+      ],
+      "inference_ms": 160,
+      "analysis_ms": 290,
+      "run_id": "fish31_candidates_88277088_0000252061",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000252061",
+        "processed": 1,
+        "analysis_ms": 290,
+        "p95_analysis_ms": 290,
+        "top1": "fish_21",
+        "score": 96,
+        "top_k": [
+          {
+            "label": "fish_21",
+            "class_id": 20,
+            "score": 96
+          },
+          {
+            "label": "fish_15",
+            "class_id": 14,
+            "score": 2
+          },
+          {
+            "label": "fish_03",
+            "class_id": 2,
+            "score": 0
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000252061",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000252061",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000252061&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 290,
+          "p95_analysis_ms": 290,
+          "max_analysis_ms": 290,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000252061&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_21",
+              "count": 1
+            }
+          ],
+          "started_ms": 252066,
+          "finished_ms": 253609,
+          "error": ""
+        },
+        "inference_ms": 160,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0041_fish_21",
+      "label": "fish_21",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "682581268.jpg",
+      "source_url": "https://www.inaturalist.org/observations/373492627",
+      "candidate_sha256": "60f7d24f571df93cc54cdac72fff55b3943491d70fc4e179c0dfcb51906c0078",
+      "board_top1": "fish_21",
+      "board_score": 69,
+      "board_top_k": [
+        {
+          "label": "fish_21",
+          "class_id": 20,
+          "score": 69
+        },
+        {
+          "label": "live_coral",
+          "class_id": 25,
+          "score": 6
+        },
+        {
+          "label": "fish_20",
+          "class_id": 19,
+          "score": 4
+        }
+      ],
+      "inference_ms": 165,
+      "analysis_ms": 217,
+      "run_id": "fish31_candidates_88277088_0000254456",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000254456",
+        "processed": 1,
+        "analysis_ms": 217,
+        "p95_analysis_ms": 217,
+        "top1": "fish_21",
+        "score": 69,
+        "top_k": [
+          {
+            "label": "fish_21",
+            "class_id": 20,
+            "score": 69
+          },
+          {
+            "label": "live_coral",
+            "class_id": 25,
+            "score": 6
+          },
+          {
+            "label": "fish_20",
+            "class_id": 19,
+            "score": 4
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000254456",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000254456",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000254456&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 217,
+          "p95_analysis_ms": 217,
+          "max_analysis_ms": 217,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000254456&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_21",
+              "count": 1
+            }
+          ],
+          "started_ms": 254459,
+          "finished_ms": 255971,
+          "error": ""
+        },
+        "inference_ms": 165,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0042_fish_21",
+      "label": "fish_21",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "682581306.jpg",
+      "source_url": "https://www.inaturalist.org/observations/373492627",
+      "candidate_sha256": "33c3810485e373dd3a417722042d7c6f06d583dc1938d4235fc811fd6c8b2c47",
+      "board_top1": "fish_15",
+      "board_score": 33,
+      "board_top_k": [
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 33
+        },
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 26
+        },
+        {
+          "label": "live_coral",
+          "class_id": 25,
+          "score": 10
+        }
+      ],
+      "inference_ms": 159,
+      "analysis_ms": 361,
+      "run_id": "fish31_candidates_88277088_0000257226",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000257226",
+        "processed": 1,
+        "analysis_ms": 361,
+        "p95_analysis_ms": 361,
+        "top1": "fish_15",
+        "score": 33,
+        "top_k": [
+          {
+            "label": "fish_15",
+            "class_id": 14,
+            "score": 33
+          },
+          {
+            "label": "fish_23",
+            "class_id": 22,
+            "score": 26
+          },
+          {
+            "label": "live_coral",
+            "class_id": 25,
+            "score": 10
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000257226",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000257226",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000257226&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 0,
+          "avg_analysis_ms": 361,
+          "p95_analysis_ms": 361,
+          "max_analysis_ms": 361,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000257226&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_15",
+              "count": 1
+            }
+          ],
+          "started_ms": 257234,
+          "finished_ms": 258902,
+          "error": ""
+        },
+        "inference_ms": 159,
+        "matched": false
+      }
+    },
+    {
+      "candidate_id": "0043_fish_21",
+      "label": "fish_21",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "681994392.jpg",
+      "source_url": "https://www.inaturalist.org/observations/373185536",
+      "candidate_sha256": "909ca74a0158338d2c18b1239fde69995ed57b6b06afbfdfac4486753def57e6",
+      "board_top1": "fish_21",
+      "board_score": 97,
+      "board_top_k": [
+        {
+          "label": "fish_21",
+          "class_id": 20,
+          "score": 97
+        },
+        {
+          "label": "fish_20",
+          "class_id": 19,
+          "score": 0
+        },
+        {
+          "label": "live_coral",
+          "class_id": 25,
+          "score": 0
+        }
+      ],
+      "inference_ms": 161,
+      "analysis_ms": 295,
+      "run_id": "fish31_candidates_88277088_0000259688",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000259688",
+        "processed": 1,
+        "analysis_ms": 295,
+        "p95_analysis_ms": 295,
+        "top1": "fish_21",
+        "score": 97,
+        "top_k": [
+          {
+            "label": "fish_21",
+            "class_id": 20,
+            "score": 97
+          },
+          {
+            "label": "fish_20",
+            "class_id": 19,
+            "score": 0
+          },
+          {
+            "label": "live_coral",
+            "class_id": 25,
+            "score": 0
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000259688",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000259688",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000259688&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 295,
+          "p95_analysis_ms": 295,
+          "max_analysis_ms": 295,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000259688&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_21",
+              "count": 1
+            }
+          ],
+          "started_ms": 259691,
+          "finished_ms": 261279,
+          "error": ""
+        },
+        "inference_ms": 161,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0044_fish_21",
+      "label": "fish_21",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "681956174.jpg",
+      "source_url": "https://www.inaturalist.org/observations/373164729",
+      "candidate_sha256": "89b616618a4baaba9d32726ed58b77ea2be749d3daae66aa12a321865883fa4a",
+      "board_top1": "fish_21",
+      "board_score": 60,
+      "board_top_k": [
+        {
+          "label": "fish_21",
+          "class_id": 20,
+          "score": 60
+        },
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 13
+        },
+        {
+          "label": "live_coral",
+          "class_id": 25,
+          "score": 10
+        }
+      ],
+      "inference_ms": 160,
+      "analysis_ms": 270,
+      "run_id": "fish31_candidates_88277088_0000262452",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000262452",
+        "processed": 1,
+        "analysis_ms": 270,
+        "p95_analysis_ms": 270,
+        "top1": "fish_21",
+        "score": 60,
+        "top_k": [
+          {
+            "label": "fish_21",
+            "class_id": 20,
+            "score": 60
+          },
+          {
+            "label": "fish_23",
+            "class_id": 22,
+            "score": 13
+          },
+          {
+            "label": "live_coral",
+            "class_id": 25,
+            "score": 10
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000262452",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000262452",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000262452&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 270,
+          "p95_analysis_ms": 270,
+          "max_analysis_ms": 270,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000262452&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_21",
+              "count": 1
+            }
+          ],
+          "started_ms": 262455,
+          "finished_ms": 264016,
+          "error": ""
+        },
+        "inference_ms": 160,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0045_fish_21",
+      "label": "fish_21",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "681368826.jpg",
+      "source_url": "https://www.inaturalist.org/observations/372858902",
+      "candidate_sha256": "55fbc4a0b420c050ec3e552158d13234a5d1db1251ff8affe38bae6adb306640",
+      "board_top1": "fish_21",
+      "board_score": 78,
+      "board_top_k": [
+        {
+          "label": "fish_21",
+          "class_id": 20,
+          "score": 78
+        },
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 8
+        },
+        {
+          "label": "benthic_invertebrate",
+          "class_id": 27,
+          "score": 2
+        }
+      ],
+      "inference_ms": 157,
+      "analysis_ms": 345,
+      "run_id": "fish31_candidates_88277088_0000264893",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000264893",
+        "processed": 1,
+        "analysis_ms": 345,
+        "p95_analysis_ms": 345,
+        "top1": "fish_21",
+        "score": 78,
+        "top_k": [
+          {
+            "label": "fish_21",
+            "class_id": 20,
+            "score": 78
+          },
+          {
+            "label": "fish_23",
+            "class_id": 22,
+            "score": 8
+          },
+          {
+            "label": "benthic_invertebrate",
+            "class_id": 27,
+            "score": 2
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000264893",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000264893",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000264893&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 345,
+          "p95_analysis_ms": 345,
+          "max_analysis_ms": 345,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000264893&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_21",
+              "count": 1
+            }
+          ],
+          "started_ms": 264900,
+          "finished_ms": 266548,
+          "error": ""
+        },
+        "inference_ms": 157,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0046_fish_21",
+      "label": "fish_21",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "678166390.jpg",
+      "source_url": "https://www.inaturalist.org/observations/371181824",
+      "candidate_sha256": "b3eb80ccab9e96c9fdcbcb0f64934e0e5bc6bc8a84ec9f3a1ba834d0552a6182",
+      "board_top1": "fish_15",
+      "board_score": 56,
+      "board_top_k": [
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 56
+        },
+        {
+          "label": "fish_20",
+          "class_id": 19,
+          "score": 22
+        },
+        {
+          "label": "sand_seabed",
+          "class_id": 23,
+          "score": 8
+        }
+      ],
+      "inference_ms": 157,
+      "analysis_ms": 359,
+      "run_id": "fish31_candidates_88277088_0000267639",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000267639",
+        "processed": 1,
+        "analysis_ms": 359,
+        "p95_analysis_ms": 359,
+        "top1": "fish_15",
+        "score": 56,
+        "top_k": [
+          {
+            "label": "fish_15",
+            "class_id": 14,
+            "score": 56
+          },
+          {
+            "label": "fish_20",
+            "class_id": 19,
+            "score": 22
+          },
+          {
+            "label": "sand_seabed",
+            "class_id": 23,
+            "score": 8
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000267639",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000267639",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000267639&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 359,
+          "p95_analysis_ms": 359,
+          "max_analysis_ms": 359,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000267639&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_15",
+              "count": 1
+            }
+          ],
+          "started_ms": 267642,
+          "finished_ms": 269303,
+          "error": ""
+        },
+        "inference_ms": 157,
+        "matched": false
+      }
+    },
+    {
+      "candidate_id": "0047_fish_21",
+      "label": "fish_21",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "677509393.jpg",
+      "source_url": "https://www.inaturalist.org/observations/370838708",
+      "candidate_sha256": "300f1ece4b745e2fa1cfdec273e3a66063f7a7ea5a5ba238a3eb48e0947be256",
+      "board_top1": "live_coral",
+      "board_score": 27,
+      "board_top_k": [
+        {
+          "label": "live_coral",
+          "class_id": 25,
+          "score": 27
+        },
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 24
+        },
+        {
+          "label": "fish_19",
+          "class_id": 18,
+          "score": 20
+        }
+      ],
+      "inference_ms": 161,
+      "analysis_ms": 314,
+      "run_id": "fish31_candidates_88277088_0000270103",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000270103",
+        "processed": 1,
+        "analysis_ms": 314,
+        "p95_analysis_ms": 314,
+        "top1": "live_coral",
+        "score": 27,
+        "top_k": [
+          {
+            "label": "live_coral",
+            "class_id": 25,
+            "score": 27
+          },
+          {
+            "label": "fish_23",
+            "class_id": 22,
+            "score": 24
+          },
+          {
+            "label": "fish_19",
+            "class_id": 18,
+            "score": 20
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000270103",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000270103",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000270103&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 0,
+          "avg_analysis_ms": 314,
+          "p95_analysis_ms": 314,
+          "max_analysis_ms": 314,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000270103&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "live_coral",
+              "count": 1
+            }
+          ],
+          "started_ms": 270105,
+          "finished_ms": 271682,
+          "error": ""
+        },
+        "inference_ms": 161,
+        "matched": false
+      }
+    },
+    {
+      "candidate_id": "0048_fish_21",
+      "label": "fish_21",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "676581502.jpg",
+      "source_url": "https://www.inaturalist.org/observations/370355844",
+      "candidate_sha256": "6fe641ceda739341e9f6d09a8b78bc26e62134645e691b9549b2ab6ca58948d4",
+      "board_top1": "fish_15",
+      "board_score": 63,
+      "board_top_k": [
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 63
+        },
+        {
+          "label": "sand_seabed",
+          "class_id": 23,
+          "score": 8
+        },
+        {
+          "label": "fish_21",
+          "class_id": 20,
+          "score": 3
+        }
+      ],
+      "inference_ms": 161,
+      "analysis_ms": 247,
+      "run_id": "fish31_candidates_88277088_0000272516",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000272516",
+        "processed": 1,
+        "analysis_ms": 247,
+        "p95_analysis_ms": 247,
+        "top1": "fish_15",
+        "score": 63,
+        "top_k": [
+          {
+            "label": "fish_15",
+            "class_id": 14,
+            "score": 63
+          },
+          {
+            "label": "sand_seabed",
+            "class_id": 23,
+            "score": 8
+          },
+          {
+            "label": "fish_21",
+            "class_id": 20,
+            "score": 3
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000272516",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000272516",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000272516&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 247,
+          "p95_analysis_ms": 247,
+          "max_analysis_ms": 247,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000272516&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_15",
+              "count": 1
+            }
+          ],
+          "started_ms": 272518,
+          "finished_ms": 274050,
+          "error": ""
+        },
+        "inference_ms": 161,
+        "matched": false
+      }
+    },
+    {
+      "candidate_id": "0049_fish_23",
+      "label": "fish_23",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "687076043.jpg",
+      "source_url": "https://www.inaturalist.org/observations/375811482",
+      "candidate_sha256": "42c297010e08a156eedfefb04ffa70f124ea8a4200824f4e7fcb09c25b296cc6",
+      "board_top1": "fish_23",
+      "board_score": 60,
+      "board_top_k": [
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 60
+        },
+        {
+          "label": "sand_seabed",
+          "class_id": 23,
+          "score": 11
+        },
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 4
+        }
+      ],
+      "inference_ms": 158,
+      "analysis_ms": 337,
+      "run_id": "fish31_candidates_88277088_0000275197",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000275197",
+        "processed": 1,
+        "analysis_ms": 337,
+        "p95_analysis_ms": 337,
+        "top1": "fish_23",
+        "score": 60,
+        "top_k": [
+          {
+            "label": "fish_23",
+            "class_id": 22,
+            "score": 60
+          },
+          {
+            "label": "sand_seabed",
+            "class_id": 23,
+            "score": 11
+          },
+          {
+            "label": "fish_15",
+            "class_id": 14,
+            "score": 4
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000275197",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000275197",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000275197&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 337,
+          "p95_analysis_ms": 337,
+          "max_analysis_ms": 337,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000275197&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_23",
+              "count": 1
+            }
+          ],
+          "started_ms": 275197,
+          "finished_ms": 276812,
+          "error": ""
+        },
+        "inference_ms": 158,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0050_fish_23",
+      "label": "fish_23",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "686890557.jpg",
+      "source_url": "https://www.inaturalist.org/observations/375716133",
+      "candidate_sha256": "227b7bacf7f0ad9e837ff9d12afab1d9702c282c7392ec2f881bca7f2200de8d",
+      "board_top1": "fish_23",
+      "board_score": 90,
+      "board_top_k": [
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 90
+        },
+        {
+          "label": "fish_20",
+          "class_id": 19,
+          "score": 5
+        },
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 1
+        }
+      ],
+      "inference_ms": 167,
+      "analysis_ms": 192,
+      "run_id": "fish31_candidates_88277088_0000277521",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000277521",
+        "processed": 1,
+        "analysis_ms": 192,
+        "p95_analysis_ms": 192,
+        "top1": "fish_23",
+        "score": 90,
+        "top_k": [
+          {
+            "label": "fish_23",
+            "class_id": 22,
+            "score": 90
+          },
+          {
+            "label": "fish_20",
+            "class_id": 19,
+            "score": 5
+          },
+          {
+            "label": "fish_15",
+            "class_id": 14,
+            "score": 1
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000277521",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000277521",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000277521&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 192,
+          "p95_analysis_ms": 192,
+          "max_analysis_ms": 192,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000277521&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_23",
+              "count": 1
+            }
+          ],
+          "started_ms": 277525,
+          "finished_ms": 279016,
+          "error": ""
+        },
+        "inference_ms": 167,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0051_fish_23",
+      "label": "fish_23",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "686890516.jpg",
+      "source_url": "https://www.inaturalist.org/observations/375716133",
+      "candidate_sha256": "4f27a8ac7745435e0268e913c9abb97440ea4d8d1af36ee3496516104a0e7f02",
+      "board_top1": "fish_23",
+      "board_score": 98,
+      "board_top_k": [
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 98
+        },
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 1
+        },
+        {
+          "label": "fish_20",
+          "class_id": 19,
+          "score": 0
+        }
+      ],
+      "inference_ms": 158,
+      "analysis_ms": 336,
+      "run_id": "fish31_candidates_88277088_0000279932",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000279932",
+        "processed": 1,
+        "analysis_ms": 336,
+        "p95_analysis_ms": 336,
+        "top1": "fish_23",
+        "score": 98,
+        "top_k": [
+          {
+            "label": "fish_23",
+            "class_id": 22,
+            "score": 98
+          },
+          {
+            "label": "fish_15",
+            "class_id": 14,
+            "score": 1
+          },
+          {
+            "label": "fish_20",
+            "class_id": 19,
+            "score": 0
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000279932",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000279932",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000279932&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 336,
+          "p95_analysis_ms": 336,
+          "max_analysis_ms": 336,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000279932&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_23",
+              "count": 1
+            }
+          ],
+          "started_ms": 279932,
+          "finished_ms": 281559,
+          "error": ""
+        },
+        "inference_ms": 158,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0052_fish_23",
+      "label": "fish_23",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "686890600.jpg",
+      "source_url": "https://www.inaturalist.org/observations/375716133",
+      "candidate_sha256": "21b3f432f4e0cab967e93b7db489162930db4ae3a3ba50e0bf587d9919b0b175",
+      "board_top1": "fish_15",
+      "board_score": 59,
+      "board_top_k": [
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 59
+        },
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 32
+        },
+        {
+          "label": "fish_20",
+          "class_id": 19,
+          "score": 2
+        }
+      ],
+      "inference_ms": 158,
+      "analysis_ms": 336,
+      "run_id": "fish31_candidates_88277088_0000282291",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000282291",
+        "processed": 1,
+        "analysis_ms": 336,
+        "p95_analysis_ms": 336,
+        "top1": "fish_15",
+        "score": 59,
+        "top_k": [
+          {
+            "label": "fish_15",
+            "class_id": 14,
+            "score": 59
+          },
+          {
+            "label": "fish_23",
+            "class_id": 22,
+            "score": 32
+          },
+          {
+            "label": "fish_20",
+            "class_id": 19,
+            "score": 2
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000282291",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000282291",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000282291&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 336,
+          "p95_analysis_ms": 336,
+          "max_analysis_ms": 336,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000282291&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_15",
+              "count": 1
+            }
+          ],
+          "started_ms": 282291,
+          "finished_ms": 283920,
+          "error": ""
+        },
+        "inference_ms": 158,
+        "matched": false
+      }
+    },
+    {
+      "candidate_id": "0053_fish_23",
+      "label": "fish_23",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "685094648.jpg",
+      "source_url": "https://www.inaturalist.org/observations/374794518",
+      "candidate_sha256": "256d8d02cefa8798579d8c5d5748079637f92da57e2628e261c84feffb5bd708",
+      "board_top1": "fish_23",
+      "board_score": 96,
+      "board_top_k": [
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 96
+        },
+        {
+          "label": "live_coral",
+          "class_id": 25,
+          "score": 1
+        },
+        {
+          "label": "fish_21",
+          "class_id": 20,
+          "score": 1
+        }
+      ],
+      "inference_ms": 164,
+      "analysis_ms": 236,
+      "run_id": "fish31_candidates_88277088_0000284745",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000284745",
+        "processed": 1,
+        "analysis_ms": 236,
+        "p95_analysis_ms": 236,
+        "top1": "fish_23",
+        "score": 96,
+        "top_k": [
+          {
+            "label": "fish_23",
+            "class_id": 22,
+            "score": 96
+          },
+          {
+            "label": "live_coral",
+            "class_id": 25,
+            "score": 1
+          },
+          {
+            "label": "fish_21",
+            "class_id": 20,
+            "score": 1
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000284745",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000284745",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000284745&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 236,
+          "p95_analysis_ms": 236,
+          "max_analysis_ms": 236,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000284745&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_23",
+              "count": 1
+            }
+          ],
+          "started_ms": 284747,
+          "finished_ms": 286302,
+          "error": ""
+        },
+        "inference_ms": 164,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0054_fish_23",
+      "label": "fish_23",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "684738750.jpg",
+      "source_url": "https://www.inaturalist.org/observations/374611932",
+      "candidate_sha256": "26609b918ad5106625e734525befa1cdf986dab569559ad3d65c8ebf978f4f28",
+      "board_top1": "fish_23",
+      "board_score": 99,
+      "board_top_k": [
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 99
+        },
+        {
+          "label": "fish_14",
+          "class_id": 13,
+          "score": 0
+        },
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 0
+        }
+      ],
+      "inference_ms": 158,
+      "analysis_ms": 339,
+      "run_id": "fish31_candidates_88277088_0000287218",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000287218",
+        "processed": 1,
+        "analysis_ms": 339,
+        "p95_analysis_ms": 339,
+        "top1": "fish_23",
+        "score": 99,
+        "top_k": [
+          {
+            "label": "fish_23",
+            "class_id": 22,
+            "score": 99
+          },
+          {
+            "label": "fish_14",
+            "class_id": 13,
+            "score": 0
+          },
+          {
+            "label": "fish_15",
+            "class_id": 14,
+            "score": 0
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000287218",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000287218",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000287218&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 339,
+          "p95_analysis_ms": 339,
+          "max_analysis_ms": 339,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000287218&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_23",
+              "count": 1
+            }
+          ],
+          "started_ms": 287221,
+          "finished_ms": 288857,
+          "error": ""
+        },
+        "inference_ms": 158,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0055_fish_23",
+      "label": "fish_23",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "684738814.jpg",
+      "source_url": "https://www.inaturalist.org/observations/374611932",
+      "candidate_sha256": "c80ffe4665f13e18e1bedfbff58ba8b19eb1b36567b2ea9e55af3affdaff86f0",
+      "board_top1": "fish_23",
+      "board_score": 75,
+      "board_top_k": [
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 75
+        },
+        {
+          "label": "fish_20",
+          "class_id": 19,
+          "score": 12
+        },
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 5
+        }
+      ],
+      "inference_ms": 166,
+      "analysis_ms": 199,
+      "run_id": "fish31_candidates_88277088_0000289897",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000289897",
+        "processed": 1,
+        "analysis_ms": 199,
+        "p95_analysis_ms": 199,
+        "top1": "fish_23",
+        "score": 75,
+        "top_k": [
+          {
+            "label": "fish_23",
+            "class_id": 22,
+            "score": 75
+          },
+          {
+            "label": "fish_20",
+            "class_id": 19,
+            "score": 12
+          },
+          {
+            "label": "fish_15",
+            "class_id": 14,
+            "score": 5
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000289897",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000289897",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000289897&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 199,
+          "p95_analysis_ms": 199,
+          "max_analysis_ms": 199,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000289897&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_23",
+              "count": 1
+            }
+          ],
+          "started_ms": 289899,
+          "finished_ms": 291425,
+          "error": ""
+        },
+        "inference_ms": 166,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0056_fish_23",
+      "label": "fish_23",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "684585268.jpg",
+      "source_url": "https://www.inaturalist.org/observations/374532671",
+      "candidate_sha256": "e5475dfdb95399a6969f02e435d52dd8bb77baa8f4a3ce5f4820a12310aa0254",
+      "board_top1": "fish_23",
+      "board_score": 66,
+      "board_top_k": [
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 66
+        },
+        {
+          "label": "live_coral",
+          "class_id": 25,
+          "score": 31
+        },
+        {
+          "label": "complex_underwater_bg",
+          "class_id": 30,
+          "score": 2
+        }
+      ],
+      "inference_ms": 157,
+      "analysis_ms": 309,
+      "run_id": "fish31_candidates_88277088_0000292307",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000292307",
+        "processed": 1,
+        "analysis_ms": 309,
+        "p95_analysis_ms": 309,
+        "top1": "fish_23",
+        "score": 66,
+        "top_k": [
+          {
+            "label": "fish_23",
+            "class_id": 22,
+            "score": 66
+          },
+          {
+            "label": "live_coral",
+            "class_id": 25,
+            "score": 31
+          },
+          {
+            "label": "complex_underwater_bg",
+            "class_id": 30,
+            "score": 2
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000292307",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000292307",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000292307&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 309,
+          "p95_analysis_ms": 309,
+          "max_analysis_ms": 309,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000292307&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_23",
+              "count": 1
+            }
+          ],
+          "started_ms": 292313,
+          "finished_ms": 293942,
+          "error": ""
+        },
+        "inference_ms": 157,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0057_fish_23",
+      "label": "fish_23",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "684054579.jpg",
+      "source_url": "https://www.inaturalist.org/observations/374260065",
+      "candidate_sha256": "49e40804ac51a7e8e49f45fabb2fa2491a7e81cc6bfaab427d6e8fe26e6ce001",
+      "board_top1": "fish_23",
+      "board_score": 91,
+      "board_top_k": [
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 91
+        },
+        {
+          "label": "fish_20",
+          "class_id": 19,
+          "score": 5
+        },
+        {
+          "label": "complex_underwater_bg",
+          "class_id": 30,
+          "score": 1
+        }
+      ],
+      "inference_ms": 160,
+      "analysis_ms": 231,
+      "run_id": "fish31_candidates_88277088_0000294754",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000294754",
+        "processed": 1,
+        "analysis_ms": 231,
+        "p95_analysis_ms": 231,
+        "top1": "fish_23",
+        "score": 91,
+        "top_k": [
+          {
+            "label": "fish_23",
+            "class_id": 22,
+            "score": 91
+          },
+          {
+            "label": "fish_20",
+            "class_id": 19,
+            "score": 5
+          },
+          {
+            "label": "complex_underwater_bg",
+            "class_id": 30,
+            "score": 1
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000294754",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000294754",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000294754&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 231,
+          "p95_analysis_ms": 231,
+          "max_analysis_ms": 231,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000294754&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_23",
+              "count": 1
+            }
+          ],
+          "started_ms": 294756,
+          "finished_ms": 296300,
+          "error": ""
+        },
+        "inference_ms": 160,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0058_fish_23",
+      "label": "fish_23",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "683947172.jpg",
+      "source_url": "https://www.inaturalist.org/observations/374205805",
+      "candidate_sha256": "8259163761bf0e3cd18fc17505652b886fabeb7de85cfcd9b289a3675e02fa98",
+      "board_top1": "fish_23",
+      "board_score": 75,
+      "board_top_k": [
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 75
+        },
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 8
+        },
+        {
+          "label": "live_coral",
+          "class_id": 25,
+          "score": 3
+        }
+      ],
+      "inference_ms": 158,
+      "analysis_ms": 351,
+      "run_id": "fish31_candidates_88277088_0000297165",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000297165",
+        "processed": 1,
+        "analysis_ms": 351,
+        "p95_analysis_ms": 351,
+        "top1": "fish_23",
+        "score": 75,
+        "top_k": [
+          {
+            "label": "fish_23",
+            "class_id": 22,
+            "score": 75
+          },
+          {
+            "label": "fish_15",
+            "class_id": 14,
+            "score": 8
+          },
+          {
+            "label": "live_coral",
+            "class_id": 25,
+            "score": 3
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000297165",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000297165",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000297165&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 351,
+          "p95_analysis_ms": 351,
+          "max_analysis_ms": 351,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000297165&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_23",
+              "count": 1
+            }
+          ],
+          "started_ms": 297174,
+          "finished_ms": 298868,
+          "error": ""
+        },
+        "inference_ms": 158,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0059_fish_23",
+      "label": "fish_23",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "683947108.jpg",
+      "source_url": "https://www.inaturalist.org/observations/374205795",
+      "candidate_sha256": "1b48d4db3d1ce3fe0e46da355b3d9798d1cce303e8dabd032393552dac719d28",
+      "board_top1": "fish_23",
+      "board_score": 93,
+      "board_top_k": [
+        {
+          "label": "fish_23",
+          "class_id": 22,
+          "score": 93
+        },
+        {
+          "label": "sand_seabed",
+          "class_id": 23,
+          "score": 3
+        },
+        {
+          "label": "complex_underwater_bg",
+          "class_id": 30,
+          "score": 1
+        }
+      ],
+      "inference_ms": 157,
+      "analysis_ms": 322,
+      "run_id": "fish31_candidates_88277088_0000299904",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000299904",
+        "processed": 1,
+        "analysis_ms": 322,
+        "p95_analysis_ms": 322,
+        "top1": "fish_23",
+        "score": 93,
+        "top_k": [
+          {
+            "label": "fish_23",
+            "class_id": 22,
+            "score": 93
+          },
+          {
+            "label": "sand_seabed",
+            "class_id": 23,
+            "score": 3
+          },
+          {
+            "label": "complex_underwater_bg",
+            "class_id": 30,
+            "score": 1
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000299904",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000299904",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000299904&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 1,
+          "avg_analysis_ms": 322,
+          "p95_analysis_ms": 322,
+          "max_analysis_ms": 322,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000299904&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_23",
+              "count": 1
+            }
+          ],
+          "started_ms": 299911,
+          "finished_ms": 301586,
+          "error": ""
+        },
+        "inference_ms": 157,
+        "matched": true
+      }
+    },
+    {
+      "candidate_id": "0060_fish_23",
+      "label": "fish_23",
+      "source_dataset": "iNaturalist",
+      "split": "research-grade",
+      "source_file": "682682099.jpg",
+      "source_url": "https://www.inaturalist.org/observations/373544918",
+      "candidate_sha256": "2c3e19222856bfad69c3173523f96871c878432ba89768c8d5075c15c553ffd7",
+      "board_top1": "fish_20",
+      "board_score": 36,
+      "board_top_k": [
+        {
+          "label": "fish_20",
+          "class_id": 19,
+          "score": 36
+        },
+        {
+          "label": "fish_15",
+          "class_id": 14,
+          "score": 16
+        },
+        {
+          "label": "algae_substrate",
+          "class_id": 29,
+          "score": 15
+        }
+      ],
+      "inference_ms": 160,
+      "analysis_ms": 270,
+      "run_id": "fish31_candidates_88277088_0000302367",
+      "result": {
+        "ok": true,
+        "run_id": "fish31_candidates_88277088_0000302367",
+        "processed": 1,
+        "analysis_ms": 270,
+        "p95_analysis_ms": 270,
+        "top1": "fish_20",
+        "score": 36,
+        "top_k": [
+          {
+            "label": "fish_20",
+            "class_id": 19,
+            "score": 36
+          },
+          {
+            "label": "fish_15",
+            "class_id": 14,
+            "score": 16
+          },
+          {
+            "label": "algae_substrate",
+            "class_id": 29,
+            "score": 15
+          }
+        ],
+        "raw_status": {
+          "index_version": 4,
+          "state": "done",
+          "queued": false,
+          "running": false,
+          "done": true,
+          "dataset": "fish31_candidates",
+          "method": "fish31",
+          "run_id": "fish31_candidates_88277088_0000302367",
+          "overlay_endpoint": "/api/dataset/frame.svg",
+          "result_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000302367",
+          "summary_uri": "/api/dataset/run/results?run_id=fish31_candidates_88277088_0000302367&type=summary",
+          "limit": 1,
+          "stride": 1,
+          "processed": 1,
+          "ok_frames": 1,
+          "failed_frames": 0,
+          "detection_total": 0,
+          "avg_analysis_ms": 270,
+          "p95_analysis_ms": 270,
+          "max_analysis_ms": 270,
+          "last_frame_index": 1,
+          "last_overlay_uri": "/api/dataset/frame.svg?run_id=fish31_candidates_88277088_0000302367&dataset=fish31_candidates&index=1",
+          "labels": [
+            {
+              "label": "fish_20",
+              "count": 1
+            }
+          ],
+          "started_ms": 302370,
+          "finished_ms": 303979,
+          "error": ""
+        },
+        "inference_ms": 160,
+        "matched": false
+      }
+    }
+  ]
+}

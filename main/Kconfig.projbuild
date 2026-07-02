@@ -141,15 +141,56 @@ menu "Wi-Fi Camera Web Control"
             transport is down, then reboot to restore AP+STA.
 
     config APP_DEFAULT_RECOGNITION_METHOD
-        int "Default recognition method: 0 off, 1 MLP, 2 YOLO26, 3 YOLO11, 4 COCO YOLO11n 320"
-        default 4
-        range 0 4
+        int "Default recognition method: 0 off, 1 MLP, 2 YOLO26, 3 YOLO11, 4 COCO YOLO11n 320, 5 TinyCNN, 6 Fish31"
+        default 6
+        range 0 6
         help
-            MLP is the lightweight baseline. YOLO26 and YOLO11 are ESP-DL board-side routes.
+            Fish31 is the default board classifier. TinyCNN is the 6-class
+            marine classifier, and COCO is the ESP-DL board-side detection
+            comparison route. Legacy Coke/Sprite routes are hidden unless
+            APP_ENABLE_LEGACY_COKE_SPRITE is enabled.
+
+    config APP_TINY_CLS_MODEL_FILE
+        string "TinyCNN ESP-DL model file"
+        default "../models/tiny_cls_xl_deep_192_6cls_s8_p4.espdl"
+        help
+            Path to the TinyCNN .espdl model embedded into firmware.
+            Relative paths are resolved from the main component directory.
+
+    config APP_TINY_CLS_INPUT_SIZE
+        int "TinyCNN input size"
+        default 192
+        range 32 320
+        help
+            Square TinyCNN input size. Must match the embedded ESP-DL model.
+
+    config APP_FISH31_MODEL_FILE
+        string "Fish31 ESP-DL model file"
+        default "../models/fish31_mbv3s_075_224_s8_p4.espdl"
+        help
+            Path to the Fish31 .espdl model embedded into firmware.
+            Relative paths are resolved from the main component directory.
+
+    config APP_FISH31_INPUT_SIZE
+        int "Fish31 input size"
+        default 224
+        range 32 320
+        help
+            Square Fish31 input size. Must match the embedded ESP-DL model.
+
+    config APP_ENABLE_LEGACY_COKE_SPRITE
+        bool "Enable legacy Coke/Sprite model assets and routes"
+        default n
+        help
+            When disabled, Coke/Sprite YOLO11/YOLO26 model assets are not
+            compiled into the firmware and the main API/UI path recommends only
+            fish31, tinycls, coco, and off. Source files are kept for historical
+            reproduction.
 
     config APP_YOLO26_BOARD_ENABLE
         bool "Enable board-side YOLO26 ESP-DL inference"
-        default y
+        depends on APP_ENABLE_LEGACY_COKE_SPRITE
+        default n
         help
             Enable the self-trained Coke/Sprite YOLO26n model embedded from models/.
             The firmware still depends on the espressif/yolo26 component for the postprocessor,
@@ -309,12 +350,13 @@ menu "Wi-Fi Camera Web Control"
 
     config APP_INFERENCE_INTERVAL_MS
         int "Recognition inference interval in milliseconds"
-        default 1000
+        default 0
         range 0 600000
         help
             Minimum interval between two recognizer runs. Use 0 for every frame.
-            YOLO inference is much slower than MLP on the board. Use about 3000-5000 ms
-            for YOLO11, and 30000 ms or more for YOLO26 when the video stream is active.
+            TinyCNN is intended to run continuously. YOLO inference is much slower
+            than MLP on the board. Use about 3000-5000 ms for YOLO11, and 30000 ms
+            or more for YOLO26 when the video stream is active.
 
     config APP_HISTORY_SAMPLE_INTERVAL_MS
         int "Recognition history sample interval in milliseconds"

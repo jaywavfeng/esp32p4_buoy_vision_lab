@@ -6,7 +6,7 @@
  * - the latest JPEG frame is copied into a shared PSRAM cache
  * - each /stream client runs on an async HTTP worker task
  * - power commands are queued to the camera task for fast HTTP response
- * - recognition_method controls off/mlp/yolo26/yolo11 at runtime
+ * - recognition_method keeps legacy backends in source, but the main UI/API path is off/tinycls/coco.
  * - network_mode controls sta/softap/apsta at runtime and is stored in NVS
  *
  * 中文结构说明：
@@ -14,7 +14,7 @@
  * - 独立 inference_task 负责 YOLO11/YOLO26 长耗时推理，摄像头和 /stream 不等待模型跑完。
  * - HTTP worker 并发服务多个 /stream 客户端，所有客户端读取同一份最新帧缓存。
  * - 历史任务把抽帧识别结果写入 RAM 环形队列和 TF 卡，并按数量/索引大小自动淘汰旧数据。
- * - 识别方法运行时可切换：off 用来测纯图传，mlp 是可乐/雪碧轻量 baseline，yolo26/yolo11 是自训练 Coke/Sprite 的 ESP-DL 量化模型后端。
+ * - 当前主验证路径聚焦 TinyCNN Marine 分类和 COCO YOLO11n 检测；历史 Coke/Sprite 后端源码保留，不再作为页面默认入口。
  * - 无线模式运行时可切换：STA 连路由器，SoftAP 让板子自己开热点，APSTA 同时保留两条链路做稳定性对比。
  */
 
@@ -98,6 +98,9 @@
 #include "yolo11_espdl_bridge.h"
 #include "yolo26_espdl_bridge.h"
 #include "coco_espdl_bridge.h"
+#include "tiny_cls_espdl_bridge.h"
+#include "fish31_espdl_bridge.h"
+#include "validation_assets_config.h"
 #include "recording_enrichment.h"
 #include "usb_msc_export.h"
 
@@ -241,7 +244,10 @@ extern int esp_hosted_connect_to_slave(void);
 #define CONFIG_APP_STORAGE_TIMESHARE_BOOT_PROBE_MS 0
 #endif
 #ifndef CONFIG_APP_DEFAULT_RECOGNITION_METHOD
-#define CONFIG_APP_DEFAULT_RECOGNITION_METHOD 4
+#define CONFIG_APP_DEFAULT_RECOGNITION_METHOD 6
+#endif
+#ifndef CONFIG_APP_ENABLE_LEGACY_COKE_SPRITE
+#define CONFIG_APP_ENABLE_LEGACY_COKE_SPRITE 0
 #endif
 #ifndef CONFIG_APP_SD_BUS_WIDTH
 #define CONFIG_APP_SD_BUS_WIDTH 4
@@ -278,13 +284,17 @@ extern int esp_hosted_connect_to_slave(void);
 #define WIFI_AP_SSID CONFIG_APP_AP_SSID
 #define WIFI_AP_PASSWORD CONFIG_APP_AP_PASSWORD
 #define SETTINGS_NAMESPACE "buoy_lab"
-#define SETTINGS_VERSION 12
+#define SETTINGS_VERSION 15
 #define YOLO26_MODEL_NAME "coke-sprite-yolo26n-416-p4"
 #define YOLO11_MODEL_NAME "coke-sprite-yolo11n-416-p4"
 #define COCO_MODEL_NAME "coco-yolo11n-320-s8-v3-p4"
+#define TINYCLS_MODEL_NAME TINY_CLS_MODEL_NAME
+#define FISH31_MODEL_NAME FISH31_CLS_MODEL_NAME
 #define YOLO26_INPUT_SIZE 416U
 #define YOLO11_INPUT_SIZE 416U
 #define COCO_INPUT_SIZE 320U
+#define TINYCLS_INPUT_SIZE TINY_CLS_INPUT_W
+#define FISH31_INPUT_SIZE FISH31_INPUT_W
 #define MLP_MODEL_BYTES (sizeof(CAN_CLASSIFIER_W1) + sizeof(CAN_CLASSIFIER_B1) + \
                          sizeof(CAN_CLASSIFIER_W2) + sizeof(CAN_CLASSIFIER_B2))
 #define APP_MAX_DETECTIONS 8U
@@ -330,6 +340,10 @@ extern int esp_hosted_connect_to_slave(void);
 #define DATASET_RUN_LATENCY_CAP 512
 #define BUILTIN_COCO_VIDEO_DATASET "coco_video_demo"
 #define BUILTIN_COCO_VIDEO_FRAMES 16U
+#define BUILTIN_TINYCLS_VIDEO_DATASET "tinycls_marine_demo"
+#define BUILTIN_TINYCLS_VIDEO_FRAMES 16U
+#define BUILTIN_FISH31_VIDEO_DATASET "fish31_video_demo"
+#define BUILTIN_FISH31_VIDEO_FRAMES 16U
 #define BOARD_IMAGE_VALIDATION_MAX_ANALYSIS_MS 2500
 #define APP_JSONL_INDEX_VERSION 4U
 #define APP_RECORDING_MIN_FREE_BYTES (512ULL * 1024ULL * 1024ULL)
@@ -363,6 +377,8 @@ typedef enum {
     RECOGNITION_METHOD_YOLO26,
     RECOGNITION_METHOD_YOLO11,
     RECOGNITION_METHOD_COCO,
+    RECOGNITION_METHOD_TINYCLS,
+    RECOGNITION_METHOD_FISH31,
 } recognition_method_t;
 
 typedef enum {
@@ -373,6 +389,14 @@ typedef enum {
     VALIDATION_SAMPLE_DEMO_02,
     VALIDATION_SAMPLE_DEMO_03,
     VALIDATION_SAMPLE_DEMO_04,
+    VALIDATION_SAMPLE_TINY_01,
+    VALIDATION_SAMPLE_TINY_02,
+    VALIDATION_SAMPLE_TINY_03,
+    VALIDATION_SAMPLE_TINY_04,
+    VALIDATION_SAMPLE_FISH31_01,
+    VALIDATION_SAMPLE_FISH31_02,
+    VALIDATION_SAMPLE_FISH31_03,
+    VALIDATION_SAMPLE_FISH31_04,
 } validation_sample_t;
 
 typedef enum {
@@ -446,11 +470,13 @@ typedef struct {
     uint32_t detection_count;
     uint32_t raw_candidate_count;
     vision_detection_t detections[APP_MAX_DETECTIONS];
+    uint32_t top_k_count;
+    tiny_cls_topk_t top_k[TINY_CLS_TOP_K];
     bool motion;
     char scene[16];
     char color[16];
     char label[24];
-    char object[16];
+    char object[32];
     char model[32];
     int64_t inference_ms;
     int64_t analysis_ms;
@@ -536,6 +562,7 @@ typedef struct {
 typedef struct {
     char dataset[DATASET_NAME_MAX];
     char run_id[80];
+    recognition_method_t method;
     uint32_t limit;
     uint32_t stride;
 } dataset_run_request_t;
@@ -550,6 +577,7 @@ typedef struct {
     char result_uri[160];
     char summary_uri[160];
     char last_error[128];
+    recognition_method_t method;
     uint32_t limit;
     uint32_t stride;
     uint32_t processed;
@@ -743,11 +771,13 @@ static volatile uint32_t s_stream_max_fps = CONFIG_APP_STREAM_MAX_FPS;
 static volatile uint32_t s_inference_interval_ms = CONFIG_APP_INFERENCE_INTERVAL_MS;
 static volatile uint32_t s_history_sample_interval_ms = CONFIG_APP_HISTORY_SAMPLE_INTERVAL_MS;
 static volatile uint32_t s_jpeg_quality = CONFIG_EXAMPLE_JPEG_COMPRESSION_QUALITY;
-static volatile recognition_method_t s_recognition_method = CONFIG_APP_DEFAULT_RECOGNITION_METHOD == 4 ? RECOGNITION_METHOD_COCO :
-                                                            (CONFIG_APP_DEFAULT_RECOGNITION_METHOD == 3 ? RECOGNITION_METHOD_YOLO11 :
-                                                             (CONFIG_APP_DEFAULT_RECOGNITION_METHOD == 2 ? RECOGNITION_METHOD_YOLO26 :
-                                                              (CONFIG_APP_DEFAULT_RECOGNITION_METHOD == 0 ? RECOGNITION_METHOD_OFF :
-                                                               RECOGNITION_METHOD_MLP)));
+static volatile recognition_method_t s_recognition_method = CONFIG_APP_DEFAULT_RECOGNITION_METHOD == 6 ? RECOGNITION_METHOD_FISH31 :
+                                                            (CONFIG_APP_DEFAULT_RECOGNITION_METHOD == 5 ? RECOGNITION_METHOD_TINYCLS :
+                                                             (CONFIG_APP_DEFAULT_RECOGNITION_METHOD == 4 ? RECOGNITION_METHOD_COCO :
+                                                              (CONFIG_APP_DEFAULT_RECOGNITION_METHOD == 3 ? RECOGNITION_METHOD_YOLO11 :
+                                                               (CONFIG_APP_DEFAULT_RECOGNITION_METHOD == 2 ? RECOGNITION_METHOD_YOLO26 :
+                                                                (CONFIG_APP_DEFAULT_RECOGNITION_METHOD == 0 ? RECOGNITION_METHOD_OFF :
+                                                                 RECOGNITION_METHOD_MLP)))));
 static volatile network_mode_t s_network_mode = CONFIG_APP_DEFAULT_NETWORK_MODE == 2 ? NETWORK_MODE_APSTA :
                                                 (CONFIG_APP_DEFAULT_NETWORK_MODE == 1 ? NETWORK_MODE_SOFTAP :
                                                  NETWORK_MODE_STA);
@@ -894,6 +924,10 @@ static const char *recognition_method_name(recognition_method_t method)
         return "yolo11";
     case RECOGNITION_METHOD_COCO:
         return "coco";
+    case RECOGNITION_METHOD_TINYCLS:
+        return "tinycls";
+    case RECOGNITION_METHOD_FISH31:
+        return "fish31";
     default:
         return "unknown";
     }
@@ -944,6 +978,12 @@ static uint32_t active_model_bytes(void)
     if (method == RECOGNITION_METHOD_COCO) {
         return coco_espdl_model_bytes();
     }
+    if (method == RECOGNITION_METHOD_TINYCLS) {
+        return tiny_cls_espdl_model_bytes();
+    }
+    if (method == RECOGNITION_METHOD_FISH31) {
+        return fish31_espdl_model_bytes();
+    }
     return 0;
 }
 
@@ -960,6 +1000,12 @@ static uint32_t model_bytes_for_method(recognition_method_t method)
     }
     if (method == RECOGNITION_METHOD_COCO) {
         return coco_espdl_model_bytes();
+    }
+    if (method == RECOGNITION_METHOD_TINYCLS) {
+        return tiny_cls_espdl_model_bytes();
+    }
+    if (method == RECOGNITION_METHOD_FISH31) {
+        return fish31_espdl_model_bytes();
     }
     return 0;
 }
@@ -978,11 +1024,23 @@ static const char *model_name_for_method(recognition_method_t method)
     if (method == RECOGNITION_METHOD_COCO) {
         return COCO_MODEL_NAME;
     }
+    if (method == RECOGNITION_METHOD_TINYCLS) {
+        return TINYCLS_MODEL_NAME;
+    }
+    if (method == RECOGNITION_METHOD_FISH31) {
+        return FISH31_MODEL_NAME;
+    }
     return recognition_method_name(method);
 }
 
 static uint32_t model_input_size_for_method(recognition_method_t method)
 {
+    if (method == RECOGNITION_METHOD_FISH31) {
+        return FISH31_INPUT_SIZE;
+    }
+    if (method == RECOGNITION_METHOD_TINYCLS) {
+        return TINYCLS_INPUT_SIZE;
+    }
     if (method == RECOGNITION_METHOD_COCO) {
         return COCO_INPUT_SIZE;
     }
@@ -1002,6 +1060,12 @@ static uint32_t model_class_count_for_method(recognition_method_t method)
 {
     if (method == RECOGNITION_METHOD_COCO) {
         return COCO_ESPDL_CLASS_COUNT;
+    }
+    if (method == RECOGNITION_METHOD_TINYCLS) {
+        return TINY_CLS_CLASS_COUNT;
+    }
+    if (method == RECOGNITION_METHOD_FISH31) {
+        return FISH31_CLASS_COUNT;
     }
     if (method == RECOGNITION_METHOD_YOLO11 || method == RECOGNITION_METHOD_YOLO26) {
         return 2;
@@ -1029,7 +1093,77 @@ static bool active_yolo_available(void)
     if (method == RECOGNITION_METHOD_COCO) {
         return coco_espdl_available();
     }
+    if (method == RECOGNITION_METHOD_TINYCLS) {
+        return tiny_cls_espdl_available();
+    }
+    if (method == RECOGNITION_METHOD_FISH31) {
+        return fish31_espdl_available();
+    }
     return false;
+}
+
+static recognition_method_t preferred_recognition_method(void)
+{
+    if (fish31_espdl_available()) {
+        return RECOGNITION_METHOD_FISH31;
+    }
+    if (tiny_cls_espdl_available()) {
+        return RECOGNITION_METHOD_TINYCLS;
+    }
+    if (coco_espdl_available()) {
+        return RECOGNITION_METHOD_COCO;
+    }
+    return RECOGNITION_METHOD_MLP;
+}
+
+static recognition_method_t configured_default_recognition_method(void)
+{
+    if (CONFIG_APP_DEFAULT_RECOGNITION_METHOD == 6) {
+        return RECOGNITION_METHOD_FISH31;
+    }
+    if (CONFIG_APP_DEFAULT_RECOGNITION_METHOD == 5) {
+        return RECOGNITION_METHOD_TINYCLS;
+    }
+    if (CONFIG_APP_DEFAULT_RECOGNITION_METHOD == 4) {
+        return RECOGNITION_METHOD_COCO;
+    }
+    if (CONFIG_APP_DEFAULT_RECOGNITION_METHOD == 3) {
+        return RECOGNITION_METHOD_YOLO11;
+    }
+    if (CONFIG_APP_DEFAULT_RECOGNITION_METHOD == 2) {
+        return RECOGNITION_METHOD_YOLO26;
+    }
+    if (CONFIG_APP_DEFAULT_RECOGNITION_METHOD == 0) {
+        return RECOGNITION_METHOD_OFF;
+    }
+    return RECOGNITION_METHOD_MLP;
+}
+
+static recognition_method_t recognition_method_or_fallback(recognition_method_t method)
+{
+#if !CONFIG_APP_ENABLE_LEGACY_COKE_SPRITE
+    if (method == RECOGNITION_METHOD_MLP ||
+        method == RECOGNITION_METHOD_YOLO11 ||
+        method == RECOGNITION_METHOD_YOLO26) {
+        return preferred_recognition_method();
+    }
+#endif
+    if (method == RECOGNITION_METHOD_TINYCLS && !tiny_cls_espdl_available()) {
+        return preferred_recognition_method();
+    }
+    if (method == RECOGNITION_METHOD_FISH31 && !fish31_espdl_available()) {
+        return preferred_recognition_method();
+    }
+    if (method == RECOGNITION_METHOD_COCO && !coco_espdl_available()) {
+        return preferred_recognition_method();
+    }
+    if (method == RECOGNITION_METHOD_YOLO11 && !yolo11_espdl_available()) {
+        return preferred_recognition_method();
+    }
+    if (method == RECOGNITION_METHOD_YOLO26 && !yolo26_espdl_available()) {
+        return preferred_recognition_method();
+    }
+    return method;
 }
 
 static void detections_to_json(char *buf, size_t size, const vision_result_t *vision)
@@ -1055,6 +1189,39 @@ static void detections_to_json(char *buf, size_t size, const vision_result_t *vi
                      "\"x\":%" PRIu32 ",\"y\":%" PRIu32 ",\"w\":%" PRIu32 ",\"h\":%" PRIu32 "}",
                      i == 0 ? "" : ",", d->label, d->class_id, d->score,
                      d->x, d->y, d->w, d->h);
+        if (n < 0) {
+            break;
+        }
+        off += (size_t)n;
+    }
+    if (off < size) {
+        snprintf(buf + off, size - off, "]");
+    } else {
+        buf[size - 1] = '\0';
+    }
+}
+
+static void top_k_to_json(char *buf, size_t size, const vision_result_t *vision)
+{
+    if (!buf || size == 0) {
+        return;
+    }
+    size_t off = 0;
+    buf[0] = '\0';
+    int n = snprintf(buf + off, size - off, "[");
+    if (n < 0) {
+        return;
+    }
+    off += (size_t)n;
+    uint32_t count = vision ? vision->top_k_count : 0;
+    if (count > TINY_CLS_TOP_K) {
+        count = TINY_CLS_TOP_K;
+    }
+    for (uint32_t i = 0; i < count && off < size; i++) {
+        const tiny_cls_topk_t *item = &vision->top_k[i];
+        n = snprintf(buf + off, size - off,
+                     "%s{\"label\":\"%s\",\"class_id\":%" PRIu32 ",\"score\":%" PRIu32 "}",
+                     i == 0 ? "" : ",", item->label, item->class_id, item->score);
         if (n < 0) {
             break;
         }
@@ -1212,11 +1379,33 @@ static esp_err_t send_overlay_svg_response(httpd_req_t *req,
                       vision->object_x + 8, text_y,
                       vision->label, vision->candidate_score, vision->box_min_score);
     } else if (count == 0 && n > 0 && (size_t)n < svg_cap) {
-        n += snprintf(svg + n, svg_cap - n,
-                      "<rect x=\"16\" y=\"16\" width=\"560\" height=\"42\" fill=\"#000\" fill-opacity=\"0.75\"/>"
-                      "<text x=\"28\" y=\"46\" fill=\"#ffcc66\" font-size=\"24\" font-family=\"Arial,sans-serif\">"
-                      "no candidate / threshold %" PRIu32 "%%</text>",
-                      vision->box_min_score);
+        if (vision->top_k_count > 0) {
+            n += snprintf(svg + n, svg_cap - n,
+                          "<rect x=\"16\" y=\"16\" width=\"620\" height=\"150\" rx=\"8\" fill=\"#000\" fill-opacity=\"0.75\"/>"
+                          "<text x=\"28\" y=\"46\" fill=\"#ffcc66\" font-size=\"24\" font-family=\"Arial,sans-serif\">"
+                          "classification %s %" PRIu32 "%% / threshold %" PRIu32 "%%</text>",
+                          vision->label, vision->candidate_score, vision->box_min_score);
+            uint32_t bars = vision->top_k_count > TINY_CLS_TOP_K ? TINY_CLS_TOP_K : vision->top_k_count;
+            for (uint32_t i = 0; i < bars && n > 0 && (size_t)n < svg_cap; i++) {
+                const tiny_cls_topk_t *item = &vision->top_k[i];
+                uint32_t bar_w = item->score > 100 ? 280 : (item->score * 280U) / 100U;
+                uint32_t y = 72 + i * 28;
+                n += snprintf(svg + n, svg_cap - n,
+                              "<text x=\"28\" y=\"%" PRIu32 "\" fill=\"#e8f2f8\" font-size=\"18\" font-family=\"Arial,sans-serif\">"
+                              "#%" PRIu32 " %s</text>"
+                              "<rect x=\"250\" y=\"%" PRIu32 "\" width=\"280\" height=\"14\" rx=\"4\" fill=\"#23303a\"/>"
+                              "<rect x=\"250\" y=\"%" PRIu32 "\" width=\"%" PRIu32 "\" height=\"14\" rx=\"4\" fill=\"#64d68a\"/>"
+                              "<text x=\"542\" y=\"%" PRIu32 "\" fill=\"#e8f2f8\" font-size=\"18\" font-family=\"Arial,sans-serif\">%" PRIu32 "%%</text>",
+                              y, i + 1, item->label,
+                              y - 15, y - 15, bar_w, y, item->score);
+            }
+        } else {
+            n += snprintf(svg + n, svg_cap - n,
+                          "<rect x=\"16\" y=\"16\" width=\"560\" height=\"42\" fill=\"#000\" fill-opacity=\"0.75\"/>"
+                          "<text x=\"28\" y=\"46\" fill=\"#ffcc66\" font-size=\"24\" font-family=\"Arial,sans-serif\">"
+                          "no candidate / threshold %" PRIu32 "%%</text>",
+                          vision->box_min_score);
+        }
     }
     if (n > 0 && (size_t)n < svg_cap) {
         snprintf(svg + n, svg_cap - n, "</svg>");
@@ -1246,7 +1435,7 @@ static const char s_index_html[] =
 "@media(max-width:880px){.view{grid-template-columns:1fr}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.row{grid-template-columns:1fr}.recordActions{display:flex;flex-wrap:wrap}.recordActions a,.recordActions button,.recordActions span{width:auto;flex:1 1 140px}}"
 "</style></head><body><main>"
 "<section class=\"top\"><div><div class=\"title\">ESP32-P4 摄像头控制</div><div class=\"sub\"><span id=\"ip\">--</span> | <span id=\"mode\">--</span></div></div>"
-"<div class=\"actions\"><label class=\"toggle\"><input id=\"visionToggle\" type=\"checkbox\" onchange=\"setVision(this.checked)\"><span>识别 Vision</span></label><select id=\"methodSelect\" onchange=\"setMethod(this.value)\"><option value=\"off\">关闭 Off</option><option value=\"mlp\">MLP</option><option value=\"coco\">COCO YOLO11n 320</option><option value=\"yolo26\">YOLO26 Coke/Sprite</option><option value=\"yolo11\">YOLO11 Coke/Sprite</option></select><select id=\"netSelect\" onchange=\"setNetMode(this.value)\"><option value=\"sta\">STA</option><option value=\"softap\">热点 SoftAP</option><option value=\"apsta\">AP+STA</option></select><button id=\"wakeBtn\" onclick=\"cmd('wake')\">唤醒 Wake</button><button id=\"standbyBtn\" onclick=\"cmd('standby')\">待机 Standby</button><a href=\"/validate\">手机验证</a></div></section>"
+"<div class=\"actions\"><label class=\"toggle\"><input id=\"visionToggle\" type=\"checkbox\" onchange=\"setVision(this.checked)\"><span>识别 Vision</span></label><select id=\"methodSelect\" onchange=\"setMethod(this.value)\"><option value=\"off\">关闭 Off</option><option value=\"fish31\">Fish31 MobileNetV3 224</option><option value=\"tinycls\">TinyCNN Marine 192</option><option value=\"coco\">COCO YOLO11n 320</option></select><select id=\"netSelect\" onchange=\"setNetMode(this.value)\"><option value=\"sta\">STA</option><option value=\"softap\">热点 SoftAP</option><option value=\"apsta\">AP+STA</option></select><button id=\"wakeBtn\" onclick=\"cmd('wake')\">唤醒 Wake</button><button id=\"standbyBtn\" onclick=\"cmd('standby')\">待机 Standby</button><a href=\"/validate\">手机验证</a></div></section>"
 "<section class=\"view\"><div class=\"video\"><div class=\"videoFrame\"><img id=\"stream\" src=\"/stream\" alt=\"camera stream\"><div id=\"boxes\" class=\"boxes\"></div></div></div>"
 "<aside><div class=\"grid\">"
 "<div class=\"card\"><div class=\"label\">采集帧率 Capture FPS</div><div class=\"value\" id=\"cfps\">--</div></div>"
@@ -1272,12 +1461,12 @@ static const char s_index_html[] =
 "function keepInput(el,val){if(document.activeElement!==el)el.value=val}"
 "function streamUrl(){return '/stream?ts='+Date.now()}function setMode(m){wakeBtn.className=m==='running'?'active':'';standbyBtn.className=m==='standby'?'active':''}"
 "async function load(){try{const t=performance.now();let r=await fetch('/api/status?ts='+Date.now(),{cache:'no-store'});let s=await r.json();paint(s,Math.round(performance.now()-t))}catch(e){err.textContent='status offline'}}"
-"function cname(o){return o==='coke'?'可乐 Coke':(o==='sprite'?'雪碧 Sprite':(!o||o==='unknown'?'未知 Unknown':o))}"
+"function cname(o){let m={unknown:'未知 Unknown',plastic_bottle:'plastic bottle',foam:'foam',buoy:'buoy',net:'net',ship_part:'ship part'};return m[o]||o||'未知 Unknown'}"
 "function paintObject(s){let v=s.vision||{},ds=v.detections||[];boxes.innerHTML='';if(!ds.length&&v.object_count>0)ds=[{label:v.object,score:v.object_score,x:v.object_x,y:v.object_y,w:v.object_w,h:v.object_h}];if(!s.width||!s.height)return;ds.forEach(d=>{if(!d.w||!d.h)return;let b=document.createElement('div');b.className='bbox';b.style.left=(100*d.x/s.width)+'%';b.style.top=(100*d.y/s.height)+'%';b.style.width=(100*d.w/s.width)+'%';b.style.height=(100*d.h/s.height)+'%';let sp=document.createElement('span');sp.textContent=cname(d.label)+' '+d.score;b.appendChild(sp);boxes.appendChild(b)})}"
-"function paint(s,rtt){ip.textContent=s.mdns_url||s.eth_url||('http://'+s.ip+'/');mode.textContent=(s.app_mode||'server')+' | '+s.power_mode+' | '+s.network_mode+(s.rescue_ap?' + rescue AP':'')+' | '+s.recognition_method;setMode(s.power_mode);visionToggle.checked=!!s.vision_enabled;methodSelect.value=s.recognition_method||'mlp';netSelect.value=s.network_mode||'sta';historyToggle.checked=!!s.history_enabled;recordingToggle.checked=!!s.recording_enabled;keepInput(boxMin,s.config.box_min_score);keepInput(streamFps,s.config.stream_max_fps);keepInput(infMs,s.config.inference_interval_ms);keepInput(histMs,s.config.history_sample_interval_ms);keepInput(jpegQ,s.config.jpeg_quality);if(lastMode!=='running'&&s.power_mode==='running'){stream.src=streamUrl()}lastMode=s.power_mode;"
+"function paint(s,rtt){ip.textContent=s.eth_url||s.mdns_url||('http://'+s.ip+'/');mode.textContent=(s.app_mode||'server')+' | '+s.power_mode+' | '+s.network_mode+(s.rescue_ap?' + rescue AP':'')+' | '+s.recognition_method;setMode(s.power_mode);visionToggle.checked=!!s.vision_enabled;methodSelect.value=s.recognition_method||'fish31';netSelect.value=s.network_mode||'sta';historyToggle.checked=!!s.history_enabled;recordingToggle.checked=!!s.recording_enabled;keepInput(boxMin,s.config.box_min_score);keepInput(streamFps,s.config.stream_max_fps);keepInput(infMs,s.config.inference_interval_ms);keepInput(histMs,s.config.history_sample_interval_ms);keepInput(jpegQ,s.config.jpeg_quality);if(lastMode!=='running'&&s.power_mode==='running'){stream.src=streamUrl()}lastMode=s.power_mode;"
 "cfps.textContent=(s.capture_fps_x100/100).toFixed(1);sfps.textContent=(s.stream_fps_x100/100).toFixed(1);clients.textContent=s.stream_clients+'/'+s.max_stream_clients;age.textContent=s.last_frame_age_ms+' ms';"
 "lat.textContent=s.last_capture_ms+' ms';infer.textContent=(s.vision.inference_ms||0)+' ms';jpg.textContent=Math.round(s.last_jpeg_bytes/1024)+' KB';motion.textContent=s.vision.motion?'是 YES':'否 NO';scene.textContent=s.vision.scene;"
-"vision.textContent=cname(s.vision.object)+' / '+s.vision.label;vision2.textContent='模型 '+s.vision.model+' | 模型大小 '+Math.round((s.model_info?.bytes||s.model_bytes||0)/1024)+' KB | 输入 '+(s.model_info?.input_size||s.config.yolo_input_size||0)+' | 检测框 '+(s.vision.detection_count||0)+'/'+(s.model_info?.max_detections||8)+' | raw候选 '+(s.vision.raw_candidate_count||0)+' | NMS '+(s.model_info?.nms_threshold||70)+' | 候选分 '+s.vision.candidate_score+' | 画框阈值 '+s.vision.box_min_score+' | 目标分 '+s.vision.object_score+' | 可乐 '+s.vision.coke_score+' | 雪碧 '+s.vision.sprite_score+' | 未知 '+s.vision.unknown_score+' | 运动 '+s.vision.motion_score+' | 边缘 '+s.vision.edge_score+' | 亮度 '+s.vision.avg_luma+' | 推理 '+s.vision.inference_ms+' ms | 分析 '+s.vision.analysis_ms+' ms';"
+"vision.textContent=cname(s.vision.object)+' / '+s.vision.label;let topk=(s.vision.top_k||[]).map(x=>cname(x.label)+' '+x.score+'%').join(' / ')||'--';vision2.textContent='模型 '+s.vision.model+' | 方法 '+s.recognition_method+' | 模型大小 '+Math.round((s.model_info?.bytes||s.model_bytes||0)/1024)+' KB | 输入 '+(s.model_info?.input_size||s.config.yolo_input_size||0)+' | Top-K '+topk+' | 检测框 '+(s.vision.detection_count||0)+'/'+(s.model_info?.max_detections||8)+' | raw候选 '+(s.vision.raw_candidate_count||0)+' | NMS '+(s.model_info?.nms_threshold||70)+' | 候选分 '+s.vision.candidate_score+' | 画框阈值 '+s.vision.box_min_score+' | 目标分 '+s.vision.object_score+' | 未知 '+s.vision.unknown_score+' | 运动 '+s.vision.motion_score+' | 边缘 '+s.vision.edge_score+' | 亮度 '+s.vision.avg_luma+' | 推理 '+s.vision.inference_ms+' ms | 分析 '+s.vision.analysis_ms+' ms';"
 "netlab.textContent='模式 '+s.network_mode+' | 救援AP '+(s.rescue_ap?'开':'关')+' | STA '+s.sta_ip+' | AP '+s.ap_ip+' | AP客户端 '+s.ap_clients+' | 重连 '+s.reconnect_count+' | 推理FPS '+(s.inference_fps_x100/100).toFixed(1)+' | 推理忙 '+(s.inference_busy?'是':'否')+' | 队列 '+s.inference_queue_depth+' | 已完成 '+s.inference_jobs_completed+' | 丢弃推理帧 '+s.dropped_inference_frames+' | 队列丢弃 '+s.inference_queue_drops+' | 模型 '+Math.round(s.model_bytes/1024)+' KB | YOLO输入 '+s.config.yolo_input_size;"
 "storage.textContent=(s.file_storage_mounted?'存储可用':'存储不可用')+' | 后端 '+(s.storage_backend||'none')+' | TF '+(s.tf_card_mounted?'已挂载':'未挂载')+' | '+s.storage_status+' | 存储窗口 '+((s.storage_service&&s.storage_service.mode)||'--')+' '+((s.storage_service&&s.storage_service.status)||'')+' | 模式 '+(s.sd_mount_mode||'--')+' | 错误 '+(s.sd_last_error||'--')+' | 历史 '+s.history_saved+' | 录像段 '+s.recording_segments+' | 录像帧 '+s.recording_frames+' | 当前 '+(s.recording_current_uri||'--')+' '+s.recording_current_frames+' 帧 | 视频验证 '+((s.dataset_run&&s.dataset_run.running)?('运行 '+s.dataset_run.processed+'/'+s.dataset_run.ok_frames):'空闲')+' | 剩余 '+Math.round(s.sd_free_bytes/1048576)+' MB';"
 "sys.textContent='帧 '+s.frame_seq+' | 已发 '+s.stream_frames+' | 流量 '+Math.round(s.stream_bytes/1024)+' KB | RSSI '+s.rssi_dbm+' dBm | 网页RTT '+rtt+' ms | 堆 '+Math.round(s.free_heap/1024)+'/'+Math.round(s.min_free_heap/1024)+' KB | PSRAM '+Math.round(s.free_psram/1024)+'/'+Math.round(s.min_free_psram/1024)+' KB';"
@@ -1304,7 +1493,7 @@ static const char s_index_html[] =
 "async function clearRecords(){if(!confirm('清空全部监控记录？'))return;let r=await fetch('/api/storage/records?scope=all&confirm=DELETE',{method:'DELETE',cache:'no-store'}).catch(()=>null);let j=r?await r.json().catch(()=>null):null;if(!r||!r.ok||!j||!j.ok){datasetMeta.textContent='清空失败：'+(r?'HTTP '+r.status:'网络错误');return}datasetMeta.textContent='已清理 '+j.deleted_files+' 个文件，释放 '+fmtBytes(j.freed_bytes);await loadTimeline()}"
 "async function remountTf(){if(!confirm('将关闭热点/网页并重新挂载TF卡，维护后板子会自动重启恢复热点，确认？'))return;let r=await fetch('/api/storage/remount?confirm=REMOUNT&hold_ms=2000',{method:'POST',cache:'no-store'}).catch(()=>null);datasetMeta.textContent=r?await r.text():'TF重挂载请求失败';}"
 "async function formatTf(){if(!confirm('格式化TF卡会清空卡内数据；若TF未挂载，板子会进入维护窗口并自动重启，确认？'))return;let r=await fetch('/api/storage/format?confirm=FORMAT',{method:'POST',cache:'no-store'}).catch(()=>null);datasetMeta.textContent=r?await r.text():'格式化请求失败';setTimeout(loadTimeline,800)}"
-"async function startVideoValidation(){let r=await fetch('/api/dataset/run/start?dataset=coco_video_demo&limit=16&stride=1',{cache:'no-store'}).catch(()=>null);datasetMeta.textContent=r?await r.text():'视频验证启动失败';setTimeout(checkVideoValidation,500)}"
+"async function startVideoValidation(){let m=methodSelect.value||'fish31';if(m==='off')m='fish31';let ds=m==='coco'?'coco_video_demo':(m==='tinycls'?'tinycls_marine_demo':'fish31_video_demo');let r=await fetch('/api/dataset/run/start?dataset='+encodeURIComponent(ds)+'&method='+encodeURIComponent(m)+'&limit=16&stride=1',{cache:'no-store'}).catch(()=>null);datasetMeta.textContent=r?await r.text():'视频验证启动失败';setTimeout(checkVideoValidation,500)}"
 "async function checkVideoValidation(){try{let r=await fetch('/api/dataset/run/status?ts='+Date.now(),{cache:'no-store'});let s=await r.json();datasetMeta.textContent='视频验证 '+(s.state||'idle')+' | '+(s.dataset||'--')+' | 帧 '+s.processed+'/'+s.limit+' | ok '+s.ok_frames+' | 失败 '+s.failed_frames+' | 平均 '+s.avg_analysis_ms+' ms | P95 '+s.p95_analysis_ms+' ms | '+labelSummary(s.labels)+' | '+(s.error||'');if(s.queued||s.running)setTimeout(checkVideoValidation,1000)}catch(e){datasetMeta.textContent='视频验证状态离线'}}"
 "function appendExperiment(s,rtt){let now=Date.now();let key=s.network_mode+'|'+s.recognition_method+'|'+s.power_mode+'|'+s.stream_clients+'|'+Math.floor(now/5000);if(key===lastLogKey&&now-lastLogAt<5000)return;lastLogKey=key;lastLogAt=now;experimentLog.unshift({t:new Date().toLocaleTimeString(),mode:s.network_mode,method:s.recognition_method,power:s.power_mode,rtt:rtt,rssi:s.rssi_dbm,cfps:s.capture_fps_x100,sfps:s.stream_fps_x100,heap:s.free_heap,psram:s.free_psram,clients:s.stream_clients,ap:s.ap_clients,err:s.stream_errors,drop:s.dropped_inference_frames,inf:s.vision?s.vision.inference_ms:0});if(experimentLog.length>24)experimentLog.pop();renderExperimentLog()}"
 "function renderExperimentLog(){experimentList.innerHTML=experimentLog.map(x=>'<div class=\"row logRow\"><div class=\"tag\">'+esc(x.t)+'</div><div>'+esc(x.mode)+' / '+esc(x.method)+' / '+esc(x.power)+'<div class=\"sub\">RTT '+x.rtt+' ms | RSSI '+x.rssi+' dBm | Capture '+(x.cfps/100).toFixed(1)+' FPS | Send '+(x.sfps/100).toFixed(1)+' FPS | 推理 '+x.inf+' ms | heap '+Math.round(x.heap/1024)+' KB | PSRAM '+Math.round(x.psram/1024)+' KB</div></div><div>流 '+x.clients+' / AP '+x.ap+'</div></div>').join('')||'<div class=\"row\"><div class=\"muted\">等待状态采样</div></div>'}"
@@ -1325,20 +1514,20 @@ static const char s_validate_html[] =
 "<section class=\"top\"><div><div class=\"title\">板端验证可视化 Validation Lab</div>"
 "<div class=\"sub\">点击“板端推理”后，固件会把内嵌 JPEG 复制到 PSRAM 并投进 inference_task 队列；完成后返回 JSON 和带框 SVG。</div></div>"
 "<a href=\"/\">返回首页</a></section>"
-"<section class=\"panel\"><div class=\"actions\"><label>识别方法 <select id=\"method\"><option value=\"coco\">COCO YOLO11n 320 fast</option></select></label><label>验证阈值 <input id=\"valBox\" type=\"number\" min=\"1\" max=\"100\" value=\"50\"></label><span class=\"sub\">COCO classic multi-object samples from val2017; Coke/Sprite APIs remain available only for historical comparison.</span></div></section>"
-"<section class=\"panel\"><div class=\"title\">真实 COCO 视频验证</div><div class=\"actions\"><button id=\"videoStart\" onclick=\"startVideoVal()\">运行 16 帧板端推理</button><button id=\"videoPlay\" onclick=\"toggleVideoPlayback()\" disabled>播放</button><span class=\"videoProgress\" id=\"videoProgress\">0 / 16</span><a href=\"/api/datasets\" target=\"_blank\">查看数据集</a></div><div class=\"sub\" id=\"videoVal\">固件内置商店过道连续视频帧；运行时逐帧显示板端标注结果，完成后以 1 FPS 循环播放。</div></section>"
-"<section class=\"grid\">"
-"<div class=\"card\"><div class=\"sample\"><img src=\"/validate/demo_01.jpg\" alt=\"COCO classic sample 1\"></div><div class=\"hint\">COCO 经典 01：多人、餐桌、杯子、碗、披萨<div class=\"actions\"><button class=\"valBtn\" onclick=\"runVal('demo_01')\">板端推理</button><a href=\"/validate/demo_01.jpg\" target=\"_blank\">打开原图</a></div></div></div>"
-"<div class=\"card\"><div class=\"sample\"><img src=\"/validate/demo_02.jpg\" alt=\"COCO classic sample 2\"></div><div class=\"hint\">COCO 经典 02：多人、椅子、瓶子、杯子、餐桌<div class=\"actions\"><button class=\"valBtn\" onclick=\"runVal('demo_02')\">板端推理</button><a href=\"/validate/demo_02.jpg\" target=\"_blank\">打开原图</a></div></div></div>"
-"<div class=\"card\"><div class=\"sample\"><img src=\"/validate/demo_03.jpg\" alt=\"COCO classic sample 3\"></div><div class=\"hint\">COCO 经典 03：多人、椅子、瓶子、餐桌、雨伞<div class=\"actions\"><button class=\"valBtn\" onclick=\"runVal('demo_03')\">板端推理</button><a href=\"/validate/demo_03.jpg\" target=\"_blank\">打开原图</a></div></div></div>"
-"<div class=\"card\"><div class=\"sample\"><img src=\"/validate/demo_04.jpg\" alt=\"COCO classic sample 4\"></div><div class=\"hint\">COCO 经典 04：多人、雨伞、碗、杯子、餐桌<div class=\"actions\"><button class=\"valBtn\" onclick=\"runVal('demo_04')\">板端推理</button><a href=\"/validate/demo_04.jpg\" target=\"_blank\">打开原图</a></div></div></div>"
-"</section>"
+"<section class=\"panel\"><div class=\"actions\"><label>识别方法 <select id=\"method\" onchange=\"onMethodChange()\"><option value=\"fish31\">Fish31 MobileNetV3 224</option><option value=\"tinycls\">TinyCNN Marine 192</option><option value=\"coco\">COCO YOLO11n 320 fast</option></select></label><label>验证阈值 <input id=\"valBox\" type=\"number\" min=\"1\" max=\"100\" value=\"50\"></label><span class=\"sub\" id=\"methodHint\"></span></div></section>"
+"<section class=\"panel\"><div class=\"title\" id=\"videoTitle\">模型视频验证</div><div class=\"actions\"><button id=\"videoStart\" onclick=\"startVideoVal()\">运行 16 帧板端推理</button><button id=\"videoPlay\" onclick=\"toggleVideoPlayback()\" disabled>播放</button><span class=\"videoProgress\" id=\"videoProgress\">0 / 16</span><a href=\"/api/datasets\" target=\"_blank\">查看数据集</a></div><div class=\"sub\" id=\"videoVal\"></div></section>"
+"<section class=\"grid\" id=\"sampleGrid\"></section>"
 "<section class=\"result\"><div class=\"boxed\"><img id=\"boxed\" alt=\"boxed validation result\"><div id=\"empty\" class=\"sub\">等待点击样例图进行板端推理</div></div><aside class=\"panel\"><div class=\"title\">推理结果</div><div class=\"kv\" id=\"summary\"></div><pre id=\"raw\"></pre></aside></section>"
 "</main><script>"
 "function esc(v){return String(v==null?'':v).replace(/[&<>\"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[m]))}"
-"function cname(o){return o==='coke'?'可乐 Coke':(o==='sprite'?'雪碧 Sprite':(!o||o==='unknown'?'未知 Unknown':o))}"
+"function cname(o){let m={unknown:'unknown',plastic_bottle:'plastic bottle',foam:'foam',buoy:'buoy',net:'net',ship_part:'ship part'};return m[o]||o||'unknown'}"
 "function detRows(ds){if(!ds||!ds.length)return '<div class=\"row\">正式检测框：0</div>';return '<div class=\"row\">正式检测框 '+ds.length+'</div>'+ds.map((d,i)=>'<div class=\"row\"><b>#'+(i+1)+'</b> '+cname(d.label)+' '+d.score+'% <span class=\"sub\">x='+d.x+' y='+d.y+' w='+d.w+' h='+d.h+'</span></div>').join('')}"
-"let validationBusy=false,validationSeq=0,videoBusy=false,videoRunId='',videoDataset='coco_video_demo',videoFrames=[],videoFrameIndex=0,videoTimer=null,videoPollToken=0;"
+"function topRows(top){if(!top||!top.length)return '';return '<div class=\"row\">Top-K '+top.map(x=>cname(x.label)+' '+x.score+'%').join(' | ')+'</div>'}"
+"const METHOD_DEMOS={fish31:{hint:'Fish31 使用标准鱼类/水下背景候选，经 ESP32-P4 板端筛选后只嵌入 Top-1 正确且高置信的 4 张不同样例；分类可视化显示 Top-1 横幅和 Top-K，不画检测框。',videoTitle:'Fish31 鱼类分类视频验证',videoHint:'固件内置 16 帧 Fish31 板端实测样例，循环覆盖 4 张非 unknown 分类图；运行时逐帧显示分类横幅和 Top-K。',dataset:'fish31_video_demo',samples:[['fish31_01','/validate/fish31_01.jpg','Fish31 标准候选 01：板端 Top-1 通过'],['fish31_02','/validate/fish31_02.jpg','Fish31 标准候选 02：板端 Top-1 通过'],['fish31_03','/validate/fish31_03.jpg','Fish31 标准候选 03：板端 Top-1 通过'],['fish31_04','/validate/fish31_04.jpg','Fish31 标准候选 04：板端 Top-1 通过']]},tinycls:{hint:'TinyCNN Marine 使用 LaRS/PoTATO/本地候选经 ESP32-P4 板端筛选后的高置信样例；只展示 Top-1 正确、非 unknown 的 4 张不同图片。分类可视化显示 Top-1 横幅和 Top-K，不画检测框。',videoTitle:'TinyCNN marine 视频验证',videoHint:'固件内置 16 帧板端实测非 unknown 样例循环；运行时逐帧显示 TinyCNN 分类横幅和 Top-K。',dataset:'tinycls_marine_demo',samples:[['tiny_01','/validate/tiny_01.jpg','TinyCNN 标准候选 01：非 unknown，板端 Top-1 通过'],['tiny_02','/validate/tiny_02.jpg','TinyCNN 标准候选 02：非 unknown，板端 Top-1 通过'],['tiny_03','/validate/tiny_03.jpg','TinyCNN 标准候选 03：非 unknown，板端 Top-1 通过'],['tiny_04','/validate/tiny_04.jpg','TinyCNN 标准候选 04：非 unknown，板端 Top-1 通过']]},coco:{hint:'COCO 使用通用目标检测数据：person / bottle / cup / chair 等；COCO 可视化显示检测框，分类模型不会使用检测框。',videoTitle:'COCO 真实视频验证',videoHint:'固件内置商店过道连续视频帧；运行时逐帧显示 COCO 检测框，完成后以 1 FPS 循环播放。',dataset:'coco_video_demo',samples:[['demo_01','/validate/demo_01.jpg','COCO 经典 01：多人、餐桌、杯子、碗、披萨'],['demo_02','/validate/demo_02.jpg','COCO 经典 02：多人、椅子、瓶子、杯子、餐桌'],['demo_03','/validate/demo_03.jpg','COCO 经典 03：多人、椅子、瓶子、餐桌、雨伞'],['demo_04','/validate/demo_04.jpg','COCO 经典 04：多人、雨伞、碗、杯子、餐桌']]}};"
+"let validationBusy=false,validationSeq=0,videoBusy=false,videoRunId='',videoDataset='',videoFrames=[],videoFrameIndex=0,videoTimer=null,videoPollToken=0;"
+"function currentDemo(){return METHOD_DEMOS[method.value]||METHOD_DEMOS.fish31}"
+"function renderSamples(){let d=currentDemo();methodHint.textContent=d.hint;videoTitle.textContent=d.videoTitle;videoVal.textContent=d.videoHint;sampleGrid.innerHTML=d.samples.map(s=>'<div class=\"card\"><div class=\"sample\"><img src=\"'+esc(s[1])+'\" alt=\"'+esc(s[0])+'\"></div><div class=\"hint\">'+esc(s[2])+'<div class=\"actions\"><button class=\"valBtn\" onclick=\"runVal(\\''+esc(s[0])+'\\')\">板端推理</button><a href=\"'+esc(s[1])+'\" target=\"_blank\">打开原图</a></div></div></div>').join('');setBusy(false)}"
+"function onMethodChange(){clearVideoFrames();renderSamples();summary.innerHTML='';raw.textContent='';boxed.removeAttribute('src');empty.style.display='block';empty.textContent='等待点击样例图进行板端推理'}"
 "function setBusy(b){validationBusy=b;document.querySelectorAll('.valBtn').forEach(x=>x.disabled=b||videoBusy);method.disabled=b||videoBusy;valBox.disabled=b||videoBusy;videoStart.disabled=b||videoBusy;videoPlay.disabled=b||videoBusy||!videoFrames.some(Boolean)}"
 "function setVideoBusy(b){videoBusy=b;document.querySelectorAll('.valBtn').forEach(x=>x.disabled=b||validationBusy);method.disabled=b||validationBusy;valBox.disabled=b||validationBusy;videoStart.disabled=b||validationBusy;videoPlay.disabled=b||!videoFrames.some(Boolean)}"
 "function stopVideoPlayback(){if(videoTimer){clearInterval(videoTimer);videoTimer=null}videoPlay.textContent='播放'}"
@@ -1348,17 +1537,14 @@ static const char s_validate_html[] =
 "function toggleVideoPlayback(){if(videoTimer)stopVideoPlayback();else startVideoPlayback()}"
 "function videoOverlayUri(index){return '/api/dataset/frame.svg?run_id='+encodeURIComponent(videoRunId)+'&dataset='+encodeURIComponent(videoDataset)+'&index='+index+'&ts='+Date.now()}"
 "async function ensureVideoFrame(index,token){let slot=index-1;if(videoFrames[slot])return videoFrames[slot];let r=await fetch(videoOverlayUri(index),{cache:'no-store'});if(!r.ok)throw new Error('overlay '+index+' HTTP '+r.status);let blob=await r.blob();if(token!==videoPollToken)return '';let url=URL.createObjectURL(blob);videoFrames[slot]=url;return url}"
-"async function runVal(sample){if(validationBusy||videoBusy)return;stopVideoPlayback();let seq=++validationSeq;setBusy(true);summary.innerHTML='<div class=\"row\">正在把 '+sample+' 图片送入板端推理队列，请等待，本次完成前按钮会暂时锁定。</div>';raw.textContent='';boxed.removeAttribute('src');empty.style.display='block';let m=method.value;let threshold=Math.max(1,Math.min(100,Number(valBox.value)||50));let t=performance.now();try{let r=await fetch('/api/validate/run?sample='+encodeURIComponent(sample)+'&method='+encodeURIComponent(m)+'&box_min_score='+encodeURIComponent(threshold)+'&ts='+Date.now(),{cache:'no-store'});let j=await r.json();let dt=Math.round(performance.now()-t);if(seq!==validationSeq)return;if(!j.ok){summary.innerHTML='<div class=\"row bad\">验证失败：'+esc(j.error||r.status)+'</div>';raw.textContent=JSON.stringify(j,null,2);return}empty.style.display='none';boxed.src=j.overlay+'?id='+encodeURIComponent(j.id)+'&ts='+Date.now();let v=j.vision||{};let ds=v.detections||j.detections||[];summary.innerHTML='<div class=\"row '+(j.matched?'ok':'bad')+'\">期望 '+esc(j.expected)+'，识别 '+cname(v.object)+'，'+(j.matched?'命中':'未命中')+'</div>'+'<div class=\"row\">方法 '+esc(j.method)+' | 模型 '+esc(v.model)+' | 模型 '+Math.round((j.model_bytes||0)/1024)+' KB | 输入 '+(j.model_input_size||0)+'</div>'+'<div class=\"row\">候选分 '+v.candidate_score+' | 验证阈值 '+v.box_min_score+' | NMS '+j.nms_threshold+' | raw候选 '+j.raw_candidate_count+'</div>'+'<div class=\"row\">推理 '+v.inference_ms+' ms | 分析 '+v.analysis_ms+' ms | 网页等待 '+dt+' ms</div>'+'<div class=\"row\">原图 '+j.source_w+'x'+j.source_h+' | JPEG '+Math.round(j.jpeg_bytes/1024)+' KB</div>'+detRows(ds);raw.textContent=JSON.stringify(j,null,2)}catch(e){if(seq===validationSeq){summary.innerHTML='<div class=\"row bad\">验证请求失败</div>';raw.textContent=String(e)}}finally{if(seq===validationSeq)setBusy(false)}}"
+"async function runVal(sample){if(validationBusy||videoBusy)return;stopVideoPlayback();let seq=++validationSeq;setBusy(true);summary.innerHTML='<div class=\"row\">正在把 '+sample+' 图片送入板端推理队列，请等待，本次完成前按钮会暂时锁定。</div>';raw.textContent='';boxed.removeAttribute('src');empty.style.display='block';let m=method.value;let threshold=Math.max(1,Math.min(100,Number(valBox.value)||50));let t=performance.now();try{let r=await fetch('/api/validate/run?sample='+encodeURIComponent(sample)+'&method='+encodeURIComponent(m)+'&box_min_score='+encodeURIComponent(threshold)+'&ts='+Date.now(),{cache:'no-store'});let j=await r.json();let dt=Math.round(performance.now()-t);if(seq!==validationSeq)return;if(!j.ok){summary.innerHTML='<div class=\"row bad\">验证失败：'+esc(j.error||r.status)+'</div>';raw.textContent=JSON.stringify(j,null,2);return}empty.style.display='none';boxed.src=j.overlay+'?id='+encodeURIComponent(j.id)+'&ts='+Date.now();let v=j.vision||{};let ds=v.detections||j.detections||[];let top=v.top_k||j.top_k||[];summary.innerHTML='<div class=\"row '+(j.matched?'ok':'bad')+'\">期望 '+esc(j.expected)+'，识别 '+cname(v.object)+'，'+(j.matched?'命中':'未命中')+'</div>'+'<div class=\"row\">方法 '+esc(j.method)+' | 模型 '+esc(v.model)+' | 模型 '+Math.round((j.model_bytes||0)/1024)+' KB | 输入 '+(j.model_input_size||0)+'</div>'+'<div class=\"row\">候选分 '+v.candidate_score+' | 验证阈值 '+v.box_min_score+' | NMS '+j.nms_threshold+' | raw候选 '+j.raw_candidate_count+'</div>'+'<div class=\"row\">推理 '+v.inference_ms+' ms | 分析 '+v.analysis_ms+' ms | 网页等待 '+dt+' ms</div>'+'<div class=\"row\">原图 '+j.source_w+'x'+j.source_h+' | JPEG '+Math.round(j.jpeg_bytes/1024)+' KB</div>'+topRows(top)+detRows(ds);raw.textContent=JSON.stringify(j,null,2)}catch(e){if(seq===validationSeq){summary.innerHTML='<div class=\"row bad\">验证请求失败</div>';raw.textContent=String(e)}}finally{if(seq===validationSeq)setBusy(false)}}"
 "function labelSummary(labels){return (labels||[]).map(x=>esc(x.label)+' '+x.count).join('，')||'无目标'}"
-"async function startVideoVal(){if(videoBusy||validationBusy)return;clearVideoFrames();videoPollToken++;let token=videoPollToken;setVideoBusy(true);boxed.removeAttribute('src');empty.style.display='block';empty.textContent='正在等待第一帧板端推理结果';summary.innerHTML='<div class=\"row\">正在启动真实 COCO 视频验证...</div>';raw.textContent='';try{let r=await fetch('/api/dataset/run/start?dataset='+encodeURIComponent(videoDataset)+'&limit=16&stride=1',{cache:'no-store'});let text=await r.text();let j={};try{j=JSON.parse(text)}catch(e){}if(!r.ok||!j.ok)throw new Error(j.error||text||('HTTP '+r.status));videoRunId=j.run_id;videoVal.textContent='已排队 '+videoRunId;setTimeout(()=>pollVideoVal(token),200)}catch(e){videoVal.textContent='启动失败：'+e;summary.innerHTML='<div class=\"row bad\">视频验证启动失败</div>';setVideoBusy(false)}}"
+"async function startVideoVal(){if(videoBusy||validationBusy)return;clearVideoFrames();videoPollToken++;let token=videoPollToken;let d=currentDemo();videoDataset=d.dataset;let m=method.value;setVideoBusy(true);boxed.removeAttribute('src');empty.style.display='block';empty.textContent='正在等待第一帧板端推理结果';summary.innerHTML='<div class=\"row\">正在启动 '+esc(d.videoTitle)+'...</div>';raw.textContent='';try{let r=await fetch('/api/dataset/run/start?dataset='+encodeURIComponent(videoDataset)+'&method='+encodeURIComponent(m)+'&limit=16&stride=1',{cache:'no-store'});let text=await r.text();let j={};try{j=JSON.parse(text)}catch(e){}if(!r.ok||!j.ok)throw new Error(j.error||text||('HTTP '+r.status));videoRunId=j.run_id;videoVal.textContent='已排队 '+videoRunId+' | '+d.videoHint;setTimeout(()=>pollVideoVal(token),200)}catch(e){videoVal.textContent='启动失败：'+e;summary.innerHTML='<div class=\"row bad\">视频验证启动失败</div>';setVideoBusy(false)}}"
 "async function preloadVideoFrames(s,token){for(let i=0;i<s.processed;i++){if(token!==videoPollToken)return;let index=1+i*(s.stride||1);await ensureVideoFrame(index,token)}if(token!==videoPollToken)return;videoPlay.disabled=false;videoFrameIndex=0;startVideoPlayback()}"
-"async function pollVideoVal(token){if(token!==videoPollToken||!videoRunId)return;try{let r=await fetch('/api/dataset/run/status?ts='+Date.now(),{cache:'no-store'});let s=await r.json();if(s.run_id!==videoRunId)throw new Error('run_id mismatch');let links=(!s.running&&s.result_uri)?' | <a href=\"'+esc(s.result_uri)+'\" target=\"_blank\">JSONL</a> | <a href=\"'+esc(s.summary_uri)+'\" target=\"_blank\">summary</a>':'';videoVal.innerHTML='状态 '+esc(s.state||'idle')+' | 帧 '+s.processed+'/'+s.limit+' | ok '+s.ok_frames+' | 失败 '+s.failed_frames+' | 平均 '+s.avg_analysis_ms+' ms | P95 '+s.p95_analysis_ms+' ms | 最大 '+s.max_analysis_ms+' ms | 检测 '+s.detection_total+' | '+labelSummary(s.labels)+' | '+esc(s.error||'')+links;videoProgress.textContent=s.processed+' / '+s.limit;summary.innerHTML='<div class=\"row '+(s.failed_frames?'bad':'ok')+'\">真实视频板端推理 '+s.ok_frames+'/'+s.limit+'</div><div class=\"row\">检测 '+s.detection_total+' | '+labelSummary(s.labels)+'</div><div class=\"row\">平均 '+s.avg_analysis_ms+' ms | P95 '+s.p95_analysis_ms+' ms | 最大 '+s.max_analysis_ms+' ms</div>';raw.textContent=JSON.stringify(s,null,2);if(s.last_frame_index>0){let url=await ensureVideoFrame(s.last_frame_index,token);if(url&&token===videoPollToken){boxed.src=url;empty.style.display='none';videoProgress.textContent=s.last_frame_index+' / '+s.limit}}if(s.queued||s.running){setTimeout(()=>pollVideoVal(token),400);return}if(s.done){await preloadVideoFrames(s,token);setVideoBusy(false);return}setVideoBusy(false)}catch(e){if(token===videoPollToken){videoVal.textContent='视频验证状态错误：'+e;summary.innerHTML='<div class=\"row bad\">视频验证失败</div>';setVideoBusy(false)}}}"
+"async function pollVideoVal(token){if(token!==videoPollToken||!videoRunId)return;try{let r=await fetch('/api/dataset/run/status?ts='+Date.now(),{cache:'no-store'});let s=await r.json();if(s.run_id!==videoRunId)throw new Error('run_id mismatch');let links=(!s.running&&s.result_uri)?' | <a href=\"'+esc(s.result_uri)+'\" target=\"_blank\">JSONL</a> | <a href=\"'+esc(s.summary_uri)+'\" target=\"_blank\">summary</a>':'';videoVal.innerHTML='状态 '+esc(s.state||'idle')+' | 方法 '+esc(s.method||'')+' | 帧 '+s.processed+'/'+s.limit+' | ok '+s.ok_frames+' | 失败 '+s.failed_frames+' | 平均 '+s.avg_analysis_ms+' ms | P95 '+s.p95_analysis_ms+' ms | 最大 '+s.max_analysis_ms+' ms | 目标 '+s.detection_total+' | '+labelSummary(s.labels)+' | '+esc(s.error||'')+links;videoProgress.textContent=s.processed+' / '+s.limit;summary.innerHTML='<div class=\"row '+(s.failed_frames?'bad':'ok')+'\">视频板端推理 '+s.ok_frames+'/'+s.limit+'</div><div class=\"row\">目标 '+s.detection_total+' | '+labelSummary(s.labels)+'</div><div class=\"row\">平均 '+s.avg_analysis_ms+' ms | P95 '+s.p95_analysis_ms+' ms | 最大 '+s.max_analysis_ms+' ms</div>';raw.textContent=JSON.stringify(s,null,2);if(s.last_frame_index>0){let url=await ensureVideoFrame(s.last_frame_index,token);if(url&&token===videoPollToken){boxed.src=url;empty.style.display='none';videoProgress.textContent=s.last_frame_index+' / '+s.limit}}if(s.queued||s.running){setTimeout(()=>pollVideoVal(token),400);return}if(s.done){await preloadVideoFrames(s,token);setVideoBusy(false);return}setVideoBusy(false)}catch(e){if(token===videoPollToken){videoVal.textContent='视频验证状态错误：'+e;summary.innerHTML='<div class=\"row bad\">视频验证失败</div>';setVideoBusy(false)}}}"
+"renderSamples();"
 "</script></body></html>";
 
-extern const uint8_t validate_coke_jpg_start[] asm("_binary_coke_01_jpg_start");
-extern const uint8_t validate_coke_jpg_end[] asm("_binary_coke_01_jpg_end");
-extern const uint8_t validate_sprite_jpg_start[] asm("_binary_sprite_01_jpg_start");
-extern const uint8_t validate_sprite_jpg_end[] asm("_binary_sprite_01_jpg_end");
 extern const uint8_t validate_demo_01_jpg_start[] asm("_binary_demo_01_jpg_start");
 extern const uint8_t validate_demo_01_jpg_end[] asm("_binary_demo_01_jpg_end");
 extern const uint8_t validate_demo_02_jpg_start[] asm("_binary_demo_02_jpg_start");
@@ -1367,6 +1553,22 @@ extern const uint8_t validate_demo_03_jpg_start[] asm("_binary_demo_03_jpg_start
 extern const uint8_t validate_demo_03_jpg_end[] asm("_binary_demo_03_jpg_end");
 extern const uint8_t validate_demo_04_jpg_start[] asm("_binary_demo_04_jpg_start");
 extern const uint8_t validate_demo_04_jpg_end[] asm("_binary_demo_04_jpg_end");
+extern const uint8_t validate_tiny_01_jpg_start[] asm("_binary_tiny_01_jpg_start");
+extern const uint8_t validate_tiny_01_jpg_end[] asm("_binary_tiny_01_jpg_end");
+extern const uint8_t validate_tiny_02_jpg_start[] asm("_binary_tiny_02_jpg_start");
+extern const uint8_t validate_tiny_02_jpg_end[] asm("_binary_tiny_02_jpg_end");
+extern const uint8_t validate_tiny_03_jpg_start[] asm("_binary_tiny_03_jpg_start");
+extern const uint8_t validate_tiny_03_jpg_end[] asm("_binary_tiny_03_jpg_end");
+extern const uint8_t validate_tiny_04_jpg_start[] asm("_binary_tiny_04_jpg_start");
+extern const uint8_t validate_tiny_04_jpg_end[] asm("_binary_tiny_04_jpg_end");
+extern const uint8_t validate_fish31_01_jpg_start[] asm("_binary_fish31_01_jpg_start");
+extern const uint8_t validate_fish31_01_jpg_end[] asm("_binary_fish31_01_jpg_end");
+extern const uint8_t validate_fish31_02_jpg_start[] asm("_binary_fish31_02_jpg_start");
+extern const uint8_t validate_fish31_02_jpg_end[] asm("_binary_fish31_02_jpg_end");
+extern const uint8_t validate_fish31_03_jpg_start[] asm("_binary_fish31_03_jpg_start");
+extern const uint8_t validate_fish31_03_jpg_end[] asm("_binary_fish31_03_jpg_end");
+extern const uint8_t validate_fish31_04_jpg_start[] asm("_binary_fish31_04_jpg_start");
+extern const uint8_t validate_fish31_04_jpg_end[] asm("_binary_fish31_04_jpg_end");
 
 #define DECLARE_COCO_VIDEO_FRAME(n) \
     extern const uint8_t coco_video_frame_##n##_jpg_start[] asm("_binary_frame_" #n "_jpg_start"); \
@@ -1388,6 +1590,48 @@ DECLARE_COCO_VIDEO_FRAME(00014);
 DECLARE_COCO_VIDEO_FRAME(00015);
 DECLARE_COCO_VIDEO_FRAME(00016);
 #undef DECLARE_COCO_VIDEO_FRAME
+
+#define DECLARE_TINYCLS_VIDEO_FRAME(n) \
+    extern const uint8_t tinycls_video_frame_##n##_jpg_start[] asm("_binary_tiny_frame_" #n "_jpg_start"); \
+    extern const uint8_t tinycls_video_frame_##n##_jpg_end[] asm("_binary_tiny_frame_" #n "_jpg_end")
+DECLARE_TINYCLS_VIDEO_FRAME(00001);
+DECLARE_TINYCLS_VIDEO_FRAME(00002);
+DECLARE_TINYCLS_VIDEO_FRAME(00003);
+DECLARE_TINYCLS_VIDEO_FRAME(00004);
+DECLARE_TINYCLS_VIDEO_FRAME(00005);
+DECLARE_TINYCLS_VIDEO_FRAME(00006);
+DECLARE_TINYCLS_VIDEO_FRAME(00007);
+DECLARE_TINYCLS_VIDEO_FRAME(00008);
+DECLARE_TINYCLS_VIDEO_FRAME(00009);
+DECLARE_TINYCLS_VIDEO_FRAME(00010);
+DECLARE_TINYCLS_VIDEO_FRAME(00011);
+DECLARE_TINYCLS_VIDEO_FRAME(00012);
+DECLARE_TINYCLS_VIDEO_FRAME(00013);
+DECLARE_TINYCLS_VIDEO_FRAME(00014);
+DECLARE_TINYCLS_VIDEO_FRAME(00015);
+DECLARE_TINYCLS_VIDEO_FRAME(00016);
+#undef DECLARE_TINYCLS_VIDEO_FRAME
+
+#define DECLARE_FISH31_VIDEO_FRAME(n) \
+    extern const uint8_t fish31_video_frame_##n##_jpg_start[] asm("_binary_fish31_frame_" #n "_jpg_start"); \
+    extern const uint8_t fish31_video_frame_##n##_jpg_end[] asm("_binary_fish31_frame_" #n "_jpg_end")
+DECLARE_FISH31_VIDEO_FRAME(00001);
+DECLARE_FISH31_VIDEO_FRAME(00002);
+DECLARE_FISH31_VIDEO_FRAME(00003);
+DECLARE_FISH31_VIDEO_FRAME(00004);
+DECLARE_FISH31_VIDEO_FRAME(00005);
+DECLARE_FISH31_VIDEO_FRAME(00006);
+DECLARE_FISH31_VIDEO_FRAME(00007);
+DECLARE_FISH31_VIDEO_FRAME(00008);
+DECLARE_FISH31_VIDEO_FRAME(00009);
+DECLARE_FISH31_VIDEO_FRAME(00010);
+DECLARE_FISH31_VIDEO_FRAME(00011);
+DECLARE_FISH31_VIDEO_FRAME(00012);
+DECLARE_FISH31_VIDEO_FRAME(00013);
+DECLARE_FISH31_VIDEO_FRAME(00014);
+DECLARE_FISH31_VIDEO_FRAME(00015);
+DECLARE_FISH31_VIDEO_FRAME(00016);
+#undef DECLARE_FISH31_VIDEO_FRAME
 
 static esp_err_t ioctl_to_esp(int rc)
 {
@@ -1841,6 +2085,13 @@ static bool recognition_method_is_yolo(recognition_method_t method)
            method == RECOGNITION_METHOD_COCO;
 }
 
+static bool recognition_method_uses_jpeg_inference(recognition_method_t method)
+{
+    return recognition_method_is_yolo(method) ||
+           method == RECOGNITION_METHOD_TINYCLS ||
+           method == RECOGNITION_METHOD_FISH31;
+}
+
 static void fill_yolo_pending(vision_result_t *result, recognition_method_t method)
 {
     const char *model = model_name_for_method(method);
@@ -1854,6 +2105,24 @@ static void fill_yolo_pending(vision_result_t *result, recognition_method_t meth
     strlcpy(result->object, CAN_CLASSIFIER_LABELS[CAN_CLASS_UNKNOWN], sizeof(result->object));
     strlcpy(result->label, label, sizeof(result->label));
     result->unknown_score = 100;
+    result->box_min_score = s_box_min_score;
+}
+
+static void fill_tinycls_pending(vision_result_t *result)
+{
+    strlcpy(result->model, TINYCLS_MODEL_NAME, sizeof(result->model));
+    strlcpy(result->object, TINY_CLS_LABELS[TINY_CLS_UNKNOWN], sizeof(result->object));
+    strlcpy(result->label, "tinycls-waiting", sizeof(result->label));
+    result->unknown_score = 100;
+    result->box_min_score = s_box_min_score;
+}
+
+static void fill_fish31_pending(vision_result_t *result)
+{
+    strlcpy(result->model, FISH31_MODEL_NAME, sizeof(result->model));
+    strlcpy(result->object, "fish31-waiting", sizeof(result->object));
+    strlcpy(result->label, "fish31-waiting", sizeof(result->label));
+    result->unknown_score = 0;
     result->box_min_score = s_box_min_score;
 }
 
@@ -1873,6 +2142,22 @@ static bool is_completed_yolo_result(const vision_result_t *vision, recognition_
            strcmp(vision->label, waiting) != 0 &&
            strstr(vision->label, "error") == NULL &&
            (vision->inference_ms > 0 || vision->object_count > 0 || strcmp(vision->label, "no-object") == 0);
+}
+
+static bool is_completed_inference_result(const vision_result_t *vision, recognition_method_t method)
+{
+    if (recognition_method_is_yolo(method)) {
+        return is_completed_yolo_result(vision, method);
+    }
+    if (!vision || (method != RECOGNITION_METHOD_TINYCLS && method != RECOGNITION_METHOD_FISH31)) {
+        return false;
+    }
+    const char *model = method == RECOGNITION_METHOD_FISH31 ? FISH31_MODEL_NAME : TINYCLS_MODEL_NAME;
+    const char *waiting = method == RECOGNITION_METHOD_FISH31 ? "fish31-waiting" : "tinycls-waiting";
+    return strcmp(vision->model, model) == 0 &&
+           strcmp(vision->label, waiting) != 0 &&
+           strstr(vision->label, "error") == NULL &&
+           (vision->inference_ms > 0 || vision->top_k_count > 0);
 }
 
 static uint32_t detection_right(const vision_detection_t *d)
@@ -2163,6 +2448,181 @@ static void classify_coco_jpeg(const uint8_t *jpeg, uint32_t jpeg_size, vision_r
                                 det.source_w, det.source_h, s_box_min_score, false, result);
 }
 
+static void apply_tinycls_result(const tiny_cls_espdl_result_t *cls,
+                                 uint32_t min_score,
+                                 vision_result_t *result)
+{
+    if (!cls || !result) {
+        return;
+    }
+    strlcpy(result->model, TINYCLS_MODEL_NAME, sizeof(result->model));
+    strlcpy(result->label, cls->label, sizeof(result->label));
+    strlcpy(result->object, cls->label, sizeof(result->object));
+    result->candidate_score = cls->score;
+    result->object_score = cls->score;
+    result->box_min_score = min_score;
+    result->object_count = (cls->class_id != TINY_CLS_UNKNOWN && cls->score >= min_score) ? 1 : 0;
+    result->object_x = 0;
+    result->object_y = 0;
+    result->object_w = 0;
+    result->object_h = 0;
+    result->detection_count = 0;
+    result->raw_candidate_count = cls->top_k_count;
+    result->top_k_count = cls->top_k_count > TINY_CLS_TOP_K ? TINY_CLS_TOP_K : cls->top_k_count;
+    result->unknown_score = cls->class_id == TINY_CLS_UNKNOWN ? cls->score : 0;
+    memset(result->detections, 0, sizeof(result->detections));
+    memset(result->top_k, 0, sizeof(result->top_k));
+    for (uint32_t i = 0; i < result->top_k_count; i++) {
+        result->top_k[i] = cls->top_k[i];
+        if (cls->top_k[i].class_id == TINY_CLS_UNKNOWN) {
+            result->unknown_score = cls->top_k[i].score;
+        }
+    }
+    if (cls->class_id == TINY_CLS_UNKNOWN) {
+        result->object_count = 0;
+        strlcpy(result->object, TINY_CLS_LABELS[TINY_CLS_UNKNOWN], sizeof(result->object));
+    }
+    result->inference_ms = cls->inference_ms;
+}
+
+static void classify_tinycls_frame(const uint8_t *data,
+                                   uint32_t data_size,
+                                   uint32_t width,
+                                   uint32_t height,
+                                   uint32_t pixel_format,
+                                   vision_result_t *result)
+{
+    tiny_cls_espdl_result_t cls = {0};
+    strlcpy(result->model, TINYCLS_MODEL_NAME, sizeof(result->model));
+
+    esp_err_t err = tiny_cls_espdl_classify_frame(data, data_size, width, height, pixel_format, &cls);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "TinyCNN inference failed: %s", esp_err_to_name(err));
+        strlcpy(result->label, "tinycls-error", sizeof(result->label));
+        strlcpy(result->object, TINY_CLS_LABELS[TINY_CLS_UNKNOWN], sizeof(result->object));
+        result->unknown_score = 100;
+        result->box_min_score = s_box_min_score;
+        return;
+    }
+
+    apply_tinycls_result(&cls, s_box_min_score, result);
+}
+
+static esp_err_t classify_validation_tinycls_jpeg(const uint8_t *jpeg,
+                                                  uint32_t jpeg_size,
+                                                  uint32_t box_min_score,
+                                                  vision_result_t *result,
+                                                  uint32_t *source_w,
+                                                  uint32_t *source_h)
+{
+    if (!jpeg || !jpeg_size || !result || !source_w || !source_h) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *source_w = 0;
+    *source_h = 0;
+    tiny_cls_espdl_result_t cls = {0};
+    strlcpy(result->model, TINYCLS_MODEL_NAME, sizeof(result->model));
+    esp_err_t err = tiny_cls_espdl_classify_validation_jpeg(jpeg, jpeg_size, &cls);
+    if (err != ESP_OK) {
+        strlcpy(result->label, "tinycls-error", sizeof(result->label));
+        strlcpy(result->object, TINY_CLS_LABELS[TINY_CLS_UNKNOWN], sizeof(result->object));
+        result->unknown_score = 100;
+        result->box_min_score = box_min_score;
+        return err;
+    }
+
+    apply_tinycls_result(&cls, box_min_score, result);
+    *source_w = cls.source_w;
+    *source_h = cls.source_h;
+    return ESP_OK;
+}
+
+static void apply_fish31_result(const fish31_espdl_result_t *cls,
+                                uint32_t min_score,
+                                vision_result_t *result)
+{
+    if (!cls || !result) {
+        return;
+    }
+    strlcpy(result->model, FISH31_MODEL_NAME, sizeof(result->model));
+    strlcpy(result->label, cls->label, sizeof(result->label));
+    strlcpy(result->object, cls->label, sizeof(result->object));
+    result->candidate_score = cls->score;
+    result->object_score = cls->score;
+    result->box_min_score = min_score;
+    result->object_count = cls->score >= min_score ? 1 : 0;
+    result->object_x = 0;
+    result->object_y = 0;
+    result->object_w = 0;
+    result->object_h = 0;
+    result->detection_count = 0;
+    result->raw_candidate_count = cls->top_k_count;
+    result->top_k_count = cls->top_k_count > FISH31_TOP_K ? FISH31_TOP_K : cls->top_k_count;
+    result->unknown_score = 0;
+    memset(result->detections, 0, sizeof(result->detections));
+    memset(result->top_k, 0, sizeof(result->top_k));
+    for (uint32_t i = 0; i < result->top_k_count; i++) {
+        result->top_k[i].class_id = cls->top_k[i].class_id;
+        result->top_k[i].score = cls->top_k[i].score;
+        strlcpy(result->top_k[i].label, cls->top_k[i].label, sizeof(result->top_k[i].label));
+    }
+    result->inference_ms = cls->inference_ms;
+}
+
+static void classify_fish31_frame(const uint8_t *data,
+                                  uint32_t data_size,
+                                  uint32_t width,
+                                  uint32_t height,
+                                  uint32_t pixel_format,
+                                  vision_result_t *result)
+{
+    fish31_espdl_result_t cls = {0};
+    strlcpy(result->model, FISH31_MODEL_NAME, sizeof(result->model));
+
+    esp_err_t err = fish31_espdl_classify_frame(data, data_size, width, height, pixel_format, &cls);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Fish31 inference failed: %s", esp_err_to_name(err));
+        strlcpy(result->label, "fish31-error", sizeof(result->label));
+        strlcpy(result->object, "fish31-error", sizeof(result->object));
+        result->unknown_score = 0;
+        result->box_min_score = s_box_min_score;
+        return;
+    }
+
+    apply_fish31_result(&cls, s_box_min_score, result);
+}
+
+static esp_err_t classify_validation_fish31_jpeg(const uint8_t *jpeg,
+                                                 uint32_t jpeg_size,
+                                                 uint32_t box_min_score,
+                                                 vision_result_t *result,
+                                                 uint32_t *source_w,
+                                                 uint32_t *source_h)
+{
+    if (!jpeg || !jpeg_size || !result || !source_w || !source_h) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *source_w = 0;
+    *source_h = 0;
+    fish31_espdl_result_t cls = {0};
+    strlcpy(result->model, FISH31_MODEL_NAME, sizeof(result->model));
+    esp_err_t err = fish31_espdl_classify_validation_jpeg(jpeg, jpeg_size, &cls);
+    if (err != ESP_OK) {
+        strlcpy(result->label, "fish31-error", sizeof(result->label));
+        strlcpy(result->object, "fish31-error", sizeof(result->object));
+        result->unknown_score = 0;
+        result->box_min_score = box_min_score;
+        return err;
+    }
+
+    apply_fish31_result(&cls, box_min_score, result);
+    *source_w = cls.source_w;
+    *source_h = cls.source_h;
+    return ESP_OK;
+}
+
 static esp_err_t classify_validation_yolo_jpeg(const uint8_t *jpeg, uint32_t jpeg_size,
                                                recognition_method_t method,
                                                uint32_t box_min_score,
@@ -2368,6 +2828,10 @@ static void analyze_frame(const uint8_t *data, uint32_t data_size, uint32_t widt
 
     if (recognition_method_is_yolo(method)) {
         fill_yolo_pending(result, method);
+    } else if (method == RECOGNITION_METHOD_TINYCLS) {
+        classify_tinycls_frame(data, data_size, width, height, pixel_format, result);
+    } else if (method == RECOGNITION_METHOD_FISH31) {
+        classify_fish31_frame(data, data_size, width, height, pixel_format, result);
     } else {
         strlcpy(result->model, CAN_CLASSIFIER_MODEL_NAME, sizeof(result->model));
         classify_can_candidate(data, data_size, width, height, pixel_format, result);
@@ -2380,6 +2844,10 @@ static void analyze_frame(const uint8_t *data, uint32_t data_size, uint32_t widt
                 method == RECOGNITION_METHOD_YOLO11 ? "yolo11-waiting" :
                 (method == RECOGNITION_METHOD_COCO ? "coco-waiting" : "yolo26-waiting"),
                 sizeof(result->label));
+    } else if (method == RECOGNITION_METHOD_TINYCLS || method == RECOGNITION_METHOD_FISH31) {
+        if (result->label[0] == '\0') {
+            strlcpy(result->label, result->object, sizeof(result->label));
+        }
     } else if (strcmp(result->scene, "dark") == 0) {
         strlcpy(result->label, "low-light", sizeof(result->label));
     } else if (result->motion) {
@@ -2557,14 +3025,14 @@ static bool copy_completed_yolo_vision(vision_result_t *vision, recognition_meth
 {
     bool ok = false;
 
-    if (!vision || !s_frame_lock || !recognition_method_is_yolo(method)) {
+    if (!vision || !s_frame_lock || !recognition_method_uses_jpeg_inference(method)) {
         return false;
     }
 
     xSemaphoreTake(s_frame_lock, portMAX_DELAY);
     if (s_have_completed_yolo_vision &&
         s_last_completed_yolo_method == method &&
-        is_completed_yolo_result(&s_last_completed_yolo_vision, method)) {
+        is_completed_inference_result(&s_last_completed_yolo_vision, method)) {
         *vision = s_last_completed_yolo_vision;
         ok = true;
     }
@@ -2575,7 +3043,7 @@ static bool copy_completed_yolo_vision(vision_result_t *vision, recognition_meth
 static void update_latest_vision_from_inference(const vision_result_t *vision,
                                                 recognition_method_t method)
 {
-    if (!vision || !s_frame_lock || !recognition_method_is_yolo(method)) {
+    if (!vision || !s_frame_lock || !recognition_method_uses_jpeg_inference(method)) {
         return;
     }
 
@@ -2588,7 +3056,7 @@ static void update_latest_vision_from_inference(const vision_result_t *vision,
     if (s_have_frame) {
         s_latest_meta.vision = *vision;
     }
-    if (is_completed_yolo_result(vision, method)) {
+    if (is_completed_inference_result(vision, method)) {
         s_last_completed_yolo_vision = *vision;
         s_last_completed_yolo_method = method;
         s_have_completed_yolo_vision = true;
@@ -2969,9 +3437,9 @@ static void cleanup_old_recordings(void)
     }
 }
 
-static void label_count_add(label_count_t *labels, const char *label)
+static void label_count_add_with_unknown(label_count_t *labels, const char *label, bool include_unknown)
 {
-    if (!labels || !label || !label[0] || strcmp(label, "unknown") == 0) {
+    if (!labels || !label || !label[0] || (!include_unknown && strcmp(label, "unknown") == 0)) {
         return;
     }
 
@@ -2989,6 +3457,11 @@ static void label_count_add(label_count_t *labels, const char *label)
             return;
         }
     }
+}
+
+static void label_count_add(label_count_t *labels, const char *label)
+{
+    label_count_add_with_unknown(labels, label, false);
 }
 
 static void label_counts_to_json(char *buf, size_t size, const label_count_t *labels)
@@ -4392,7 +4865,7 @@ static bool queue_yolo_inference(const uint8_t *jpeg, uint32_t jpeg_size,
     if (s_storage_quiescing) {
         return false;
     }
-    if (!s_inference_queue || !jpeg || !jpeg_size || !meta || !recognition_method_is_yolo(method)) {
+    if (!s_inference_queue || !jpeg || !jpeg_size || !meta || !recognition_method_uses_jpeg_inference(method)) {
         return false;
     }
 
@@ -4471,9 +4944,19 @@ static void inference_task(void *arg)
             uint32_t source_w = 0;
             uint32_t source_h = 0;
             int64_t start_us = esp_timer_get_time();
-            esp_err_t err = classify_validation_yolo_jpeg(job.jpeg, job.jpeg_size, job.method,
-                                                          job.box_min_score ? job.box_min_score : s_box_min_score,
-                                                          &vision, &source_w, &source_h);
+            uint32_t box_min_score = job.box_min_score ? job.box_min_score : s_box_min_score;
+            esp_err_t err = ESP_OK;
+            if (job.method == RECOGNITION_METHOD_TINYCLS) {
+                err = classify_validation_tinycls_jpeg(job.jpeg, job.jpeg_size, box_min_score,
+                                                       &vision, &source_w, &source_h);
+            } else if (job.method == RECOGNITION_METHOD_FISH31) {
+                err = classify_validation_fish31_jpeg(job.jpeg, job.jpeg_size, box_min_score,
+                                                      &vision, &source_w, &source_h);
+            } else {
+                err = classify_validation_yolo_jpeg(job.jpeg, job.jpeg_size, job.method,
+                                                    box_min_score,
+                                                    &vision, &source_w, &source_h);
+            }
             vision.analysis_ms = (esp_timer_get_time() - start_us) / 1000;
 
             if (ctx) {
@@ -4483,7 +4966,7 @@ static void inference_task(void *arg)
                 ctx->source_h = source_h;
                 ctx->completed_ms = esp_timer_get_time() / 1000;
                 validation_cache_update(ctx);
-                if (vision.detection_count > 0) {
+                if (vision.object_count > 0) {
                     frame_meta_t validation_meta = {
                         .seq = ctx->id,
                         .size = job.jpeg_size,
@@ -4518,11 +5001,21 @@ static void inference_task(void *arg)
         bool stale = s_power_state != POWER_STATE_RUNNING ||
                      !s_vision_enabled ||
                      s_recognition_method != job.method ||
-                     !recognition_method_is_yolo(job.method);
+                     !recognition_method_uses_jpeg_inference(job.method);
 
         if (!stale) {
             int64_t start_us = esp_timer_get_time();
-            if (job.method == RECOGNITION_METHOD_YOLO11) {
+            if (job.method == RECOGNITION_METHOD_TINYCLS) {
+                uint32_t source_w = 0;
+                uint32_t source_h = 0;
+                classify_validation_tinycls_jpeg(job.jpeg, job.jpeg_size, s_box_min_score,
+                                                 &vision, &source_w, &source_h);
+            } else if (job.method == RECOGNITION_METHOD_FISH31) {
+                uint32_t source_w = 0;
+                uint32_t source_h = 0;
+                classify_validation_fish31_jpeg(job.jpeg, job.jpeg_size, s_box_min_score,
+                                                &vision, &source_w, &source_h);
+            } else if (job.method == RECOGNITION_METHOD_YOLO11) {
                 classify_yolo11_jpeg(job.jpeg, job.jpeg_size, &vision);
             } else if (job.method == RECOGNITION_METHOD_COCO) {
                 classify_coco_jpeg(job.jpeg, job.jpeg_size, &vision);
@@ -4534,7 +5027,7 @@ static void inference_task(void *arg)
             job.meta.vision = vision;
             update_latest_vision_from_inference(&vision, job.method);
             history_maybe_queue(job.jpeg, job.jpeg_size, &job.meta, job.method, "camera",
-                                vision.detection_count > 0);
+                                vision.object_count > 0);
             update_inference_fps(esp_timer_get_time() / 1000);
             s_inference_jobs_completed++;
         }
@@ -4753,8 +5246,12 @@ static esp_err_t camera_capture_once(void)
     recognition_method_t method = s_recognition_method;
     bool method_enabled = vision_enabled && method != RECOGNITION_METHOD_OFF;
     bool method_is_yolo = recognition_method_is_yolo(method);
+    bool method_uses_jpeg_inference = method_is_yolo ||
+                                      ((method == RECOGNITION_METHOD_TINYCLS ||
+                                        method == RECOGNITION_METHOD_FISH31) &&
+                                       s_camera.pixel_format == V4L2_PIX_FMT_JPEG);
     int64_t now_for_interval_ms = esp_timer_get_time() / 1000;
-    bool yolo_busy = method_enabled && method_is_yolo && inference_worker_busy();
+    bool yolo_busy = method_enabled && method_uses_jpeg_inference && inference_worker_busy();
     bool run_recognition = false;
     if (method_enabled) {
         if (yolo_busy) {
@@ -4765,15 +5262,19 @@ static esp_err_t camera_capture_once(void)
             run_recognition = recognition_due(now_for_interval_ms);
         }
     }
-    bool need_yolo = run_recognition && method_is_yolo;
+    bool need_yolo = run_recognition && method_uses_jpeg_inference;
     if (method_enabled && !run_recognition) {
         frame_meta_t previous = {0};
-        if (method_is_yolo && copy_completed_yolo_vision(&vision, method)) {
+        if (method_uses_jpeg_inference && copy_completed_yolo_vision(&vision, method)) {
             /* 复用上一次完成的 YOLO 结果，让视频流在下一次慢速推理结束前仍有稳定标注。 */
         } else if (copy_latest_meta(&previous)) {
             vision = previous.vision;
         } else if (method_is_yolo) {
             fill_yolo_pending(&vision, method);
+        } else if (method == RECOGNITION_METHOD_TINYCLS) {
+            fill_tinycls_pending(&vision);
+        } else if (method == RECOGNITION_METHOD_FISH31) {
+            fill_fish31_pending(&vision);
         } else {
             fill_vision_disabled(&vision);
         }
@@ -4785,7 +5286,13 @@ static esp_err_t camera_capture_once(void)
         if (need_yolo) {
             strlcpy(vision.scene, "jpeg", sizeof(vision.scene));
             strlcpy(vision.color, "unknown", sizeof(vision.color));
-            fill_yolo_pending(&vision, method);
+            if (method == RECOGNITION_METHOD_TINYCLS) {
+                fill_tinycls_pending(&vision);
+            } else if (method == RECOGNITION_METHOD_FISH31) {
+                fill_fish31_pending(&vision);
+            } else {
+                fill_yolo_pending(&vision, method);
+            }
         } else if (run_recognition) {
             strlcpy(vision.scene, "jpeg", sizeof(vision.scene));
             strlcpy(vision.color, "unknown", sizeof(vision.color));
@@ -4799,7 +5306,9 @@ static esp_err_t camera_capture_once(void)
     } else {
         if (run_recognition) {
             analyze_frame(raw_ptr, raw_size, s_camera.width, s_camera.height, s_camera.pixel_format, &vision);
-            if (method == RECOGNITION_METHOD_MLP) {
+            if (method == RECOGNITION_METHOD_MLP ||
+                method == RECOGNITION_METHOD_TINYCLS ||
+                method == RECOGNITION_METHOD_FISH31) {
                 update_inference_fps(esp_timer_get_time() / 1000);
             }
         } else if (!method_enabled) {
@@ -4817,7 +5326,7 @@ static esp_err_t camera_capture_once(void)
         frame_meta_t previous = {0};
         if (copy_completed_yolo_vision(&vision, method)) {
             /* 新任务已经投递时，画面继续显示上一轮真实 YOLO 结果，避免 waiting 闪烁。 */
-        } else if (copy_latest_meta(&previous) && is_completed_yolo_result(&previous.vision, method)) {
+        } else if (copy_latest_meta(&previous) && is_completed_inference_result(&previous.vision, method)) {
             vision = previous.vision;
         }
     }
@@ -4843,7 +5352,7 @@ static esp_err_t camera_capture_once(void)
             queue_yolo_inference(jpeg_ptr, jpeg_size, &meta, method);
         } else if (run_recognition) {
             history_maybe_queue(jpeg_ptr, jpeg_size, &meta, method, "camera",
-                                meta.vision.detection_count > 0);
+                                meta.vision.object_count > 0);
         }
         s_frames_total++;
         update_capture_fps(now_ms);
@@ -5024,18 +5533,7 @@ static void load_runtime_settings(void)
         s_network_mode = CONFIG_APP_DEFAULT_NETWORK_MODE == 2 ? NETWORK_MODE_APSTA :
                          (CONFIG_APP_DEFAULT_NETWORK_MODE == 1 ? NETWORK_MODE_SOFTAP :
                           NETWORK_MODE_STA);
-        s_recognition_method = CONFIG_APP_DEFAULT_RECOGNITION_METHOD == 4 ? RECOGNITION_METHOD_COCO :
-                               (CONFIG_APP_DEFAULT_RECOGNITION_METHOD == 3 ? RECOGNITION_METHOD_YOLO11 :
-                                (CONFIG_APP_DEFAULT_RECOGNITION_METHOD == 2 ? RECOGNITION_METHOD_YOLO26 :
-                                 (CONFIG_APP_DEFAULT_RECOGNITION_METHOD == 0 ? RECOGNITION_METHOD_OFF :
-                                  RECOGNITION_METHOD_MLP)));
-        if (s_recognition_method == RECOGNITION_METHOD_YOLO26 && !yolo26_espdl_available()) {
-            s_recognition_method = RECOGNITION_METHOD_MLP;
-        } else if (s_recognition_method == RECOGNITION_METHOD_YOLO11 && !yolo11_espdl_available()) {
-            s_recognition_method = RECOGNITION_METHOD_MLP;
-        } else if (s_recognition_method == RECOGNITION_METHOD_COCO && !coco_espdl_available()) {
-            s_recognition_method = RECOGNITION_METHOD_MLP;
-        }
+        s_recognition_method = recognition_method_or_fallback(configured_default_recognition_method());
         s_vision_enabled = s_recognition_method != RECOGNITION_METHOD_OFF;
         s_history_enabled = CONFIG_APP_HISTORY_ENABLE;
         s_recording_enabled = CONFIG_APP_RECORDING_ENABLE;
@@ -5061,15 +5559,8 @@ static void load_runtime_settings(void)
     }
 
     uint8_t method = (uint8_t)s_recognition_method;
-    if (nvs_get_u8(nvs, "method", &method) == ESP_OK && method <= RECOGNITION_METHOD_COCO) {
-        s_recognition_method = (recognition_method_t)method;
-        if (s_recognition_method == RECOGNITION_METHOD_YOLO26 && !yolo26_espdl_available()) {
-            s_recognition_method = RECOGNITION_METHOD_MLP;
-        } else if (s_recognition_method == RECOGNITION_METHOD_YOLO11 && !yolo11_espdl_available()) {
-            s_recognition_method = RECOGNITION_METHOD_MLP;
-        } else if (s_recognition_method == RECOGNITION_METHOD_COCO && !coco_espdl_available()) {
-            s_recognition_method = RECOGNITION_METHOD_MLP;
-        }
+    if (nvs_get_u8(nvs, "method", &method) == ESP_OK && method <= RECOGNITION_METHOD_FISH31) {
+        s_recognition_method = recognition_method_or_fallback((recognition_method_t)method);
         s_vision_enabled = method != RECOGNITION_METHOD_OFF;
     }
 
@@ -5220,18 +5711,6 @@ static esp_err_t send_embedded_jpeg(httpd_req_t *req, const uint8_t *start, cons
     return http_send_buffer_chunked(req, (const char *)start, (size_t)(end - start));
 }
 
-static esp_err_t validate_coke_jpg_handler(httpd_req_t *req)
-{
-    record_http_request();
-    return send_embedded_jpeg(req, validate_coke_jpg_start, validate_coke_jpg_end);
-}
-
-static esp_err_t validate_sprite_jpg_handler(httpd_req_t *req)
-{
-    record_http_request();
-    return send_embedded_jpeg(req, validate_sprite_jpg_start, validate_sprite_jpg_end);
-}
-
 static bool validation_sample_image(validation_sample_t sample, const uint8_t **start, const uint8_t **end);
 
 static esp_err_t validate_demo_jpg_handler(httpd_req_t *req)
@@ -5246,6 +5725,22 @@ static esp_err_t validate_demo_jpg_handler(httpd_req_t *req)
         sample = VALIDATION_SAMPLE_DEMO_03;
     } else if (strcmp(req->uri, "/validate/demo_04.jpg") == 0) {
         sample = VALIDATION_SAMPLE_DEMO_04;
+    } else if (strcmp(req->uri, "/validate/tiny_01.jpg") == 0) {
+        sample = VALIDATION_SAMPLE_TINY_01;
+    } else if (strcmp(req->uri, "/validate/tiny_02.jpg") == 0) {
+        sample = VALIDATION_SAMPLE_TINY_02;
+    } else if (strcmp(req->uri, "/validate/tiny_03.jpg") == 0) {
+        sample = VALIDATION_SAMPLE_TINY_03;
+    } else if (strcmp(req->uri, "/validate/tiny_04.jpg") == 0) {
+        sample = VALIDATION_SAMPLE_TINY_04;
+    } else if (strcmp(req->uri, "/validate/fish31_01.jpg") == 0) {
+        sample = VALIDATION_SAMPLE_FISH31_01;
+    } else if (strcmp(req->uri, "/validate/fish31_02.jpg") == 0) {
+        sample = VALIDATION_SAMPLE_FISH31_02;
+    } else if (strcmp(req->uri, "/validate/fish31_03.jpg") == 0) {
+        sample = VALIDATION_SAMPLE_FISH31_03;
+    } else if (strcmp(req->uri, "/validate/fish31_04.jpg") == 0) {
+        sample = VALIDATION_SAMPLE_FISH31_04;
     }
 
     const uint8_t *start = NULL;
@@ -5271,6 +5766,22 @@ static const char *validation_sample_name(validation_sample_t sample)
         return "demo_03";
     case VALIDATION_SAMPLE_DEMO_04:
         return "demo_04";
+    case VALIDATION_SAMPLE_TINY_01:
+        return "tiny_01";
+    case VALIDATION_SAMPLE_TINY_02:
+        return "tiny_02";
+    case VALIDATION_SAMPLE_TINY_03:
+        return "tiny_03";
+    case VALIDATION_SAMPLE_TINY_04:
+        return "tiny_04";
+    case VALIDATION_SAMPLE_FISH31_01:
+        return "fish31_01";
+    case VALIDATION_SAMPLE_FISH31_02:
+        return "fish31_02";
+    case VALIDATION_SAMPLE_FISH31_03:
+        return "fish31_03";
+    case VALIDATION_SAMPLE_FISH31_04:
+        return "fish31_04";
     default:
         return "none";
     }
@@ -5278,14 +5789,35 @@ static const char *validation_sample_name(validation_sample_t sample)
 
 static const char *validation_sample_expected(validation_sample_t sample)
 {
-    if (sample == VALIDATION_SAMPLE_COKE || sample == VALIDATION_SAMPLE_SPRITE) {
-        return validation_sample_name(sample);
-    }
     if (sample == VALIDATION_SAMPLE_DEMO_01 ||
         sample == VALIDATION_SAMPLE_DEMO_02 ||
         sample == VALIDATION_SAMPLE_DEMO_03 ||
         sample == VALIDATION_SAMPLE_DEMO_04) {
         return "object";
+    }
+    if (sample == VALIDATION_SAMPLE_TINY_01) {
+        return VALIDATION_TINYCLS_01_LABEL;
+    }
+    if (sample == VALIDATION_SAMPLE_TINY_02) {
+        return VALIDATION_TINYCLS_02_LABEL;
+    }
+    if (sample == VALIDATION_SAMPLE_TINY_03) {
+        return VALIDATION_TINYCLS_03_LABEL;
+    }
+    if (sample == VALIDATION_SAMPLE_TINY_04) {
+        return VALIDATION_TINYCLS_04_LABEL;
+    }
+    if (sample == VALIDATION_SAMPLE_FISH31_01) {
+        return VALIDATION_FISH31_01_LABEL;
+    }
+    if (sample == VALIDATION_SAMPLE_FISH31_02) {
+        return VALIDATION_FISH31_02_LABEL;
+    }
+    if (sample == VALIDATION_SAMPLE_FISH31_03) {
+        return VALIDATION_FISH31_03_LABEL;
+    }
+    if (sample == VALIDATION_SAMPLE_FISH31_04) {
+        return VALIDATION_FISH31_04_LABEL;
     }
     return "none";
 }
@@ -5293,8 +5825,6 @@ static const char *validation_sample_expected(validation_sample_t sample)
 static const char *validation_sample_image_uri(validation_sample_t sample)
 {
     switch (sample) {
-    case VALIDATION_SAMPLE_SPRITE:
-        return "/validate/sprite.jpg";
     case VALIDATION_SAMPLE_DEMO_01:
         return "/validate/demo_01.jpg";
     case VALIDATION_SAMPLE_DEMO_02:
@@ -5303,9 +5833,24 @@ static const char *validation_sample_image_uri(validation_sample_t sample)
         return "/validate/demo_03.jpg";
     case VALIDATION_SAMPLE_DEMO_04:
         return "/validate/demo_04.jpg";
-    case VALIDATION_SAMPLE_COKE:
+    case VALIDATION_SAMPLE_TINY_01:
+        return "/validate/tiny_01.jpg";
+    case VALIDATION_SAMPLE_TINY_02:
+        return "/validate/tiny_02.jpg";
+    case VALIDATION_SAMPLE_TINY_03:
+        return "/validate/tiny_03.jpg";
+    case VALIDATION_SAMPLE_TINY_04:
+        return "/validate/tiny_04.jpg";
+    case VALIDATION_SAMPLE_FISH31_01:
+        return "/validate/fish31_01.jpg";
+    case VALIDATION_SAMPLE_FISH31_02:
+        return "/validate/fish31_02.jpg";
+    case VALIDATION_SAMPLE_FISH31_03:
+        return "/validate/fish31_03.jpg";
+    case VALIDATION_SAMPLE_FISH31_04:
+        return "/validate/fish31_04.jpg";
     default:
-        return "/validate/coke.jpg";
+        return "";
     }
 }
 
@@ -5313,16 +5858,6 @@ static bool validation_sample_image(validation_sample_t sample, const uint8_t **
 {
     if (!start || !end) {
         return false;
-    }
-    if (sample == VALIDATION_SAMPLE_COKE) {
-        *start = validate_coke_jpg_start;
-        *end = validate_coke_jpg_end;
-        return *end > *start;
-    }
-    if (sample == VALIDATION_SAMPLE_SPRITE) {
-        *start = validate_sprite_jpg_start;
-        *end = validate_sprite_jpg_end;
-        return *end > *start;
     }
     if (sample == VALIDATION_SAMPLE_DEMO_01) {
         *start = validate_demo_01_jpg_start;
@@ -5344,7 +5879,64 @@ static bool validation_sample_image(validation_sample_t sample, const uint8_t **
         *end = validate_demo_04_jpg_end;
         return *end > *start;
     }
+    if (sample == VALIDATION_SAMPLE_TINY_01) {
+        *start = validate_tiny_01_jpg_start;
+        *end = validate_tiny_01_jpg_end;
+        return *end > *start;
+    }
+    if (sample == VALIDATION_SAMPLE_TINY_02) {
+        *start = validate_tiny_02_jpg_start;
+        *end = validate_tiny_02_jpg_end;
+        return *end > *start;
+    }
+    if (sample == VALIDATION_SAMPLE_TINY_03) {
+        *start = validate_tiny_03_jpg_start;
+        *end = validate_tiny_03_jpg_end;
+        return *end > *start;
+    }
+    if (sample == VALIDATION_SAMPLE_TINY_04) {
+        *start = validate_tiny_04_jpg_start;
+        *end = validate_tiny_04_jpg_end;
+        return *end > *start;
+    }
+    if (sample == VALIDATION_SAMPLE_FISH31_01) {
+        *start = validate_fish31_01_jpg_start;
+        *end = validate_fish31_01_jpg_end;
+        return *end > *start;
+    }
+    if (sample == VALIDATION_SAMPLE_FISH31_02) {
+        *start = validate_fish31_02_jpg_start;
+        *end = validate_fish31_02_jpg_end;
+        return *end > *start;
+    }
+    if (sample == VALIDATION_SAMPLE_FISH31_03) {
+        *start = validate_fish31_03_jpg_start;
+        *end = validate_fish31_03_jpg_end;
+        return *end > *start;
+    }
+    if (sample == VALIDATION_SAMPLE_FISH31_04) {
+        *start = validate_fish31_04_jpg_start;
+        *end = validate_fish31_04_jpg_end;
+        return *end > *start;
+    }
     return false;
+}
+
+static bool validation_sample_matched(validation_sample_t sample,
+                                      recognition_method_t method,
+                                      const vision_result_t *vision)
+{
+    if (!vision) {
+        return false;
+    }
+    const char *expected = validation_sample_expected(sample);
+    if (method == RECOGNITION_METHOD_TINYCLS || method == RECOGNITION_METHOD_FISH31) {
+        return strcmp(vision->label, expected) == 0 || strcmp(vision->object, expected) == 0;
+    }
+    if (strcmp(expected, "object") == 0) {
+        return vision->object_count > 0;
+    }
+    return vision->object_count > 0 && strcmp(vision->object, expected) == 0;
 }
 
 static bool validation_selftest_method_available(recognition_method_t method)
@@ -5358,6 +5950,12 @@ static bool validation_selftest_method_available(recognition_method_t method)
     if (method == RECOGNITION_METHOD_COCO) {
         return coco_espdl_available();
     }
+    if (method == RECOGNITION_METHOD_TINYCLS) {
+        return tiny_cls_espdl_available();
+    }
+    if (method == RECOGNITION_METHOD_FISH31) {
+        return fish31_espdl_available();
+    }
     return false;
 }
 
@@ -5369,7 +5967,7 @@ static void run_board_image_validation_case(validation_sample_t sample,
     const uint8_t *jpg_start = NULL;
     const uint8_t *jpg_end = NULL;
 
-    if (!recognition_method_is_yolo(method) || !validation_selftest_method_available(method)) {
+    if (!recognition_method_uses_jpeg_inference(method) || !validation_selftest_method_available(method)) {
         ESP_LOGW(TAG, "BOARD_IMAGE_VALIDATION trial=%s sample=%s method=%s unavailable",
                  trial, validation_sample_name(sample), recognition_method_name(method));
         return;
@@ -5410,7 +6008,13 @@ static void run_board_image_validation_case(validation_sample_t sample,
         .validation_ctx = ctx,
         .queued_ms = ctx->queued_ms,
     };
-    fill_yolo_pending(&job.meta.vision, method);
+    if (method == RECOGNITION_METHOD_TINYCLS) {
+        fill_tinycls_pending(&job.meta.vision);
+    } else if (method == RECOGNITION_METHOD_FISH31) {
+        fill_fish31_pending(&job.meta.vision);
+    } else {
+        fill_yolo_pending(&job.meta.vision, method);
+    }
     job.jpeg = alloc_psram_buffer(jpeg_size);
     if (!job.jpeg) {
         ESP_LOGE(TAG, "BOARD_IMAGE_VALIDATION trial=%s sample=%s method=%s unavailable: no jpeg buffer",
@@ -5449,8 +6053,10 @@ static void run_board_image_validation_case(validation_sample_t sample,
                                    ctx->completed_ms - ctx->queued_ms : 0;
     const bool latency_ok = vision.analysis_ms > 0 &&
                             vision.analysis_ms < BOARD_IMAGE_VALIDATION_MAX_ANALYSIS_MS;
-    const char *top_label = vision.detection_count > 0 ? vision.detections[0].label : "none";
-    const uint32_t top_score = vision.detection_count > 0 ? vision.detections[0].score : 0;
+    const char *top_label = vision.detection_count > 0 ? vision.detections[0].label :
+                            (vision.top_k_count > 0 ? vision.top_k[0].label : "none");
+    const uint32_t top_score = vision.detection_count > 0 ? vision.detections[0].score :
+                               (vision.top_k_count > 0 ? vision.top_k[0].score : 0);
 
     ESP_LOGI(TAG,
              "BOARD_IMAGE_VALIDATION trial=%s sample=%s method=%s latency_ok=%s model=%s model_bytes=%" PRIu32
@@ -5503,12 +6109,6 @@ static void validation_selftest_task(void *arg)
 
 static validation_sample_t parse_validation_sample(const char *text)
 {
-    if (strcmp(text, "coke") == 0 || strcmp(text, "cola") == 0) {
-        return VALIDATION_SAMPLE_COKE;
-    }
-    if (strcmp(text, "sprite") == 0) {
-        return VALIDATION_SAMPLE_SPRITE;
-    }
     if (strcmp(text, "demo_01") == 0 || strcmp(text, "demo1") == 0) {
         return VALIDATION_SAMPLE_DEMO_01;
     }
@@ -5521,21 +6121,50 @@ static validation_sample_t parse_validation_sample(const char *text)
     if (strcmp(text, "demo_04") == 0 || strcmp(text, "demo4") == 0) {
         return VALIDATION_SAMPLE_DEMO_04;
     }
+    if (strcmp(text, "tiny_01") == 0 || strcmp(text, "tiny1") == 0) {
+        return VALIDATION_SAMPLE_TINY_01;
+    }
+    if (strcmp(text, "tiny_02") == 0 || strcmp(text, "tiny2") == 0) {
+        return VALIDATION_SAMPLE_TINY_02;
+    }
+    if (strcmp(text, "tiny_03") == 0 || strcmp(text, "tiny3") == 0) {
+        return VALIDATION_SAMPLE_TINY_03;
+    }
+    if (strcmp(text, "tiny_04") == 0 || strcmp(text, "tiny4") == 0) {
+        return VALIDATION_SAMPLE_TINY_04;
+    }
+    if (strcmp(text, "fish31_01") == 0 || strcmp(text, "fish31_1") == 0) {
+        return VALIDATION_SAMPLE_FISH31_01;
+    }
+    if (strcmp(text, "fish31_02") == 0 || strcmp(text, "fish31_2") == 0) {
+        return VALIDATION_SAMPLE_FISH31_02;
+    }
+    if (strcmp(text, "fish31_03") == 0 || strcmp(text, "fish31_3") == 0) {
+        return VALIDATION_SAMPLE_FISH31_03;
+    }
+    if (strcmp(text, "fish31_04") == 0 || strcmp(text, "fish31_4") == 0) {
+        return VALIDATION_SAMPLE_FISH31_04;
+    }
     return VALIDATION_SAMPLE_NONE;
 }
 
 static recognition_method_t parse_validation_method(const char *text)
 {
-    if (strcmp(text, "yolo26") == 0) {
-        return RECOGNITION_METHOD_YOLO26;
-    }
-    if (strcmp(text, "yolo11") == 0) {
-        return RECOGNITION_METHOD_YOLO11;
-    }
     if (strcmp(text, "coco") == 0) {
         return RECOGNITION_METHOD_COCO;
     }
-    return recognition_method_is_yolo(s_recognition_method) ? s_recognition_method : RECOGNITION_METHOD_COCO;
+    if (strcmp(text, "tinycls") == 0 || strcmp(text, "tiny_cls") == 0) {
+        return RECOGNITION_METHOD_TINYCLS;
+    }
+    if (strcmp(text, "fish31") == 0 || strcmp(text, "fish") == 0) {
+        return RECOGNITION_METHOD_FISH31;
+    }
+    if (s_recognition_method == RECOGNITION_METHOD_FISH31 ||
+        s_recognition_method == RECOGNITION_METHOD_TINYCLS ||
+        s_recognition_method == RECOGNITION_METHOD_COCO) {
+        return s_recognition_method;
+    }
+    return preferred_recognition_method();
 }
 
 static esp_err_t validation_json_error(httpd_req_t *req, const char *status, const char *error)
@@ -5567,7 +6196,7 @@ static esp_err_t validation_run_get_handler(httpd_req_t *req)
 
     validation_sample_t sample = parse_validation_sample(sample_text);
     if (sample == VALIDATION_SAMPLE_NONE) {
-        return validation_json_error(req, "400 Bad Request", "sample must be coke, sprite, demo_01, demo_02, demo_03, or demo_04");
+        return validation_json_error(req, "400 Bad Request", "sample must be fish31_01..fish31_04, tiny_01..tiny_04, or demo_01..demo_04");
     }
 
     recognition_method_t method = parse_validation_method(method_text);
@@ -5580,8 +6209,14 @@ static esp_err_t validation_run_get_handler(httpd_req_t *req)
     if (method == RECOGNITION_METHOD_COCO && !coco_espdl_available()) {
         return validation_json_error(req, "503 Service Unavailable", "coco model unavailable");
     }
-    if (!recognition_method_is_yolo(method)) {
-        return validation_json_error(req, "400 Bad Request", "validation supports coco, yolo11, or yolo26");
+    if (method == RECOGNITION_METHOD_TINYCLS && !tiny_cls_espdl_available()) {
+        return validation_json_error(req, "503 Service Unavailable", "tinycls model unavailable");
+    }
+    if (method == RECOGNITION_METHOD_FISH31 && !fish31_espdl_available()) {
+        return validation_json_error(req, "503 Service Unavailable", "fish31 model unavailable");
+    }
+    if (!recognition_method_uses_jpeg_inference(method)) {
+        return validation_json_error(req, "400 Bad Request", "validation supports fish31, tinycls, or coco");
     }
     uint32_t validation_box_min_score = 50;
     if (box_min_text[0]) {
@@ -5624,7 +6259,13 @@ static esp_err_t validation_run_get_handler(httpd_req_t *req)
         .validation_ctx = ctx,
         .queued_ms = ctx->queued_ms,
     };
-    fill_yolo_pending(&job.meta.vision, method);
+    if (method == RECOGNITION_METHOD_TINYCLS) {
+        fill_tinycls_pending(&job.meta.vision);
+    } else if (method == RECOGNITION_METHOD_FISH31) {
+        fill_fish31_pending(&job.meta.vision);
+    } else {
+        fill_yolo_pending(&job.meta.vision, method);
+    }
     job.jpeg = alloc_psram_buffer(jpeg_size);
     if (!job.jpeg) {
         vSemaphoreDelete(ctx->done);
@@ -5655,13 +6296,12 @@ static esp_err_t validation_run_get_handler(httpd_req_t *req)
     vSemaphoreDelete(ctx->done);
     free(ctx);
 
-    bool expected_any_object = strcmp(validation_sample_expected(sample), "object") == 0;
-    bool matched = expected_any_object ?
-                   (vision.object_count > 0 && vision.detection_count > 0) :
-                   (vision.object_count > 0 && strcmp(vision.object, validation_sample_name(sample)) == 0);
+    bool matched = validation_sample_matched(sample, method, &vision);
     char detections_json[1280];
+    char top_k_json[512];
     detections_to_json(detections_json, sizeof(detections_json), &vision);
-    const size_t json_cap = 4096;
+    top_k_to_json(top_k_json, sizeof(top_k_json), &vision);
+    const size_t json_cap = 5120;
     char *json = (char *)alloc_psram_buffer(json_cap);
     if (!json) {
         return validation_json_error(req, "500 Internal Server Error", "no validation json buffer");
@@ -5674,13 +6314,13 @@ static esp_err_t validation_run_get_handler(httpd_req_t *req)
              "\"overlay\":\"/api/validate/overlay.svg\",\"source_w\":%" PRIu32 ",\"source_h\":%" PRIu32 ","
              "\"jpeg_bytes\":%" PRIu32 ",\"model_bytes\":%" PRIu32 ",\"model_input_size\":%" PRIu32 ","
              "\"nms_threshold\":%" PRIu32 ",\"raw_candidate_count\":%" PRIu32 ",\"detection_count\":%" PRIu32 ","
-             "\"detections\":%s,"
+             "\"detections\":%s,\"top_k\":%s,"
              "\"queued_ms\":%" PRId64 ",\"completed_ms\":%" PRId64 ","
              "\"error\":\"%s\","
              "\"vision\":{\"label\":\"%s\",\"object\":\"%s\",\"model\":\"%s\","
              "\"object_score\":%" PRIu32 ",\"candidate_score\":%" PRIu32 ",\"box_min_score\":%" PRIu32 ","
              "\"object_count\":%" PRIu32 ",\"detection_count\":%" PRIu32 ",\"raw_candidate_count\":%" PRIu32 ","
-             "\"detections\":%s,"
+             "\"detections\":%s,\"top_k\":%s,"
              "\"object_x\":%" PRIu32 ",\"object_y\":%" PRIu32 ","
              "\"object_w\":%" PRIu32 ",\"object_h\":%" PRIu32 ","
              "\"coke_score\":%" PRIu32 ",\"sprite_score\":%" PRIu32 ",\"unknown_score\":%" PRIu32 ","
@@ -5693,13 +6333,13 @@ static esp_err_t validation_run_get_handler(httpd_req_t *req)
              source_w, source_h, jpeg_size,
              model_bytes_for_method(method), model_input_size_for_method(method),
              (uint32_t)APP_YOLO_NMS_THRESHOLD_X100, vision.raw_candidate_count, vision.detection_count,
-             detections_json,
+             detections_json, top_k_json,
              queued_ms, completed_ms,
              run_err == ESP_OK ? "" : esp_err_to_name(run_err),
              vision.label, vision.object, vision.model,
              vision.object_score, vision.candidate_score, vision.box_min_score,
              vision.object_count, vision.detection_count, vision.raw_candidate_count,
-             detections_json,
+             detections_json, top_k_json,
              vision.object_x, vision.object_y,
              vision.object_w, vision.object_h,
              vision.coke_score, vision.sprite_score, vision.unknown_score,
@@ -5799,21 +6439,35 @@ static esp_err_t status_get_handler(httpd_req_t *req)
     uint32_t min_free_psram = 0;
     int rssi = wifi_rssi();
     sample_memory_stats(&free_heap, &min_free_heap, &free_psram, &min_free_psram);
-    char detections_json[1280];
-    char dataset_labels_json[512];
+    const size_t detections_json_cap = 1280;
+    const size_t top_k_json_cap = 512;
+    const size_t dataset_labels_json_cap = 512;
+    const size_t enrichment_json_cap = 768;
+    char *detections_json = (char *)alloc_psram_buffer(detections_json_cap);
+    char *top_k_json = (char *)alloc_psram_buffer(top_k_json_cap);
+    char *dataset_labels_json = (char *)alloc_psram_buffer(dataset_labels_json_cap);
+    char *enrichment_json = (char *)alloc_psram_buffer(enrichment_json_cap);
+    if (!detections_json || !top_k_json || !dataset_labels_json || !enrichment_json) {
+        free(enrichment_json);
+        free(dataset_labels_json);
+        free(top_k_json);
+        free(detections_json);
+        free(json);
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no status scratch buffer");
+    }
     char ap_url[40] = {0};
     char sta_url[40] = {0};
     char eth_url[40] = {0};
     char mdns_url[64] = {0};
     char access_urls[256] = {0};
-    char enrichment_json[768] = {0};
     const char *primary_ip = s_ip_addr;
     dataset_run_status_t dataset_status;
     recording_enrichment_status_t enrichment_status = {0};
-    detections_to_json(detections_json, sizeof(detections_json), &meta.vision);
+    detections_to_json(detections_json, detections_json_cap, &meta.vision);
+    top_k_to_json(top_k_json, top_k_json_cap, &meta.vision);
     dataset_status_copy(&dataset_status);
     recording_enrichment_get_status(&enrichment_status);
-    label_counts_to_json(dataset_labels_json, sizeof(dataset_labels_json), dataset_status.labels);
+    label_counts_to_json(dataset_labels_json, dataset_labels_json_cap, dataset_status.labels);
     bool tf_ready = storage_tf_ready();
     bool acceptance_ok = storage_acceptance_ok();
     uint64_t min_recording_free = recording_min_free_bytes();
@@ -5831,7 +6485,7 @@ static esp_err_t status_get_handler(httpd_req_t *req)
     snprintf(access_urls, sizeof(access_urls),
              "{\"mdns\":\"%s\",\"ap\":\"%s\",\"sta\":\"%s\",\"eth\":\"%s\"}",
              mdns_url, ap_url, sta_url, eth_url);
-    snprintf(enrichment_json, sizeof(enrichment_json),
+    snprintf(enrichment_json, enrichment_json_cap,
              "{\"enabled\":%s,\"running\":%s,\"cancelled\":%s,"
              "\"raw_name\":\"%s\",\"output_name\":\"%s\","
              "\"pass_stride\":%" PRIu32 ",\"completed_stride\":%" PRIu32
@@ -5883,7 +6537,8 @@ static esp_err_t status_get_handler(httpd_req_t *req)
              "\"inference_interval_ms\":%" PRIu32 ",\"history_sample_interval_ms\":%" PRIu32 ","
              "\"jpeg_quality\":%" PRIu32 ","
              "\"yolo_input_size\":%" PRIu32 ",\"yolo_model_loaded\":%s,"
-             "\"yolo26_available\":%s,\"yolo11_available\":%s,\"coco_available\":%s},"
+              "\"yolo26_available\":%s,\"yolo11_available\":%s,\"coco_available\":%s,"
+              "\"tinycls_available\":%s,\"fish31_available\":%s},"
              "\"camera_ready\":%s,\"video_hw_ready\":%s,"
              "\"camera_error\":\"%s\",\"vision_enabled\":%s,\"history_enabled\":%s,"
              "\"width\":%" PRIu32 ",\"height\":%" PRIu32 ",\"pixel_format\":\"%s\","
@@ -5921,7 +6576,7 @@ static esp_err_t status_get_handler(httpd_req_t *req)
              ",\"last_mount_ok\":%s,\"last_mode\":\"%s\",\"last_error_code\":%d},"
              "\"sd_total_bytes\":%" PRIu64 ",\"sd_free_bytes\":%" PRIu64 ","
              "\"dataset_run\":{\"state\":\"%s\",\"queued\":%s,\"running\":%s,\"done\":%s,"
-             "\"dataset\":\"%s\",\"run_id\":\"%s\","
+             "\"dataset\":\"%s\",\"method\":\"%s\",\"run_id\":\"%s\","
              "\"processed\":%" PRIu32 ",\"ok_frames\":%" PRIu32 ",\"failed_frames\":%" PRIu32
              ",\"detection_total\":%" PRIu32 ",\"avg_analysis_ms\":%" PRIu32
              ",\"p95_analysis_ms\":%" PRIu32 ",\"max_analysis_ms\":%" PRIu32
@@ -5935,7 +6590,7 @@ static esp_err_t status_get_handler(httpd_req_t *req)
              "\"avg_r\":%" PRIu32 ",\"avg_g\":%" PRIu32 ",\"avg_b\":%" PRIu32 ","
              "\"object_score\":%" PRIu32 ",\"candidate_score\":%" PRIu32 ",\"box_min_score\":%" PRIu32 ","
              "\"object_count\":%" PRIu32 ",\"detection_count\":%" PRIu32 ",\"raw_candidate_count\":%" PRIu32 ","
-             "\"detections\":%s,"
+             "\"detections\":%s,\"top_k\":%s,"
              "\"object_x\":%" PRIu32 ",\"object_y\":%" PRIu32 ",\"object_w\":%" PRIu32 ",\"object_h\":%" PRIu32 ","
              "\"coke_score\":%" PRIu32 ",\"sprite_score\":%" PRIu32 ","
              "\"unknown_score\":%" PRIu32 ","
@@ -5976,9 +6631,11 @@ static esp_err_t status_get_handler(httpd_req_t *req)
              s_history_sample_interval_ms, s_jpeg_quality,
              (unsigned long)active_yolo_input_size(), active_yolo_available() ? "true" : "false",
              yolo26_espdl_available() ? "true" : "false",
-             yolo11_espdl_available() ? "true" : "false",
-             coco_espdl_available() ? "true" : "false",
-             state == POWER_STATE_RUNNING ? "true" : "false",
+              yolo11_espdl_available() ? "true" : "false",
+              coco_espdl_available() ? "true" : "false",
+              tiny_cls_espdl_available() ? "true" : "false",
+              fish31_espdl_available() ? "true" : "false",
+              state == POWER_STATE_RUNNING ? "true" : "false",
              s_video_hw_ready ? "true" : "false",
              s_camera_error, s_vision_enabled ? "true" : "false", s_history_enabled ? "true" : "false",
              meta.width, meta.height, fourcc, meta.sensor_fps, s_capture_fps_x100, s_stream_fps_x100,
@@ -6020,7 +6677,7 @@ static esp_err_t status_get_handler(httpd_req_t *req)
                  (dataset_status.running ? "running" : (dataset_status.done ? "done" : "idle")),
              dataset_status.queued ? "true" : "false",
              dataset_status.running ? "true" : "false", dataset_status.done ? "true" : "false",
-             dataset_status.dataset, dataset_status.run_id,
+             dataset_status.dataset, recognition_method_name(dataset_status.method), dataset_status.run_id,
              dataset_status.processed, dataset_status.ok_frames, dataset_status.failed_frames,
              dataset_status.detection_total, dataset_status.avg_analysis_ms,
              dataset_status.p95_analysis_ms, dataset_status.max_analysis_ms,
@@ -6034,7 +6691,7 @@ static esp_err_t status_get_handler(httpd_req_t *req)
              meta.vision.avg_r, meta.vision.avg_g, meta.vision.avg_b,
              meta.vision.object_score, meta.vision.candidate_score, meta.vision.box_min_score,
              meta.vision.object_count, meta.vision.detection_count, meta.vision.raw_candidate_count,
-             detections_json,
+             detections_json, top_k_json,
              meta.vision.object_x, meta.vision.object_y, meta.vision.object_w, meta.vision.object_h,
              meta.vision.coke_score, meta.vision.sprite_score,
              meta.vision.unknown_score,
@@ -6044,6 +6701,10 @@ static esp_err_t status_get_handler(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     esp_err_t ret = http_send_cstr_chunked(req, json);
+    free(enrichment_json);
+    free(dataset_labels_json);
+    free(top_k_json);
+    free(detections_json);
     free(json);
     return ret;
 }
@@ -6086,7 +6747,7 @@ static esp_err_t vision_get_handler(httpd_req_t *req)
     if (strcmp(enabled, "1") == 0 || strcmp(enabled, "true") == 0 || strcmp(enabled, "on") == 0) {
         s_vision_enabled = true;
         if (s_recognition_method == RECOGNITION_METHOD_OFF) {
-            s_recognition_method = coco_espdl_available() ? RECOGNITION_METHOD_COCO : RECOGNITION_METHOD_MLP;
+            s_recognition_method = preferred_recognition_method();
             save_setting_u8("method", (uint8_t)s_recognition_method);
         }
         s_last_inference_ms = 0;
@@ -6121,23 +6782,17 @@ static esp_err_t recognition_get_handler(httpd_req_t *req)
         s_recognition_method = RECOGNITION_METHOD_OFF;
         s_vision_enabled = false;
         s_prev_luma_valid = false;
-    } else if (strcmp(method_text, "mlp") == 0) {
-        s_recognition_method = RECOGNITION_METHOD_MLP;
-        s_vision_enabled = true;
-    } else if (strcmp(method_text, "yolo26") == 0) {
-        if (!yolo26_espdl_available()) {
+    } else if (strcmp(method_text, "mlp") == 0 ||
+               strcmp(method_text, "yolo26") == 0 ||
+               strcmp(method_text, "yolo11") == 0) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                   "legacy Coke/Sprite methods are not in the current main path; supported method: off, fish31, tinycls, coco");
+    } else if (strcmp(method_text, "fish31") == 0 || strcmp(method_text, "fish") == 0) {
+        if (!fish31_espdl_available()) {
             httpd_resp_set_status(req, "503 Service Unavailable");
-            return httpd_resp_sendstr(req,
-                                      "yolo26 board backend is unavailable; use mlp or check models/yolo26_coke_sprite_raw_heads_416_allint8_p4.espdl");
+            return httpd_resp_sendstr(req, "fish31 board backend is unavailable; check fish31_mbv3s_075_224_s8_p4.espdl");
         }
-        s_recognition_method = RECOGNITION_METHOD_YOLO26;
-        s_vision_enabled = true;
-    } else if (strcmp(method_text, "yolo11") == 0) {
-        if (!yolo11_espdl_available()) {
-            httpd_resp_set_status(req, "503 Service Unavailable");
-            return httpd_resp_sendstr(req, "yolo11 board backend is unavailable; check yolo11_coke_sprite_416_s8_p4.espdl");
-        }
-        s_recognition_method = RECOGNITION_METHOD_YOLO11;
+        s_recognition_method = RECOGNITION_METHOD_FISH31;
         s_vision_enabled = true;
     } else if (strcmp(method_text, "coco") == 0) {
         if (!coco_espdl_available()) {
@@ -6146,8 +6801,15 @@ static esp_err_t recognition_get_handler(httpd_req_t *req)
         }
         s_recognition_method = RECOGNITION_METHOD_COCO;
         s_vision_enabled = true;
+    } else if (strcmp(method_text, "tinycls") == 0 || strcmp(method_text, "tiny_cls") == 0) {
+        if (!tiny_cls_espdl_available()) {
+            httpd_resp_set_status(req, "503 Service Unavailable");
+            return httpd_resp_sendstr(req, "tinycls board backend is unavailable; check tiny_cls_xl_deep_192_6cls_s8_p4.espdl");
+        }
+        s_recognition_method = RECOGNITION_METHOD_TINYCLS;
+        s_vision_enabled = true;
     } else if (method_text[0] != '\0') {
-        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "supported method: off, mlp, coco, yolo26, yolo11");
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "supported method: off, fish31, tinycls, coco");
     }
 
     if (method_text[0] != '\0') {
@@ -6194,23 +6856,17 @@ static esp_err_t config_get_handler(httpd_req_t *req)
             s_recognition_method = RECOGNITION_METHOD_OFF;
             s_vision_enabled = false;
             s_prev_luma_valid = false;
-        } else if (strcmp(text, "mlp") == 0) {
-            s_recognition_method = RECOGNITION_METHOD_MLP;
-            s_vision_enabled = true;
-        } else if (strcmp(text, "yolo26") == 0) {
-            if (!yolo26_espdl_available()) {
+        } else if (strcmp(text, "mlp") == 0 ||
+                   strcmp(text, "yolo26") == 0 ||
+                   strcmp(text, "yolo11") == 0) {
+            return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                       "legacy Coke/Sprite methods are not in the current main path; supported method: off, fish31, tinycls, coco");
+        } else if (strcmp(text, "fish31") == 0 || strcmp(text, "fish") == 0) {
+            if (!fish31_espdl_available()) {
                 httpd_resp_set_status(req, "503 Service Unavailable");
-                return httpd_resp_sendstr(req,
-                                          "yolo26 board backend is unavailable; use mlp or check models/yolo26_coke_sprite_raw_heads_416_allint8_p4.espdl");
+                return httpd_resp_sendstr(req, "fish31 board backend is unavailable; check fish31_mbv3s_075_224_s8_p4.espdl");
             }
-            s_recognition_method = RECOGNITION_METHOD_YOLO26;
-            s_vision_enabled = true;
-        } else if (strcmp(text, "yolo11") == 0) {
-            if (!yolo11_espdl_available()) {
-                httpd_resp_set_status(req, "503 Service Unavailable");
-                return httpd_resp_sendstr(req, "yolo11 board backend is unavailable; check yolo11_coke_sprite_416_s8_p4.espdl");
-            }
-            s_recognition_method = RECOGNITION_METHOD_YOLO11;
+            s_recognition_method = RECOGNITION_METHOD_FISH31;
             s_vision_enabled = true;
         } else if (strcmp(text, "coco") == 0) {
             if (!coco_espdl_available()) {
@@ -6219,6 +6875,15 @@ static esp_err_t config_get_handler(httpd_req_t *req)
             }
             s_recognition_method = RECOGNITION_METHOD_COCO;
             s_vision_enabled = true;
+        } else if (strcmp(text, "tinycls") == 0 || strcmp(text, "tiny_cls") == 0) {
+            if (!tiny_cls_espdl_available()) {
+                httpd_resp_set_status(req, "503 Service Unavailable");
+                return httpd_resp_sendstr(req, "tinycls board backend is unavailable; check tiny_cls_xl_deep_192_6cls_s8_p4.espdl");
+            }
+            s_recognition_method = RECOGNITION_METHOD_TINYCLS;
+            s_vision_enabled = true;
+        } else {
+            return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "supported method: off, fish31, tinycls, coco");
         }
         s_last_inference_ms = 0;
         save_setting_u8("method", (uint8_t)s_recognition_method);
@@ -6231,7 +6896,7 @@ static esp_err_t config_get_handler(httpd_req_t *req)
             s_recognition_method = RECOGNITION_METHOD_OFF;
             s_prev_luma_valid = false;
         } else if (s_recognition_method == RECOGNITION_METHOD_OFF) {
-            s_recognition_method = coco_espdl_available() ? RECOGNITION_METHOD_COCO : RECOGNITION_METHOD_MLP;
+            s_recognition_method = preferred_recognition_method();
         }
         s_last_inference_ms = 0;
         save_setting_u8("method", (uint8_t)s_recognition_method);
@@ -6304,7 +6969,8 @@ static esp_err_t config_get_handler(httpd_req_t *req)
              "\"inference_interval_ms\":%" PRIu32 ",\"history_sample_interval_ms\":%" PRIu32 ","
              "\"jpeg_quality\":%" PRIu32 ","
              "\"yolo_input_size\":%" PRIu32 ",\"yolo_model_loaded\":%s,"
-             "\"yolo26_available\":%s,\"yolo11_available\":%s,\"coco_available\":%s,"
+              "\"yolo26_available\":%s,\"yolo11_available\":%s,\"coco_available\":%s,"
+              "\"tinycls_available\":%s,\"fish31_available\":%s,"
              "\"model_info\":{\"name\":\"%s\",\"bytes\":%" PRIu32 ",\"input_size\":%" PRIu32 ","
              "\"class_count\":%" PRIu32 ",\"max_detections\":%" PRIu32 ",\"nms_threshold\":%" PRIu32 "}}",
              recognition_method_name(s_recognition_method), network_mode_name(s_network_mode),
@@ -6315,9 +6981,11 @@ static esp_err_t config_get_handler(httpd_req_t *req)
              s_history_sample_interval_ms, s_jpeg_quality,
              (unsigned long)active_yolo_input_size(), active_yolo_available() ? "true" : "false",
              yolo26_espdl_available() ? "true" : "false",
-             yolo11_espdl_available() ? "true" : "false",
-             coco_espdl_available() ? "true" : "false",
-             model_name_for_method(s_recognition_method), active_model_bytes(),
+              yolo11_espdl_available() ? "true" : "false",
+              coco_espdl_available() ? "true" : "false",
+              tiny_cls_espdl_available() ? "true" : "false",
+              fish31_espdl_available() ? "true" : "false",
+              model_name_for_method(s_recognition_method), active_model_bytes(),
              model_input_size_for_method(s_recognition_method),
              model_class_count_for_method(s_recognition_method), (uint32_t)APP_MAX_DETECTIONS,
              (uint32_t)APP_YOLO_NMS_THRESHOLD_X100);
@@ -7656,6 +8324,23 @@ static bool is_builtin_coco_video_dataset(const char *dataset)
     return dataset && strcmp(dataset, BUILTIN_COCO_VIDEO_DATASET) == 0;
 }
 
+static bool is_builtin_tinycls_video_dataset(const char *dataset)
+{
+    return dataset && strcmp(dataset, BUILTIN_TINYCLS_VIDEO_DATASET) == 0;
+}
+
+static bool is_builtin_fish31_video_dataset(const char *dataset)
+{
+    return dataset && strcmp(dataset, BUILTIN_FISH31_VIDEO_DATASET) == 0;
+}
+
+static bool is_builtin_video_dataset(const char *dataset)
+{
+    return is_builtin_coco_video_dataset(dataset) ||
+           is_builtin_tinycls_video_dataset(dataset) ||
+           is_builtin_fish31_video_dataset(dataset);
+}
+
 static bool builtin_coco_video_frame_image(uint32_t frame_index,
                                            const uint8_t **start,
                                            const uint8_t **end)
@@ -7686,6 +8371,94 @@ static bool builtin_coco_video_frame_image(uint32_t frame_index,
     *start = starts[frame_index - 1U];
     *end = ends[frame_index - 1U];
     return *end > *start;
+}
+
+static bool builtin_tinycls_video_frame_image(uint32_t frame_index,
+                                              const uint8_t **start,
+                                              const uint8_t **end)
+{
+    static const uint8_t *const starts[BUILTIN_TINYCLS_VIDEO_FRAMES] = {
+        tinycls_video_frame_00001_jpg_start, tinycls_video_frame_00002_jpg_start,
+        tinycls_video_frame_00003_jpg_start, tinycls_video_frame_00004_jpg_start,
+        tinycls_video_frame_00005_jpg_start, tinycls_video_frame_00006_jpg_start,
+        tinycls_video_frame_00007_jpg_start, tinycls_video_frame_00008_jpg_start,
+        tinycls_video_frame_00009_jpg_start, tinycls_video_frame_00010_jpg_start,
+        tinycls_video_frame_00011_jpg_start, tinycls_video_frame_00012_jpg_start,
+        tinycls_video_frame_00013_jpg_start, tinycls_video_frame_00014_jpg_start,
+        tinycls_video_frame_00015_jpg_start, tinycls_video_frame_00016_jpg_start,
+    };
+    static const uint8_t *const ends[BUILTIN_TINYCLS_VIDEO_FRAMES] = {
+        tinycls_video_frame_00001_jpg_end, tinycls_video_frame_00002_jpg_end,
+        tinycls_video_frame_00003_jpg_end, tinycls_video_frame_00004_jpg_end,
+        tinycls_video_frame_00005_jpg_end, tinycls_video_frame_00006_jpg_end,
+        tinycls_video_frame_00007_jpg_end, tinycls_video_frame_00008_jpg_end,
+        tinycls_video_frame_00009_jpg_end, tinycls_video_frame_00010_jpg_end,
+        tinycls_video_frame_00011_jpg_end, tinycls_video_frame_00012_jpg_end,
+        tinycls_video_frame_00013_jpg_end, tinycls_video_frame_00014_jpg_end,
+        tinycls_video_frame_00015_jpg_end, tinycls_video_frame_00016_jpg_end,
+    };
+    if (!start || !end || frame_index == 0 || frame_index > BUILTIN_TINYCLS_VIDEO_FRAMES) {
+        return false;
+    }
+    *start = starts[frame_index - 1U];
+    *end = ends[frame_index - 1U];
+    return *end > *start;
+}
+
+static bool builtin_video_frame_image(const char *dataset,
+                                      uint32_t frame_index,
+                                      const uint8_t **start,
+                                      const uint8_t **end)
+{
+    if (is_builtin_coco_video_dataset(dataset)) {
+        return builtin_coco_video_frame_image(frame_index, start, end);
+    }
+    if (is_builtin_tinycls_video_dataset(dataset)) {
+        return builtin_tinycls_video_frame_image(frame_index, start, end);
+    }
+    if (is_builtin_fish31_video_dataset(dataset)) {
+        static const uint8_t *const starts[BUILTIN_FISH31_VIDEO_FRAMES] = {
+            fish31_video_frame_00001_jpg_start, fish31_video_frame_00002_jpg_start,
+            fish31_video_frame_00003_jpg_start, fish31_video_frame_00004_jpg_start,
+            fish31_video_frame_00005_jpg_start, fish31_video_frame_00006_jpg_start,
+            fish31_video_frame_00007_jpg_start, fish31_video_frame_00008_jpg_start,
+            fish31_video_frame_00009_jpg_start, fish31_video_frame_00010_jpg_start,
+            fish31_video_frame_00011_jpg_start, fish31_video_frame_00012_jpg_start,
+            fish31_video_frame_00013_jpg_start, fish31_video_frame_00014_jpg_start,
+            fish31_video_frame_00015_jpg_start, fish31_video_frame_00016_jpg_start,
+        };
+        static const uint8_t *const ends[BUILTIN_FISH31_VIDEO_FRAMES] = {
+            fish31_video_frame_00001_jpg_end, fish31_video_frame_00002_jpg_end,
+            fish31_video_frame_00003_jpg_end, fish31_video_frame_00004_jpg_end,
+            fish31_video_frame_00005_jpg_end, fish31_video_frame_00006_jpg_end,
+            fish31_video_frame_00007_jpg_end, fish31_video_frame_00008_jpg_end,
+            fish31_video_frame_00009_jpg_end, fish31_video_frame_00010_jpg_end,
+            fish31_video_frame_00011_jpg_end, fish31_video_frame_00012_jpg_end,
+            fish31_video_frame_00013_jpg_end, fish31_video_frame_00014_jpg_end,
+            fish31_video_frame_00015_jpg_end, fish31_video_frame_00016_jpg_end,
+        };
+        if (!start || !end || frame_index == 0 || frame_index > BUILTIN_FISH31_VIDEO_FRAMES) {
+            return false;
+        }
+        *start = starts[frame_index - 1U];
+        *end = ends[frame_index - 1U];
+        return *end > *start;
+    }
+    return false;
+}
+
+static uint32_t builtin_video_frame_count(const char *dataset)
+{
+    if (is_builtin_coco_video_dataset(dataset)) {
+        return BUILTIN_COCO_VIDEO_FRAMES;
+    }
+    if (is_builtin_tinycls_video_dataset(dataset)) {
+        return BUILTIN_TINYCLS_VIDEO_FRAMES;
+    }
+    if (is_builtin_fish31_video_dataset(dataset)) {
+        return BUILTIN_FISH31_VIDEO_FRAMES;
+    }
+    return 0;
 }
 
 static void dataset_frame_cache_clear(void)
@@ -7761,17 +8534,20 @@ static bool dataset_frame_cache_copy(const char *run_id, const char *dataset,
 }
 
 static esp_err_t run_jpeg_on_inference_queue(uint8_t *jpeg, uint32_t jpeg_size,
+                                             recognition_method_t method,
                                              vision_result_t *vision,
                                              uint32_t *source_w, uint32_t *source_h)
 {
-    if (!jpeg || !jpeg_size || !vision || !source_w || !source_h) {
+    if (!jpeg || !jpeg_size || !vision || !source_w || !source_h ||
+        !recognition_method_uses_jpeg_inference(method) ||
+        !validation_selftest_method_available(method)) {
         free(jpeg);
         return ESP_ERR_INVALID_ARG;
     }
 
     validation_context_t ctx = {
         .sample = VALIDATION_SAMPLE_NONE,
-        .method = RECOGNITION_METHOD_COCO,
+        .method = method,
         .box_min_score = 50,
         .jpeg_size = jpeg_size,
         .queued_ms = esp_timer_get_time() / 1000,
@@ -7785,14 +8561,20 @@ static esp_err_t run_jpeg_on_inference_queue(uint8_t *jpeg, uint32_t jpeg_size,
     inference_job_t job = {
         .jpeg = jpeg,
         .jpeg_size = jpeg_size,
-        .method = RECOGNITION_METHOD_COCO,
+        .method = method,
         .box_min_score = 50,
         .validation = true,
         .validation_sample = VALIDATION_SAMPLE_NONE,
         .validation_ctx = &ctx,
         .queued_ms = ctx.queued_ms,
     };
-    fill_yolo_pending(&job.meta.vision, RECOGNITION_METHOD_COCO);
+    if (method == RECOGNITION_METHOD_TINYCLS) {
+        fill_tinycls_pending(&job.meta.vision);
+    } else if (method == RECOGNITION_METHOD_FISH31) {
+        fill_fish31_pending(&job.meta.vision);
+    } else {
+        fill_yolo_pending(&job.meta.vision, method);
+    }
 
     if (!s_inference_queue || xQueueSend(s_inference_queue, &job, pdMS_TO_TICKS(5000)) != pdTRUE) {
         free(jpeg);
@@ -7933,6 +8715,29 @@ static bool parse_vision_from_json_line(const char *line, vision_result_t *visio
     json_get_u32_field(line, "raw_candidate_count", &vision->raw_candidate_count);
     json_get_int64_field(line, "inference_ms", &vision->inference_ms);
     json_get_int64_field(line, "analysis_ms", &vision->analysis_ms);
+    json_get_string_field(line, "label", vision->label, sizeof(vision->label));
+    json_get_string_field(line, "object", vision->object, sizeof(vision->object));
+
+    const char *top = strstr(line, "\"top_k\":[");
+    while (top && vision->top_k_count < TINY_CLS_TOP_K &&
+           (top = strstr(top, "{\"label\":\"")) != NULL) {
+        tiny_cls_topk_t *item = &vision->top_k[vision->top_k_count];
+        if (!json_get_string_field(top, "label", item->label, sizeof(item->label))) {
+            break;
+        }
+        json_get_u32_field(top, "class_id", &item->class_id);
+        json_get_u32_field(top, "score", &item->score);
+        vision->top_k_count++;
+        top += strlen("{\"label\":\"");
+    }
+    if (vision->top_k_count > 0 && vision->object_score == 0) {
+        const tiny_cls_topk_t *best = &vision->top_k[0];
+        vision->object_score = best->score;
+        vision->candidate_score = best->score;
+        strlcpy(vision->label, best->label, sizeof(vision->label));
+        strlcpy(vision->object, best->label, sizeof(vision->object));
+        vision->object_count = 1;
+    }
 
     const char *p = strstr(line, "\"detections\":[");
     if (!p) {
@@ -8596,8 +9401,8 @@ static esp_err_t dataset_frame_svg_get_handler(httpd_req_t *req)
     if (dataset_frame_cache_copy(run_id, dataset, frame_index, &cached)) {
         const uint8_t *jpeg_start = NULL;
         const uint8_t *jpeg_end = NULL;
-        if (is_builtin_coco_video_dataset(dataset)) {
-            if (!builtin_coco_video_frame_image(frame_index, &jpeg_start, &jpeg_end)) {
+        if (is_builtin_video_dataset(dataset)) {
+            if (!builtin_video_frame_image(dataset, frame_index, &jpeg_start, &jpeg_end)) {
                 return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND,
                                            "embedded dataset frame missing");
             }
@@ -8677,16 +9482,18 @@ static void dataset_run_task(void *arg)
             status.limit = CONFIG_APP_DATASET_RUN_MAX_FRAMES;
         }
         status.stride = req.stride ? req.stride : 1;
+        status.method = req.method;
         strlcpy(status.dataset, req.dataset, sizeof(status.dataset));
         strlcpy(status.run_id, req.run_id, sizeof(status.run_id));
-        bool builtin_coco_video = is_builtin_coco_video_dataset(status.dataset);
-        if (builtin_coco_video) {
-            uint32_t available = 1U + (BUILTIN_COCO_VIDEO_FRAMES - 1U) / status.stride;
+        bool builtin_video = is_builtin_video_dataset(status.dataset);
+        if (builtin_video) {
+            uint32_t frames = builtin_video_frame_count(status.dataset);
+            uint32_t available = frames ? 1U + (frames - 1U) / status.stride : 0;
             if (status.limit > available) {
                 status.limit = available;
             }
         }
-        bool persist_results = s_app_mode == APP_MODE_FIELD;
+        bool persist_results = s_sd_mounted;
         status.started_ms = esp_timer_get_time() / 1000;
         if (persist_results) {
             snprintf(status.result_uri, sizeof(status.result_uri),
@@ -8697,7 +9504,7 @@ static void dataset_run_task(void *arg)
         dataset_frame_cache_clear();
         dataset_status_update(&status);
 
-        if (!s_sd_mounted && !builtin_coco_video) {
+        if (!s_sd_mounted && !builtin_video) {
             strlcpy(status.last_error, "TF card is not mounted", sizeof(status.last_error));
             status.running = false;
             status.done = true;
@@ -8727,9 +9534,11 @@ static void dataset_run_task(void *arg)
         uint32_t *latencies = (uint32_t *)calloc(DATASET_RUN_LATENCY_CAP, sizeof(uint32_t));
         uint32_t *sorted = (uint32_t *)calloc(DATASET_RUN_LATENCY_CAP, sizeof(uint32_t));
         char *detections = (char *)alloc_psram_buffer(1280);
-        if (!latencies || !sorted || !detections) {
+        char *top_k_json = (char *)alloc_psram_buffer(512);
+        if (!latencies || !sorted || !detections || !top_k_json) {
             free(latencies);
             free(sorted);
+            free(top_k_json);
             free(detections);
             if (result) {
                 fclose(result);
@@ -8760,10 +9569,10 @@ static void dataset_run_task(void *arg)
                      DATASET_FRAME_SVG_URI, status.run_id, status.dataset, frame_index);
             uint32_t jpeg_size = 0;
             uint8_t *jpeg = NULL;
-            if (builtin_coco_video) {
+            if (builtin_video) {
                 const uint8_t *jpeg_start = NULL;
                 const uint8_t *jpeg_end = NULL;
-                if (builtin_coco_video_frame_image(frame_index, &jpeg_start, &jpeg_end)) {
+                if (builtin_video_frame_image(status.dataset, frame_index, &jpeg_start, &jpeg_end)) {
                     jpeg_size = (uint32_t)(jpeg_end - jpeg_start);
                     jpeg = alloc_psram_buffer(jpeg_size);
                     if (jpeg) {
@@ -8792,12 +9601,16 @@ static void dataset_run_task(void *arg)
             vision_result_t vision = {0};
             uint32_t source_w = 0;
             uint32_t source_h = 0;
-            esp_err_t err = run_jpeg_on_inference_queue(jpeg, jpeg_size, &vision, &source_w, &source_h);
+            esp_err_t err = run_jpeg_on_inference_queue(jpeg, jpeg_size, status.method,
+                                                        &vision, &source_w, &source_h);
             detections_to_json(detections, 1280, &vision);
+            top_k_to_json(top_k_json, 512, &vision);
             bool ok = err == ESP_OK;
             if (ok) {
                 status.ok_frames++;
-                status.detection_total += vision.detection_count;
+                status.detection_total += (status.method == RECOGNITION_METHOD_TINYCLS ||
+                                           status.method == RECOGNITION_METHOD_FISH31) ?
+                                          vision.object_count : vision.detection_count;
                 if (vision.analysis_ms > 0 && status.processed < DATASET_RUN_LATENCY_CAP) {
                     latencies[status.processed] = (uint32_t)vision.analysis_ms;
                     sum_analysis += (uint32_t)vision.analysis_ms;
@@ -8805,8 +9618,13 @@ static void dataset_run_task(void *arg)
                         status.max_analysis_ms = (uint32_t)vision.analysis_ms;
                     }
                 }
-                for (uint32_t d = 0; d < vision.detection_count && d < APP_MAX_DETECTIONS; d++) {
-                    label_count_add(status.labels, vision.detections[d].label);
+                if (status.method == RECOGNITION_METHOD_TINYCLS ||
+                    status.method == RECOGNITION_METHOD_FISH31) {
+                    label_count_add_with_unknown(status.labels, vision.label, true);
+                } else {
+                    for (uint32_t d = 0; d < vision.detection_count && d < APP_MAX_DETECTIONS; d++) {
+                        label_count_add(status.labels, vision.detections[d].label);
+                    }
                 }
             } else {
                 status.failed_frames++;
@@ -8822,19 +9640,23 @@ static void dataset_run_task(void *arg)
                     ",\"ok\":%s,\"dataset\":\"%s\",\"file\":\"frames/frame_%05" PRIu32 ".jpg\","
                     "\"overlay_uri\":\"%s\","
                     "\"source_w\":%" PRIu32 ",\"source_h\":%" PRIu32 ",\"jpeg_bytes\":%" PRIu32
-                    ",\"model\":\"%s\",\"model_bytes\":%" PRIu32 ",\"input\":%" PRIu32
+                    ",\"method\":\"%s\",\"model\":\"%s\",\"model_bytes\":%" PRIu32 ",\"input\":%" PRIu32
+                    ",\"label\":\"%s\",\"object\":\"%s\""
                     ",\"box_min_score\":%" PRIu32 ",\"best_score\":%" PRIu32
                     ",\"candidate_score\":%" PRIu32 ",\"raw_candidate_count\":%" PRIu32
                     ",\"inference_ms\":%" PRId64 ",\"analysis_ms\":%" PRId64
-                    ",\"detection_count\":%" PRIu32 ",\"detections\":%s,\"error\":\"%s\"}\n",
+                    ",\"detection_count\":%" PRIu32 ",\"detections\":%s,\"top_k\":%s,\"error\":\"%s\"}\n",
                     (uint32_t)APP_JSONL_INDEX_VERSION, frame_index,
                     ok ? "true" : "false", status.dataset, frame_index,
-                    overlay_uri, source_w, source_h, jpeg_size, COCO_MODEL_NAME,
-                    (uint32_t)coco_espdl_model_bytes(), (uint32_t)COCO_INPUT_SIZE,
+                    overlay_uri, source_w, source_h, jpeg_size,
+                    recognition_method_name(status.method),
+                    model_name_for_method(status.method),
+                    model_bytes_for_method(status.method), model_input_size_for_method(status.method),
+                    vision.label, vision.object,
                     vision.box_min_score, vision.object_score,
                     vision.candidate_score, vision.raw_candidate_count,
                     vision.inference_ms, vision.analysis_ms,
-                    vision.detection_count, detections, ok ? "" : esp_err_to_name(err));
+                    vision.detection_count, detections, top_k_json, ok ? "" : esp_err_to_name(err));
             }
 
             status.processed++;
@@ -8858,6 +9680,7 @@ static void dataset_run_task(void *arg)
         }
         free(latencies);
         free(sorted);
+        free(top_k_json);
         free(detections);
 
         char labels[512];
@@ -8870,13 +9693,14 @@ static void dataset_run_task(void *arg)
                     ",\"ok_frames\":%" PRIu32 ",\"failed_frames\":%" PRIu32
                     ",\"detection_total\":%" PRIu32 ",\"avg_analysis_ms\":%" PRIu32
                     ",\"p95_analysis_ms\":%" PRIu32 ",\"max_analysis_ms\":%" PRIu32
-                    ",\"model\":\"%s\",\"model_bytes\":%" PRIu32 ",\"labels\":%s,"
+                    ",\"method\":\"%s\",\"model\":\"%s\",\"model_bytes\":%" PRIu32 ",\"labels\":%s,"
                     "\"started_ms\":%" PRId64 ",\"finished_ms\":%" PRId64 ",\"error\":\"%s\"}\n",
                     (uint32_t)APP_JSONL_INDEX_VERSION, status.run_id, status.dataset,
                     DATASET_FRAME_SVG_URI, status.processed,
                     status.ok_frames, status.failed_frames, status.detection_total,
                     status.avg_analysis_ms, status.p95_analysis_ms, status.max_analysis_ms,
-                    COCO_MODEL_NAME, (uint32_t)coco_espdl_model_bytes(), labels,
+                    recognition_method_name(status.method), model_name_for_method(status.method),
+                    model_bytes_for_method(status.method), labels,
                     status.started_ms, esp_timer_get_time() / 1000, status.last_error);
             fclose(summary);
         }
@@ -8925,16 +9749,22 @@ static esp_err_t datasets_get_handler(httpd_req_t *req)
     off += snprintf(json + off, cap - off,
                     "{\"sd_mounted\":%s,\"storage_status\":\"%s\",\"datasets\":["
                     "{\"name\":\"%s\",\"frames\":%" PRIu32
-                    ",\"source\":\"firmware\",\"embedded\":true}",
+                    ",\"method\":\"coco\",\"source\":\"firmware\",\"embedded\":true},"
+                    "{\"name\":\"%s\",\"frames\":%" PRIu32
+                    ",\"method\":\"tinycls\",\"source\":\"firmware\",\"embedded\":true},"
+                    "{\"name\":\"%s\",\"frames\":%" PRIu32
+                    ",\"method\":\"fish31\",\"source\":\"firmware\",\"embedded\":true}",
                     s_sd_mounted ? "true" : "false", s_storage_status,
-                    BUILTIN_COCO_VIDEO_DATASET, (uint32_t)BUILTIN_COCO_VIDEO_FRAMES);
+                    BUILTIN_COCO_VIDEO_DATASET, (uint32_t)BUILTIN_COCO_VIDEO_FRAMES,
+                    BUILTIN_TINYCLS_VIDEO_DATASET, (uint32_t)BUILTIN_TINYCLS_VIDEO_FRAMES,
+                    BUILTIN_FISH31_VIDEO_DATASET, (uint32_t)BUILTIN_FISH31_VIDEO_FRAMES);
     if (s_sd_mounted) {
         DIR *dir = opendir(DATASET_ROOT_DIR);
         if (dir) {
             struct dirent *entry;
             while ((entry = readdir(dir)) != NULL && off < cap) {
                 if (!is_safe_dataset_name(entry->d_name) ||
-                    is_builtin_coco_video_dataset(entry->d_name)) {
+                    is_builtin_video_dataset(entry->d_name)) {
                     continue;
                 }
                 uint32_t frames = count_dataset_frames(entry->d_name);
@@ -9041,20 +9871,40 @@ static esp_err_t dataset_run_start_handler(httpd_req_t *req)
         return ESP_OK;
     }
     char query[160] = {0};
-    char dataset[DATASET_NAME_MAX] = BUILTIN_COCO_VIDEO_DATASET;
+    char dataset[DATASET_NAME_MAX] = BUILTIN_FISH31_VIDEO_DATASET;
+    char method_text[16] = {0};
     char limit_text[12] = {0};
     char stride_text[12] = {0};
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
         httpd_query_key_value(query, "dataset", dataset, sizeof(dataset));
+        httpd_query_key_value(query, "method", method_text, sizeof(method_text));
         httpd_query_key_value(query, "limit", limit_text, sizeof(limit_text));
         httpd_query_key_value(query, "stride", stride_text, sizeof(stride_text));
     }
-    bool builtin_coco_video = is_builtin_coco_video_dataset(dataset);
-    if ((!s_sd_mounted && !builtin_coco_video) || !is_safe_dataset_name(dataset)) {
+    recognition_method_t method = method_text[0] ? parse_validation_method(method_text) :
+                                  (is_builtin_fish31_video_dataset(dataset) ?
+                                   RECOGNITION_METHOD_FISH31 :
+                                   (is_builtin_tinycls_video_dataset(dataset) ?
+                                    RECOGNITION_METHOD_TINYCLS : RECOGNITION_METHOD_COCO));
+    bool builtin_video = is_builtin_video_dataset(dataset);
+    if ((!s_sd_mounted && !builtin_video) || !is_safe_dataset_name(dataset)) {
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "dataset invalid or TF not mounted");
+    }
+    if (!recognition_method_uses_jpeg_inference(method) || !validation_selftest_method_available(method)) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "method invalid or unavailable");
+    }
+    if (is_builtin_coco_video_dataset(dataset) && method != RECOGNITION_METHOD_COCO) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "coco_video_demo requires method=coco");
+    }
+    if (is_builtin_tinycls_video_dataset(dataset) && method != RECOGNITION_METHOD_TINYCLS) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "tinycls_marine_demo requires method=tinycls");
+    }
+    if (is_builtin_fish31_video_dataset(dataset) && method != RECOGNITION_METHOD_FISH31) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "fish31_video_demo requires method=fish31");
     }
     dataset_run_request_t run = {0};
     strlcpy(run.dataset, dataset, sizeof(run.dataset));
+    run.method = method;
     run.limit = limit_text[0] ? (uint32_t)atoi(limit_text) : CONFIG_APP_DATASET_RUN_MAX_FRAMES;
     run.stride = stride_text[0] ? (uint32_t)atoi(stride_text) : 1;
     if (run.limit == 0 || run.limit > CONFIG_APP_DATASET_RUN_MAX_FRAMES) {
@@ -9063,8 +9913,9 @@ static esp_err_t dataset_run_start_handler(httpd_req_t *req)
     if (run.stride == 0 || run.stride > 1000) {
         run.stride = 1;
     }
-    if (builtin_coco_video) {
-        uint32_t available = 1U + (BUILTIN_COCO_VIDEO_FRAMES - 1U) / run.stride;
+    if (builtin_video) {
+        uint32_t frames = builtin_video_frame_count(run.dataset);
+        uint32_t available = frames ? 1U + (frames - 1U) / run.stride : 0;
         if (run.limit > available) {
             run.limit = available;
         }
@@ -9077,6 +9928,7 @@ static esp_err_t dataset_run_start_handler(httpd_req_t *req)
         .queued = true,
         .running = false,
         .done = false,
+        .method = run.method,
         .limit = run.limit,
         .stride = run.stride,
         .started_ms = queued_ms,
@@ -9100,9 +9952,9 @@ static esp_err_t dataset_run_start_handler(httpd_req_t *req)
     char json[256];
     snprintf(json, sizeof(json),
              "{\"ok\":true,\"queued\":true,\"running\":false,\"done\":false,"
-             "\"dataset\":\"%s\",\"run_id\":\"%s\",\"limit\":%" PRIu32
+             "\"dataset\":\"%s\",\"method\":\"%s\",\"run_id\":\"%s\",\"limit\":%" PRIu32
              ",\"stride\":%" PRIu32 "}",
-             run.dataset, run.run_id, run.limit, run.stride);
+             run.dataset, recognition_method_name(run.method), run.run_id, run.limit, run.stride);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return http_send_cstr_chunked(req, json);
@@ -9122,7 +9974,7 @@ static esp_err_t dataset_run_status_handler(httpd_req_t *req)
     snprintf(json, sizeof(json),
              "{\"index_version\":%" PRIu32 ",\"state\":\"%s\","
              "\"queued\":%s,\"running\":%s,\"done\":%s,"
-             "\"dataset\":\"%s\",\"run_id\":\"%s\",\"overlay_endpoint\":\"%s\","
+             "\"dataset\":\"%s\",\"method\":\"%s\",\"run_id\":\"%s\",\"overlay_endpoint\":\"%s\","
              "\"result_uri\":\"%s\",\"summary_uri\":\"%s\",\"limit\":%" PRIu32
              ",\"stride\":%" PRIu32 ",\"processed\":%" PRIu32 ",\"ok_frames\":%" PRIu32
              ",\"failed_frames\":%" PRIu32 ",\"detection_total\":%" PRIu32
@@ -9133,7 +9985,7 @@ static esp_err_t dataset_run_status_handler(httpd_req_t *req)
              (uint32_t)APP_JSONL_INDEX_VERSION, state,
              status.queued ? "true" : "false",
              status.running ? "true" : "false", status.done ? "true" : "false",
-             status.dataset, status.run_id, DATASET_FRAME_SVG_URI,
+             status.dataset, recognition_method_name(status.method), status.run_id, DATASET_FRAME_SVG_URI,
              status.result_uri, status.summary_uri,
              status.limit, status.stride, status.processed, status.ok_frames,
              status.failed_frames, status.detection_total,
@@ -9776,7 +10628,7 @@ static void start_webserver(void)
     }
     config.lru_purge_enable = true;
     config.backlog_conn = CONFIG_APP_MAX_STREAM_CLIENTS + 2;
-    config.max_uri_handlers = 64;
+    config.max_uri_handlers = 72;
     config.uri_match_fn = httpd_uri_match_wildcard;
 
     ESP_ERROR_CHECK(httpd_start(&s_server, &config));
@@ -9803,16 +10655,6 @@ static void start_webserver(void)
         .method = HTTP_GET,
         .handler = validate_get_handler,
     };
-    const httpd_uri_t validate_coke = {
-        .uri = "/validate/coke.jpg",
-        .method = HTTP_GET,
-        .handler = validate_coke_jpg_handler,
-    };
-    const httpd_uri_t validate_sprite = {
-        .uri = "/validate/sprite.jpg",
-        .method = HTTP_GET,
-        .handler = validate_sprite_jpg_handler,
-    };
     const httpd_uri_t validate_demo_01 = {
         .uri = "/validate/demo_01.jpg",
         .method = HTTP_GET,
@@ -9830,6 +10672,46 @@ static void start_webserver(void)
     };
     const httpd_uri_t validate_demo_04 = {
         .uri = "/validate/demo_04.jpg",
+        .method = HTTP_GET,
+        .handler = validate_demo_jpg_handler,
+    };
+    const httpd_uri_t validate_tiny_01 = {
+        .uri = "/validate/tiny_01.jpg",
+        .method = HTTP_GET,
+        .handler = validate_demo_jpg_handler,
+    };
+    const httpd_uri_t validate_tiny_02 = {
+        .uri = "/validate/tiny_02.jpg",
+        .method = HTTP_GET,
+        .handler = validate_demo_jpg_handler,
+    };
+    const httpd_uri_t validate_tiny_03 = {
+        .uri = "/validate/tiny_03.jpg",
+        .method = HTTP_GET,
+        .handler = validate_demo_jpg_handler,
+    };
+    const httpd_uri_t validate_tiny_04 = {
+        .uri = "/validate/tiny_04.jpg",
+        .method = HTTP_GET,
+        .handler = validate_demo_jpg_handler,
+    };
+    const httpd_uri_t validate_fish31_01 = {
+        .uri = "/validate/fish31_01.jpg",
+        .method = HTTP_GET,
+        .handler = validate_demo_jpg_handler,
+    };
+    const httpd_uri_t validate_fish31_02 = {
+        .uri = "/validate/fish31_02.jpg",
+        .method = HTTP_GET,
+        .handler = validate_demo_jpg_handler,
+    };
+    const httpd_uri_t validate_fish31_03 = {
+        .uri = "/validate/fish31_03.jpg",
+        .method = HTTP_GET,
+        .handler = validate_demo_jpg_handler,
+    };
+    const httpd_uri_t validate_fish31_04 = {
+        .uri = "/validate/fish31_04.jpg",
         .method = HTTP_GET,
         .handler = validate_demo_jpg_handler,
     };
@@ -10026,12 +10908,18 @@ static void start_webserver(void)
 
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &root));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &validate));
-    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &validate_coke));
-    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &validate_sprite));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &validate_demo_01));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &validate_demo_02));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &validate_demo_03));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &validate_demo_04));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &validate_tiny_01));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &validate_tiny_02));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &validate_tiny_03));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &validate_tiny_04));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &validate_fish31_01));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &validate_fish31_02));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &validate_fish31_03));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &validate_fish31_04));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &validate_run));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &validate_overlay));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &search));
@@ -10845,7 +11733,7 @@ static void enter_offline_tf_capture_mode(void)
 
     s_storage_quiescing = false;
     s_app_mode = APP_MODE_FIELD;
-    s_recognition_method = RECOGNITION_METHOD_COCO;
+    s_recognition_method = preferred_recognition_method();
     s_vision_enabled = true;
     s_history_enabled = false;
     s_recording_enabled = true;

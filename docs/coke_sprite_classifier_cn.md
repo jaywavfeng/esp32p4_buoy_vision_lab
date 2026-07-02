@@ -135,15 +135,13 @@ http://<board-ip>/validate
 如果需要脱离开发板单独查看图片，也可以直接打开：
 
 ```text
-http://<board-ip>/validate/coke.jpg
-http://<board-ip>/validate/sprite.jpg
+旧版 `/validate/coke.jpg` 与 `/validate/sprite.jpg` 当前已从主固件移除。
 ```
 
 工程仍保留原始文件：
 
 ```text
-test_assets/phone_gallery/images/coke_01.jpg
-test_assets/phone_gallery/images/sprite_01.jpg
+旧版 `test_assets/phone_gallery/` 当前已从主工程移除。
 ```
 
 ## 采集开发板样本

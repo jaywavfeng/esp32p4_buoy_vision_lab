@@ -4690,15 +4690,13 @@ static esp_err_t storage_prepare_dirs_after_mount(const char *mode)
     s_sd_last_error_code = 0;
     if (s_app_mode == APP_MODE_SERVER) {
         /*
-         * SERVER_MODE does not create new monitoring data, but it must make an
-         * interrupted field segment playable before exposing the card.
+         * Do not scan the recordings directory during SERVER boot. A card with
+         * many files, incomplete AVI parts, or FAT directory trouble must not
+         * block HTTP/USB startup; customer recovery remains available from Web
+         * or by exporting the card as USB MSC.
          */
-        ESP_LOGI(TAG, "TF post-mount: recovering incomplete recordings");
-        recover_incomplete_recordings();
-        ESP_LOGI(TAG, "TF post-mount: reconciling recording index");
-        reconcile_recording_indexes();
-        ESP_LOGI(TAG, "TF post-mount: recording index ready");
-        set_storage_status("mounted on %s; server read-only", mode);
+        ESP_LOGI(TAG, "TF post-mount: server startup recovery deferred");
+        set_storage_status("mounted on %s; server online, recovery deferred", mode);
         return ESP_OK;
     }
 

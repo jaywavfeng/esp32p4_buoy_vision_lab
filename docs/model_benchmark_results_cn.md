@@ -25,7 +25,7 @@ Fish31 是当前默认方法，`/api/status.model_info` 应返回 `name=fish31-m
 命令格式：
 
 ```powershell
-python tools\sample_status_latency.py 169.254.100.2 --duration-min 5 --interval-ms 200 --method <method> --wake --set-interval-zero --bind-ip <host-apipa-ip> --output reports\<method>_status_latency_5min.csv
+python tools\sample_status_latency.py 169.254.100.2 --duration-min 5 --interval-ms 200 --method <method> --wake --set-interval-zero --bind-ip 169.254.12.109 --output reports\<method>_status_latency_5min.csv
 ```
 
 | 方法 | samples | p95 analysis_ms | p95 inference_ms | avg FPS | latest FPS | 结果说明 |

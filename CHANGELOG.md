@@ -1,19 +1,23 @@
 # Changelog
 
-## v2.1.0
+## v3.0.0
 
-- Added Fish31 MobileNetV3-Small board model as the default `fish31` route.
-- Kept TinyCNN Marine 6-class classification and COCO YOLO11n detection as the other two main validation routes.
-- Added board-verified Fish31/TinyCNN demo images, video validation assets, and classification-aware visualization.
-- Documented 5-minute ESP32-P4 board benchmark results for Fish31, TinyCNN, and COCO.
-- Removed Coke/Sprite sample gallery from the main validation path while keeping legacy source for reference.
-- Sanitized public release docs, paths, and board-test host interface examples for GitHub publishing.
+- Reworked the customer Web flow around one recording segment per row, with raw video, annotated video and manual fill-frame action grouped together.
+- Added customer runtime settings for segment duration up to 14400 seconds, idle FIELD timeout, router credentials, network mode and model selection.
+- Added Fish31/TinyCNN/COCO model switching, defaulting to Fish31 and applying the saved model to FIELD recording and manual enrichment.
+- Fixed FIELD recording so raw and annotated AVI files are generated as a pair with matching frame count and duration.
+- Removed idle automatic enrichment; enrichment now only runs after the user clicks a recording's fill-frame action.
+- Added full recording cleanup from the Web UI and API.
+- Changed client counting to track recent Web clients across Ethernet, AP and STA, preventing unintended auto FIELD entry while a wired client is open.
+- Improved live preview startup by waiting for camera wake and recovering transient video open failures.
+- Improved USB MSC export so inserting USB automatically exposes the TF card as `P4_BUOY` while Web remains online, then remounts TF after safe eject and unplug.
+- Cleaned old experimental model artifacts and refreshed customer/developer documentation.
 
 ## v2.0.0
 
 - Added USB HS OTG Mass Storage export for the whole TF card with exclusive ownership handoff.
 - Added automatic `USB_EXPORT` entry on host enumeration plus manual `/api/mode/usb?confirm=USB`.
-- Raised USB MSC SDMMC export speed to 40 MHz and apply a build-time `esp_tinyusb` MSC write patch for direct synchronous SDMMC writes.
-- Added USB MSC watch, benchmark, and eject helper scripts.
-- Added idle annotated AVI enrichment and source-aware recording metadata.
+- Raised USB MSC SDMMC export speed to 40 MHz and applied a build-time `esp_tinyusb` MSC write patch for direct synchronous SDMMC writes.
+- Added USB MSC watch, benchmark and eject helper scripts.
+- Added annotated AVI enrichment and source-aware recording metadata.
 - Sanitized default Wi-Fi credentials for public GitHub publishing.

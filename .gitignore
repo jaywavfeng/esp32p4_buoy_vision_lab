@@ -11,6 +11,7 @@
 # ESP-IDF managed/downloaded component cache
 /.idf_component_cache/
 /managed_components/
+sdkconfig.old
 
 # Local datasets, training outputs, and generated reports/artifacts
 /data/

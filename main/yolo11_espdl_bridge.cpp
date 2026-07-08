@@ -1,4 +1,4 @@
-#include "yolo11_espdl_bridge.h"
+﻿#include "yolo11_espdl_bridge.h"
 
 #include <algorithm>
 #include <cstring>
@@ -21,15 +21,11 @@
 static const char *TAG = "yolo11_bridge";
 
 /*
- * 这里嵌入的是本工程自训练的 two-class Coke/Sprite YOLO11n 模型：
- *   models/yolo11_coke_sprite_416_s8_p4.espdl
+ * Legacy Coke/Sprite YOLO11n bridge.
  *
- * 训练脚本 `tools/train_yolo11_coke_sprite.py` 按 ESP-DL 官方 YOLO11 部署路线，
- * 把 Ultralytics Detect.forward 改为输出 box0/score0、box1/score1、box2/score2
- * 六个原始检测头；量化脚本 `tools/quantize_yolo11_espdl.py` 再使用 ESP-PPQ
- * 生成 ESP32-P4 可加载的 INT8 `.espdl`。板端后处理复用 ESP-DL 的
- * `dl::detect::yolo11PostProcessor`，它负责 DFL 解码、sigmoid、NMS 和
- * letterbox 坐标映射。
+ * This model is no longer part of the customer flow. It remains available only
+ * when CONFIG_APP_ENABLE_LEGACY_COKE_SPRITE is enabled, so old experiments can
+ * still be reproduced without polluting the default Fish31/TinyCNN/COCO path.
  */
 extern const uint8_t yolo11_model_start[] asm("_binary_yolo11_coke_sprite_416_s8_p4_espdl_start");
 extern const uint8_t yolo11_model_end[] asm("_binary_yolo11_coke_sprite_416_s8_p4_espdl_end");
@@ -48,9 +44,9 @@ public:
     CokeSpriteYolo11(const char *model_data, float score_thr, float nms_thr)
     {
         /*
-         * param_copy=false：模型参数留在 flash rodata，不复制到 PSRAM。
-         * 对 P4 这类视觉板很关键，因为摄像头帧、JPEG 编码、Web 推流和模型推理
-         * 会同时占用大量 PSRAM。ESP-DL 官方示例也建议 rodata + param_copy=false。
+         * Keep model parameters in flash rodata instead of copying them to
+         * PSRAM. This follows the ESP-DL examples and leaves more PSRAM for
+         * camera buffers, JPEG encoding, streaming, and model scratch memory.
          */
         m_model = new dl::Model(model_data,
                                 fbs::MODEL_LOCATION_IN_FLASH_RODATA,
@@ -61,16 +57,15 @@ public:
         m_model->minimize();
 
         /*
-         * 训练/量化时输入范围是 0..1；这里用 {0,0,0}/{255,255,255} 完成 RGB888
-         * 到模型输入的缩放。letterbox 灰边值 114 与 Ultralytics/量化校准保持一致。
+         * Training and quantization used a 0..1 input range. The preprocessor
+         * scales RGB888 by 255 and keeps the Ultralytics-style 114 letterbox.
          */
         m_image_preprocessor = new dl::image::ImagePreprocessor(m_model, {0, 0, 0}, {255, 255, 255});
         m_image_preprocessor->enable_letterbox({114, 114, 114});
 
         /*
-         * 三个 stage 分别对应 416 输入下的 52x52、26x26、13x13 特征层。
-         * stride/offset 的写法沿用 ESP-DL 官方 YOLO11n 示例；类别数由 score 输出
-         * 通道自动决定，这里是 two-class: coke/sprite。
+         * Three stages correspond to 52x52, 26x26, and 13x13 feature maps for
+         * 416 input. The stride/offset values mirror the ESP-DL YOLO11 example.
          */
         m_postprocessor = new dl::detect::yolo11PostProcessor(
             m_model, m_image_preprocessor, score_thr, nms_thr, 10, {{8, 8, 4, 4}, {16, 16, 8, 8}, {32, 32, 16, 16}});
@@ -251,11 +246,9 @@ esp_err_t yolo11_espdl_detect_jpeg(const uint8_t *jpg_data,
     int64_t total_start = esp_timer_get_time();
 
     /*
-     * 单帧流程：
-     * 1. 把摄像头任务保存的 JPEG 解码成 RGB888；
-     * 2. CokeSpriteYolo11::run() 内部做 letterbox + INT8 输入量化 + model->run()；
-     * 3. yolo11PostProcessor 解析 box/score 输出并做 NMS；
-     * 4. 取最高置信度候选，转换成统一结构供网页画框、历史记录和 /api/status 使用。
+     * Single-frame path: decode the latest JPEG, run letterbox + INT8 inference,
+     * postprocess boxes, and expose the strongest detections to the common
+     * status/history/overlay structures.
      */
     dl::image::jpeg_img_t jpeg_img = {.data = (void *)jpg_data, .data_len = jpg_len};
     dl::image::img_t img = dl::image::sw_decode_jpeg(jpeg_img, dl::image::DL_IMAGE_PIX_TYPE_RGB888);

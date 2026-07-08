@@ -1,4 +1,4 @@
-#include "yolo26_espdl_bridge.h"
+﻿#include "yolo26_espdl_bridge.h"
 
 #include <algorithm>
 #include <cmath>
@@ -19,14 +19,11 @@
 static const char *TAG = "yolo26_bridge";
 
 /*
- * 这个符号由 main/CMakeLists.txt 的 target_add_aligned_binary_data() 生成。
- * 这里嵌入的是自训练 Coke/Sprite YOLO26n raw-head 模型：
- *   models/yolo26_coke_sprite_o2o_416_s8_p4.espdl
+ * Legacy Coke/Sprite YOLO26n raw-head bridge.
  *
- * 早期崩溃版本的问题是 ONNX 只有一个最终 output0，里面包含了解码后的
- * [x1,y1,x2,y2,score,class] 拼接结果；yolo26 组件需要的是六个 raw one2one head
- * 输出。当前模型按官方 quantize_yolo26 教程重新导出为
- * one2one_p3_box/cls、one2one_p4_box/cls、one2one_p5_box/cls 后再量化。
+ * This bridge is disabled in the customer firmware unless
+ * CONFIG_APP_ENABLE_LEGACY_COKE_SPRITE is enabled. The current customer path
+ * uses Fish31, TinyCNN, and COCO only.
  */
 extern const uint8_t yolo26_model_start[] asm("_binary_yolo26_coke_sprite_raw_heads_416_allint8_p4_espdl_start");
 extern const uint8_t yolo26_model_end[] asm("_binary_yolo26_coke_sprite_raw_heads_416_allint8_p4_espdl_end");
@@ -60,8 +57,8 @@ static void read_model_input_shape(void)
     }
 
     /*
-     * ESP-DL 的图像输入通常是 NHWC: [1, H, W, C]。若后续模型改成其他布局，
-     * 这里仍保守读取最后两个空间维度，避免网页框坐标完全失真。
+     * ESP-DL image inputs are normally NHWC: [1, H, W, C]. Keep this conservative
+     * read so UI box mapping does not become wildly wrong if an old model is used.
      */
     dl::TensorBase *input = inputs.begin()->second;
     if (input->shape.size() >= 4) {
@@ -82,8 +79,8 @@ static esp_err_t ensure_model(void)
     xSemaphoreTake(s_lock, portMAX_DELAY);
     if (!s_model) {
         /*
-         * param_copy=false 是 yolo26 官方示例推荐方式：模型参数留在 flash rodata，
-         * 不复制到 PSRAM，既省内存，也符合 32MB PSRAM 板卡上的部署建议。
+         * Keep model parameters in flash rodata instead of PSRAM. This saves
+         * memory on 32 MB PSRAM boards and matches the ESP-DL YOLO examples.
          */
         s_model = new (std::nothrow) dl::Model((const char *)yolo26_model_start,
                                                fbs::MODEL_LOCATION_IN_FLASH_RODATA,
@@ -103,8 +100,8 @@ static esp_err_t ensure_model(void)
 
     if (!s_processor) {
         /*
-         * 组件内部的置信度阈值保持 0.25，用来减少候选输出数量；网页上的
-         * box_min_score 仍会再做一次过滤，用于实验时动态调节画框阈值。
+         * The component keeps its internal confidence threshold at 0.25. The Web
+         * box_min_score setting can still apply an extra display filter.
          */
         s_processor = new (std::nothrow) YOLO26(s_model, YOLO_TARGET_K, YOLO_CONF_THRESH, coke_sprite_classes);
         if (!s_processor) {
@@ -242,12 +239,8 @@ esp_err_t yolo26_espdl_detect_jpeg(const uint8_t *jpg_data,
     int64_t total_start = esp_timer_get_time();
 
     /*
-     * 推理流程：
-     * 1. JPEG 解码成 RGB888；
-     * 2. YOLO26 组件执行 letterbox resize + INT8 LUT 量化，直接写入模型输入；
-     * 3. ESP-DL 调用 P4 上的定点算子跑模型；
-     * 4. one-to-one head 后处理并取最高置信度候选；
-     * 5. 把 416x416 letterbox 坐标映射回摄像头原始图像坐标，方便网页画框。
+     * Inference path: JPEG decode, letterbox preprocess, model run, raw-head
+     * postprocess, then map 416x416 letterbox boxes back to source coordinates.
      */
     auto img = s_processor->decode_jpeg(jpg_data, jpg_len);
     int64_t pre_start = esp_timer_get_time();

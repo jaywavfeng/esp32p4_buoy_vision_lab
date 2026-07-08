@@ -7,7 +7,7 @@
   "score_min": 75,
   "board": {
     "base_url": "http://169.254.100.2",
-    "interface": "<host-apipa-ip>",
+    "interface": "169.254.12.109",
     "status_model": {
       "name": "tiny-cnn-cls-192-6cls-p4",
       "bytes": 338592,

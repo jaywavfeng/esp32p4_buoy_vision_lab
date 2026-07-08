@@ -68,6 +68,13 @@ esp_err_t coco_espdl_annotate_jpeg(const uint8_t *jpg_data,
                                    uint8_t jpeg_quality,
                                    uint8_t **annotated_jpeg,
                                    size_t *annotated_len);
+esp_err_t coco_espdl_annotate_label_jpeg(const uint8_t *jpg_data,
+                                         size_t jpg_len,
+                                         const char *title,
+                                         const char *subtitle,
+                                         uint8_t jpeg_quality,
+                                         uint8_t **annotated_jpeg,
+                                         size_t *annotated_len);
 void coco_espdl_free_jpeg(uint8_t *jpeg);
 void coco_espdl_release_background(void);
 

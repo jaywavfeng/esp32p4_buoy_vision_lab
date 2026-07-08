@@ -242,7 +242,7 @@ Wi-Fi 作为备用或删除
 提高长期部署可靠性
 ```
 
-如果只需要离线拷贝，且设备回收后接电脑导出，当前工程已实现的软件方向是 USB 2.0 High-Speed MSC：电脑独占整张 TF，可读写文件，安全弹出后重启恢复板端采集。定制板建议：
+如果只需要离线拷贝，且设备回收后接电脑导出，当前工程已实现的软件方向是 USB 2.0 High-Speed MSC：电脑独占整张 TF，可读写文件；客户主流程为插入 USB 自动导出，安全弹出后拔线自动恢复板端采集。定制板建议：
 
 ```text
 USB-C device connector, not USB-A device
@@ -253,7 +253,7 @@ hardware must prevent host and device power paths from back-feeding
 storage ownership indicator or explicit export button is recommended
 ```
 
-USB MSC 和板端 FatFS 绝不能同时访问存储。固件采用“停止任务 -> finalize AVI -> 卸载 FatFS -> USB 独占 -> 安全弹出后重启”的策略，硬件上也不要设计会绕开此互斥的第二主机路径。
+USB MSC 和板端 FatFS 绝不能同时访问存储。固件采用“停止任务 -> finalize AVI -> 卸载 FatFS -> USB 独占 -> 安全弹出后拔线自动恢复”的策略，硬件上也不要设计会绕开此互斥的第二主机路径。
 
 ## 需要你和我一起确认的问题
 

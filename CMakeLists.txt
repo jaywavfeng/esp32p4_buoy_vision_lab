@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-set(PROJECT_VER "2.0.0")
+set(PROJECT_VER "3.0.0")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(esp32p4_buoy_vision_lab)

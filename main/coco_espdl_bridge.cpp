@@ -187,6 +187,167 @@ uint32_t coco_espdl_model_bytes(void)
 #endif
 }
 
+static const uint8_t *glyph5x7(char c)
+{
+    static const uint8_t blank[7] = {0, 0, 0, 0, 0, 0, 0};
+    static const uint8_t glyphs[][7] = {
+        {0x0e, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0e}, // 0
+        {0x04, 0x0c, 0x04, 0x04, 0x04, 0x04, 0x0e}, // 1
+        {0x0e, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1f}, // 2
+        {0x1f, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0e}, // 3
+        {0x02, 0x06, 0x0a, 0x12, 0x1f, 0x02, 0x02}, // 4
+        {0x1f, 0x10, 0x1e, 0x01, 0x01, 0x11, 0x0e}, // 5
+        {0x06, 0x08, 0x10, 0x1e, 0x11, 0x11, 0x0e}, // 6
+        {0x1f, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08}, // 7
+        {0x0e, 0x11, 0x11, 0x0e, 0x11, 0x11, 0x0e}, // 8
+        {0x0e, 0x11, 0x11, 0x0f, 0x01, 0x02, 0x0c}, // 9
+    };
+    static const uint8_t letters[][7] = {
+        {0x0e, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11}, // A
+        {0x1e, 0x11, 0x11, 0x1e, 0x11, 0x11, 0x1e}, // B
+        {0x0e, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0e}, // C
+        {0x1e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1e}, // D
+        {0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x1f}, // E
+        {0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x10}, // F
+        {0x0e, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0f}, // G
+        {0x11, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11}, // H
+        {0x0e, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0e}, // I
+        {0x07, 0x02, 0x02, 0x02, 0x12, 0x12, 0x0c}, // J
+        {0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11}, // K
+        {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1f}, // L
+        {0x11, 0x1b, 0x15, 0x15, 0x11, 0x11, 0x11}, // M
+        {0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11}, // N
+        {0x0e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e}, // O
+        {0x1e, 0x11, 0x11, 0x1e, 0x10, 0x10, 0x10}, // P
+        {0x0e, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0d}, // Q
+        {0x1e, 0x11, 0x11, 0x1e, 0x14, 0x12, 0x11}, // R
+        {0x0f, 0x10, 0x10, 0x0e, 0x01, 0x01, 0x1e}, // S
+        {0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04}, // T
+        {0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e}, // U
+        {0x11, 0x11, 0x11, 0x11, 0x11, 0x0a, 0x04}, // V
+        {0x11, 0x11, 0x11, 0x15, 0x15, 0x1b, 0x11}, // W
+        {0x11, 0x11, 0x0a, 0x04, 0x0a, 0x11, 0x11}, // X
+        {0x11, 0x11, 0x0a, 0x04, 0x04, 0x04, 0x04}, // Y
+        {0x1f, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1f}, // Z
+    };
+    static const uint8_t dash[7] = {0, 0, 0, 0x1f, 0, 0, 0};
+    static const uint8_t underscore[7] = {0, 0, 0, 0, 0, 0, 0x1f};
+    static const uint8_t colon[7] = {0, 0x04, 0x04, 0, 0x04, 0x04, 0};
+    static const uint8_t slash[7] = {0x01, 0x01, 0x02, 0x04, 0x08, 0x10, 0x10};
+    static const uint8_t percent[7] = {0x18, 0x19, 0x02, 0x04, 0x08, 0x13, 0x03};
+    static const uint8_t dot[7] = {0, 0, 0, 0, 0, 0x0c, 0x0c};
+    if (c >= '0' && c <= '9') {
+        return glyphs[c - '0'];
+    }
+    if (c >= 'a' && c <= 'z') {
+        c = (char)(c - 'a' + 'A');
+    }
+    if (c >= 'A' && c <= 'Z') {
+        return letters[c - 'A'];
+    }
+    if (c == '-') {
+        return dash;
+    }
+    if (c == '_') {
+        return underscore;
+    }
+    if (c == ':') {
+        return colon;
+    }
+    if (c == '/') {
+        return slash;
+    }
+    if (c == '%') {
+        return percent;
+    }
+    if (c == '.') {
+        return dot;
+    }
+    return blank;
+}
+
+static void set_rgb_pixel(dl::image::img_t &img, int x, int y, uint8_t r, uint8_t g, uint8_t b)
+{
+    if (!img.data || img.pix_type != dl::image::DL_IMAGE_PIX_TYPE_RGB888 ||
+        x < 0 || y < 0 || x >= img.width || y >= img.height) {
+        return;
+    }
+    uint8_t *p = static_cast<uint8_t *>(img.data) + y * img.row_step() + x * 3;
+    p[0] = r;
+    p[1] = g;
+    p[2] = b;
+}
+
+static void fill_rect(dl::image::img_t &img, int x, int y, int w, int h,
+                      uint8_t r, uint8_t g, uint8_t b)
+{
+    int x2 = std::clamp(x + w, 0, (int)img.width);
+    int y2 = std::clamp(y + h, 0, (int)img.height);
+    x = std::clamp(x, 0, (int)img.width);
+    y = std::clamp(y, 0, (int)img.height);
+    for (int yy = y; yy < y2; yy++) {
+        for (int xx = x; xx < x2; xx++) {
+            set_rgb_pixel(img, xx, yy, r, g, b);
+        }
+    }
+}
+
+static void draw_char(dl::image::img_t &img, int x, int y, char c, int scale,
+                      uint8_t r, uint8_t g, uint8_t b)
+{
+    const uint8_t *rows = glyph5x7(c);
+    for (int yy = 0; yy < 7; yy++) {
+        for (int xx = 0; xx < 5; xx++) {
+            if (rows[yy] & (1U << (4 - xx))) {
+                fill_rect(img, x + xx * scale, y + yy * scale, scale, scale, r, g, b);
+            }
+        }
+    }
+}
+
+static void draw_text(dl::image::img_t &img, int x, int y, const char *text, int scale,
+                      uint8_t r, uint8_t g, uint8_t b)
+{
+    if (!text) {
+        return;
+    }
+    int cursor = x;
+    int advance = 6 * scale;
+    for (const char *p = text; *p && cursor + 5 * scale < img.width; p++) {
+        draw_char(img, cursor, y, *p, scale, r, g, b);
+        cursor += advance;
+    }
+}
+
+static esp_err_t encode_rgb_jpeg(dl::image::img_t &img,
+                                 uint8_t jpeg_quality,
+                                 uint8_t **annotated_jpeg,
+                                 size_t *annotated_len)
+{
+#if CONFIG_SOC_JPEG_CODEC_SUPPORTED
+    dl::image::jpeg_img_t encoded = dl::image::hw_encode_jpeg(img, jpeg_quality);
+    if (!encoded.data || encoded.data_len == 0) {
+        static bool warned_hw_encode = false;
+        if (!warned_hw_encode) {
+            ESP_LOGW(TAG, "hardware JPEG encode failed for annotated frame, falling back to software encoder");
+            warned_hw_encode = true;
+        }
+        if (encoded.data) {
+            heap_caps_free(encoded.data);
+        }
+        encoded = dl::image::sw_encode_jpeg(img, jpeg_quality);
+    }
+#else
+    dl::image::jpeg_img_t encoded = dl::image::sw_encode_jpeg(img, jpeg_quality);
+#endif
+    if (!encoded.data || encoded.data_len == 0) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    *annotated_jpeg = static_cast<uint8_t *>(encoded.data);
+    *annotated_len = encoded.data_len;
+    return ESP_OK;
+}
+
 static esp_err_t annotate_decoded_image(dl::image::img_t &img,
                                         const coco_espdl_result_t &result,
                                         uint32_t min_score,
@@ -215,17 +376,7 @@ static esp_err_t annotate_decoded_image(dl::image::img_t &img,
     if (drawn == 0) {
         return ESP_ERR_NOT_FOUND;
     }
-#if CONFIG_SOC_JPEG_CODEC_SUPPORTED
-    dl::image::jpeg_img_t encoded = dl::image::hw_encode_jpeg(img, jpeg_quality);
-#else
-    dl::image::jpeg_img_t encoded = dl::image::sw_encode_jpeg(img, jpeg_quality);
-#endif
-    if (!encoded.data || encoded.data_len == 0) {
-        return ESP_ERR_INVALID_RESPONSE;
-    }
-    *annotated_jpeg = static_cast<uint8_t *>(encoded.data);
-    *annotated_len = encoded.data_len;
-    return ESP_OK;
+    return encode_rgb_jpeg(img, jpeg_quality, annotated_jpeg, annotated_len);
 }
 
 static esp_err_t detect_jpeg_internal(const uint8_t *jpg_data,
@@ -366,6 +517,54 @@ esp_err_t coco_espdl_annotate_jpeg(const uint8_t *jpg_data,
     }
     esp_err_t ret = annotate_decoded_image(img, *result, min_score, jpeg_quality,
                                            annotated_jpeg, annotated_len);
+    heap_caps_free(img.data);
+    xSemaphoreGive(s_lock);
+    return ret;
+}
+
+esp_err_t coco_espdl_annotate_label_jpeg(const uint8_t *jpg_data,
+                                         size_t jpg_len,
+                                         const char *title,
+                                         const char *subtitle,
+                                         uint8_t jpeg_quality,
+                                         uint8_t **annotated_jpeg,
+                                         size_t *annotated_len)
+{
+    if (!jpg_data || jpg_len == 0 || !annotated_jpeg || !annotated_len) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *annotated_jpeg = nullptr;
+    *annotated_len = 0;
+    if (!ensure_lock()) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    dl::image::jpeg_img_t jpeg_img = {.data = (void *)jpg_data, .data_len = jpg_len};
+    dl::image::img_t img = dl::image::sw_decode_jpeg(jpeg_img, dl::image::DL_IMAGE_PIX_TYPE_RGB888);
+    if (!img.data || img.width == 0 || img.height == 0) {
+        xSemaphoreGive(s_lock);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    int title_len = title ? (int)strlen(title) : 0;
+    int subtitle_len = subtitle ? (int)strlen(subtitle) : 0;
+    int scale = img.width >= 640 ? 3 : 2;
+    int title_w = title_len * 6 * scale;
+    int subtitle_w = subtitle_len * 6 * 2;
+    int banner_w = std::max(title_w, subtitle_w) + 24;
+    banner_w = std::clamp(banner_w, 120, (int)img.width);
+    int banner_h = subtitle_len > 0 ? 72 : 48;
+    if (banner_h > img.height) {
+        banner_h = img.height;
+    }
+    fill_rect(img, 0, 0, banner_w, banner_h, 8, 16, 24);
+    fill_rect(img, 0, banner_h - 3, banner_w, 3, 255, 205, 40);
+    draw_text(img, 12, 12, title ? title : "", scale, 255, 230, 90);
+    if (subtitle_len > 0) {
+        draw_text(img, 12, 46, subtitle, 2, 220, 242, 248);
+    }
+    esp_err_t ret = encode_rgb_jpeg(img, jpeg_quality, annotated_jpeg, annotated_len);
     heap_caps_free(img.data);
     xSemaphoreGive(s_lock);
     return ret;

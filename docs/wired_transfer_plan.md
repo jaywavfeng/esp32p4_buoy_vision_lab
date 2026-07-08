@@ -2,51 +2,35 @@
 
 ## 结论
 
-在“视频和推理结果帧率尽可能高，其他功能从简，离线传输效率高”的需求下，实时图传不应该是主目标。推荐把流程拆成两个阶段：
+当前 `v3.0.0` 把采集和导出分成三条清晰流程：
 
-1. **FIELD 野外采集**：关闭 HTTP/Wi-Fi/Ethernet/mDNS，把资源留给采集、TF 写入和推理 metadata。
-2. **EXPORT 导出**：停止采集和推理，只保留 Ethernet + HTTP + mDNS 下载文件。
-3. **USB_EXPORT 离线拷贝**：电脑独占整张 TF，以可读写 U 盘方式直接打开和复制文件。
+1. FIELD 野外采集：优先保证摄像头、TF 写入和推理，生成 raw/annotated 成对录像。
+2. Ethernet/Web 下载：适合维护、少量文件下载和浏览器/API 操作。
+3. USB_EXPORT 离线拷贝：适合设备回收后批量导出，电脑把整张 TF 作为 `P4_BUOY` U 盘读写。
 
-RJ45 Ethernet 适合密封、长线、PoE、维护和浏览器下载；USB MSC 适合设备回收后近距离高速批量导出；若 TF 卡能取出，高速读卡器仍是最直接的方案。
+实时图传只作为调试观察入口，不作为野外长期采集主链路。
 
 ## 访问方式
 
-首选：
-
 ```text
-http://p4-buoy.local/
-```
-
-这是 mDNS 固定网址，固件注册：
-
-```text
-hostname: p4-buoy
-service: _http._tcp:80
-```
-
-兜底 IP：
-
-```text
-Wi-Fi AP:              http://192.168.4.1/
 Ethernet direct link:  http://169.254.100.2/
-STA/router:            read from /api/status.sta_url or serial log
+Wi-Fi AP:              http://192.168.4.1/
+mDNS:                  http://p4-buoy.local/
+STA/router:            read from Web or /api/status.sta_url
 ```
 
 `/api/status.access_urls` 会集中返回当前可用入口。
 
-## 当前 RJ45 实现
+## Ethernet 实现
 
-当前分支实现：
+当前实现：
 
 ```text
-Ethernet + HTTP file download
 DHCP first
 no DHCP after timeout -> static fallback 169.254.100.2/16
-Range download supported
+HTTP Range download supported
 download chunk default 64 KiB
-script prefers p4-buoy.local, falls back to 169.254.100.2
-current accepted storage path: tf_sdmmc / sdmmc_4bit
+script prefers p4-buoy.local, then falls back to 169.254.100.2
 ```
 
 硬件参数：
@@ -68,194 +52,117 @@ RXD1=30
 
 ## 下载录像
 
-推荐：
-
-```powershell
-.\tools\download_recordings_eth.ps1 -Limit 5
-```
-
-脚本默认流程：
-
-```text
-1. try http://p4-buoy.local
-2. POST /api/mode/export?confirm=EXPORT
-3. GET /api/status
-4. GET /api/recordings?limit=<Limit>
-5. download .avi files
-6. compare bytes with metadata
-7. print throughput MiB/s
-8. if mDNS fails, retry http://169.254.100.2
-```
-
-手动指定直连 IP：
+推荐脚本：
 
 ```powershell
 .\tools\download_recordings_eth.ps1 -BaseUrl http://169.254.100.2 -Limit 5
 ```
 
-手动绑定本机以太网 APIPA 地址：
+脚本流程：
+
+```text
+GET /api/status
+GET /api/recordings?limit=<Limit>
+download raw/annotated .avi files
+compare downloaded bytes with metadata
+print throughput MiB/s
+```
+
+Range 验证：
 
 ```powershell
-.\tools\download_recordings_eth.ps1 -BaseUrl http://169.254.100.2 -InterfaceAddress <host-apipa-ip> -Limit 5
+curl.exe --noproxy "*" --fail -D - -H "Range: bytes=0-1023" -o NUL http://169.254.100.2/recording/<name>.avi
 ```
+
+预期返回 `206 Partial Content`。
 
 ## FIELD 模式
 
 进入：
 
 ```powershell
-curl.exe -X POST "http://p4-buoy.local/api/mode/field?confirm=FIELD"
+curl.exe --noproxy "*" -X POST "http://169.254.100.2/api/mode/field?confirm=FIELD"
 ```
 
 行为：
 
 ```text
-close HTTP
-close mDNS
-stop Wi-Fi/AP
-stop Ethernet
 record raw AVI
+record annotated AVI with same frame count and duration
 write sidecar metadata
-run COCO inference metadata path
-do not generate realtime annotated AVI
-return to server mode by reset
+run selected model inference
+cleanup temporary files on segment close
+return to server mode by reset or maintenance recovery flow
 ```
 
 性能目标：
 
 ```text
 raw AVI target: CONFIG_APP_FIELD_RECORDING_MAX_FPS, default 12
-acceptance target: >=8 FPS
+acceptance target: >=8 FPS for closed segments
 recording_sd_errors=0
-recording_dropped should not keep increasing
-board validation: 687 frames / 59.994 s = 11.45 FPS, with sidecar inference metadata
+raw/annotated frame counts match
 ```
 
-为什么关闭网络：HTTP、MJPEG、网页客户端、mDNS 和 Wi-Fi/Ethernet 都会消耗 CPU、PSRAM、JPEG buffer、任务调度和 I/O 资源。野外采集时最重要的是视频写入和推理 metadata。
-
-## EXPORT 模式
-
-进入：
-
-```powershell
-curl.exe -X POST "http://p4-buoy.local/api/mode/export?confirm=EXPORT"
-```
-
-行为：
-
-```text
-stop camera capture
-stop vision/inference/recording
-finalize current AVI segment
-stop Wi-Fi/AP
-keep Ethernet + HTTP + mDNS
-reject high-load endpoints such as /stream, /validate, dataset run
-```
-
-EXPORT 模式下只建议访问：
-
-```text
-/api/status
-/api/recordings
-/recording/<name>.avi
-/recordingmeta/<name>.jsonl
-```
-
-## 三种导出方案对比
-
-| 方案 | 适用场景 | 需要新增 |
-|---|---|---|
-| 取 TF 卡 + 读卡器 | 当前开发最快验证、外壳允许取卡 | 高速 USB 3.0 TF 读卡器；工业级/高耐久 TF 卡 |
-| USB MSC | 最终封装后不能取 TF，设备回收后像 U 盘一样复制 | USB HS DEVICE 数据线；当前固件已实现整卡可读写和文件系统互斥 |
-| RJ45 Ethernet | 长线、PoE、密封接口、维护和浏览器/API 下载 | Cat5e/Cat6 网线；电脑无网口时 USB-RJ45 网卡；封装时防水 RJ45/尾线 |
-
-## 是否还需要买线
-
-当前你已经插上网线并完成直连测试，继续 RJ45 方案时建议准备：
-
-```text
-Cat5e 或 Cat6 普通网线
-电脑没有 RJ45 口时：USB 3.0 转千兆 RJ45 网卡
-需要封装时：防水 RJ45 面板口或防水网线尾线
-若考虑一根线供电通信：PoE injector/PoE switch + 板端 PoE PD 方案
-```
-
-当前 Waveshare 开发板的 HS OTG DEVICE 实际位于 USB-A 口，因此实验阶段使用 USB-A 对 USB-A **数据线**，并必须断电把黄色跳帽从 `HOST` 移到 `DEVICE`。这是开发板验证接法；定制板不建议做 USB-A device，应改成符合规范的 USB-C device 口并正确处理 CC、VBUS 检测、ESD 和阻抗。
+FIELD 中采集和推理并发运行。推理结果缓存按实际推理速度更新，annotated 每帧使用当前 raw 图像叠加最新结果，因此不会出现 annotated 帧数少于 raw 的客户体验问题。
 
 ## USB_EXPORT 模式
 
-自动入口：电脑通过 HS OTG DEVICE 完成枚举。手动入口：
+自动入口：电脑通过 USB HS OTG DEVICE 枚举。维护入口：
 
 ```powershell
-curl.exe "http://169.254.100.2/api/mode/usb?confirm=USB"
+curl.exe --noproxy "*" "http://169.254.100.2/api/mode/usb?confirm=USB"
 ```
 
 切换后：
 
 ```text
-reject new HTTP storage work
+reject new storage work
 camera standby
-drain inference/history/recording queues
+stop recording/inference/enrichment
 finalize AVI
-stop HTTP/mDNS/Wi-Fi/Ethernet
-unmount FatFS and deinit ESP-Hosted
-reinitialize TF as SDMMC 4-bit
-expose the whole card as writable USB MSC
-never remount to the app before reboot
+keep Web/AP/STA/Ethernet online
+unmount FatFS from app
+expose whole TF as writable USB MSC
+remount to app after safe eject + physical unplug
 ```
 
-Windows 卷标为 `P4_BUOY`。完成操作后必须安全弹出、等待至少 2 秒，再重启开发板。速度与完整性命令：
+Windows 卷标为 `P4_BUOY`。客户主流程不需要打开 Web：插入 USB 自动导出，完成后先在 Windows 安全弹出，再拔掉 USB 数据线，板端自动恢复 TF 到应用。USB 导出期间 `/api/status` 会显示 `usb_storage_owner:"usb"`。
+
+USB 工具：
 
 ```powershell
 .\tools\watch_usb_msc.ps1
 .\tools\benchmark_usb_msc.ps1
+.\tools\eject_usb_msc.ps1
 ```
 
-验收门槛：读取 `>=6 MiB/s`、写入 `>=4 MiB/s`、双向 SHA256 一致，新建/重命名/删除成功。
+验收门槛：
 
-v2.0.0 USB 导出默认使用 SDMMC 4-bit 40 MHz，并通过构建期补丁把 `esp_tinyusb` MSC 写路径改为同步 SDMMC 写入。该补丁不提交 `managed_components` 生成物，只在本地构建时幂等应用；主固件板端验收读取约 `7.25 MiB/s`、写入约 `5.35 MiB/s`。
+```text
+Windows shows P4_BUOY
+Web remains reachable
+read >= 6 MiB/s
+write >= 4 MiB/s
+SHA256 matches both directions
+create / rename / delete pass
+safe eject + unplug remounts TF to app
+next physical insert auto-exports again
+```
+
+## 三种导出方案对比
+
+| 方案 | 适用场景 | 注意事项 |
+|---|---|---|
+| Web/Ethernet | 维护、少量文件下载 | 依赖 Web 在线，速度低于直接 U 盘拷贝。 |
+| USB MSC | 客户离线批量导出 | 必须安全弹出后再拔线，避免文件系统损坏。 |
+| 取 TF 卡 | 实验室最快拷贝 | 需要外壳允许取卡，客户现场通常不推荐。 |
 
 ## 验收命令
 
-固定网址：
-
 ```powershell
-curl.exe http://p4-buoy.local/api/status
-```
-
-直连 IP：
-
-```powershell
-ping 169.254.100.2
-curl.exe http://169.254.100.2/api/status
-curl.exe http://169.254.100.2/api/recordings?limit=20
-```
-
-Range：
-
-```powershell
-curl.exe --interface <host-apipa-ip> --fail -D - -H "Range: bytes=0-1023" -o NUL http://169.254.100.2/recording/<name>.avi
-```
-
-下载：
-
-```powershell
-.\tools\download_recordings_eth.ps1 -Limit 5
-```
-
-USB：
-
-```powershell
+curl.exe --noproxy "*" http://169.254.100.2/api/status
+curl.exe --noproxy "*" http://169.254.100.2/api/recordings?limit=20
+.\tools\download_recordings_eth.ps1 -BaseUrl http://169.254.100.2 -Limit 5
 .\tools\benchmark_usb_msc.ps1
-```
-
-验收标准：
-
-```text
-at least one full .avi downloaded
-downloaded bytes == metadata bytes
-Range returns 206 Partial Content
-status remains reachable during download
-throughput target > previous 0.78 MiB/s baseline, accept >=1.0 MiB/s before merging
-board validation: 5 AVI downloads averaged about 3.08 MiB/s; file sizes matched metadata
 ```

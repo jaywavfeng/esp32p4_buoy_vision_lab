@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -10,6 +11,19 @@ extern "C" {
 #endif
 
 typedef bool (*recording_enrichment_cancel_cb_t)(void *arg);
+
+typedef esp_err_t (*recording_enrichment_infer_cb_t)(
+    const uint8_t *jpeg,
+    size_t jpeg_size,
+    const char *method,
+    uint32_t frame_index,
+    uint32_t min_score,
+    uint8_t jpeg_quality,
+    char *meta_json,
+    size_t meta_json_size,
+    uint8_t **annotated_jpeg,
+    size_t *annotated_jpeg_size,
+    void *arg);
 
 typedef struct {
     bool enabled;
@@ -25,10 +39,14 @@ typedef struct {
     uint32_t passes_completed;
     char raw_name[96];
     char output_name[96];
+    char method[16];
     char last_error[128];
 } recording_enrichment_status_t;
 
 void recording_enrichment_init(bool enabled);
+void recording_enrichment_set_infer_callback(recording_enrichment_infer_cb_t cb, void *arg);
+esp_err_t recording_enrichment_request(const char *raw_name);
+bool recording_enrichment_has_request(void);
 
 esp_err_t recording_enrichment_process_next(
     const char *recording_dir,

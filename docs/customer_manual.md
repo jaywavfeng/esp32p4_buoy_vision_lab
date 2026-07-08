@@ -1,147 +1,116 @@
-# ESP32-P4 板端目标识别产品使用手册
+# P4 Buoy Vision 用户操作手册
 
-本文面向现场使用人员，说明如何开机、连接、查看实时画面、回放录像、定位识别事件，以及如何使用 COCO 视频验证。存储优先使用 TF 卡；如果 TF 卡暂时无法被板端识别，设备会自动使用内部 flash fallback 保存最近记录。
+本文面向现场使用人员。日常使用不需要开发环境；所有设置和导出都通过 Web 页面、网线、Wi-Fi 热点、路由器连接或 USB U 盘完成。
 
-## 1. 开机与连接
+## 1. 需要连接哪些线
 
-1. 插入 TF 卡并给开发板上电。
-2. 板子默认同时启动热点和路由器连接：
-   - 热点名称：`P4_Buoy_Lab`
-   - 热点密码：`change-me-please`
-   - 固定访问地址：`http://192.168.4.1/`
-3. 手机或电脑连接热点后，打开：
-   - 实时监控首页：`http://192.168.4.1/`
-   - 图片/视频验证页：`http://192.168.4.1/validate`
-4. 如果设备和板子在同一路由器，也可以使用串口或 `/api/status` 中显示的 `sta_url`。
+| 用途 | 连接方式 | 说明 |
+|---|---|---|
+| 供电 | 给设备稳定供电 | 野外录像前确认供电稳定，避免录像片段未闭合。 |
+| 摄像头 | MIPI-CSI 摄像头排线 | 用于采集原视频和推理视频。 |
+| TF 卡 | 插入设备 TF 卡槽 | 存储原视频、推理视频和 metadata。 |
+| 网线 | 电脑直连 RJ45 | Web 固定入口为 `http://169.254.100.2/`。 |
+| Wi-Fi 热点 | 连接 `P4_Buoy_Lab` | 默认入口为 `http://192.168.4.1/`。 |
+| USB 导出 | USB HS OTG DEVICE 数据线接电脑 | 插上后电脑出现卷标 `P4_BUOY` 的 U 盘。 |
 
-网络服务上电后至少开放 5 分钟。只要有热点客户端、网页/API 请求或视频流客户端，网络会继续保活；全部空闲超过 5 分钟后，板子会关闭 Wi-Fi 和 HTTP 服务，下次重启再次开放。
+USB 导出不要求先打开 Web。插入 USB 数据线后，设备会暂停采集/录像，把 TF 卡交给电脑；安全弹出并拔掉 USB 数据线后，设备会自动恢复 TF 卡给板端使用。
 
-## 2. 实时监控
+## 2. 打开 Web 控制台
 
-首页左侧显示摄像头实时画面，右侧显示状态卡片：
+任选一种方式进入 Web：
 
-- `采集帧率`：摄像头采集速度。
-- `传输帧率`：网页 MJPEG 推流速度。
-- `推理延时`：最近一次 Fish31/TinyCNN/COCO 推理耗时。
-- `板端识别`：当前目标类别、置信度、检测框数量和模型信息。
-- `存储`：当前后端、TF 卡挂载状态、历史数量、录像段数量、当前录像文件和剩余空间。`storage_backend=flash_fat` 表示正在使用内部 fallback，`tf_sdmmc/tf_sdspi` 表示真 TF。
+1. 网线直连：浏览器打开 `http://169.254.100.2/`。
+2. Wi-Fi 热点：电脑或手机连接 `P4_Buoy_Lab`，密码 `change-me-please`，浏览器打开 `http://192.168.4.1/`。
+3. 路由器：先用网线或热点进入 Web，在「用户设置」填写路由器 SSID/密码，保存后从「连接地址」里的「路由器(STA)」读取新地址。
+4. mDNS：可尝试 `http://p4-buoy.local/`；如果 Windows 不稳定，以页面显示的 IP 为准。
 
-默认识别方法为 `Fish31 MobileNetV3 224`。Fish31/TinyCNN 是分类模型，主要查看 Top-1 和 Top-K 置信度；COCO 是检测模型，如果画面误框多，可提高“框阈值”，如果漏检，可降低阈值。
+Web 首页会显示热点(AP)、路由器(STA)、网线(ETH) 和 mDNS 地址。「客户端」表示最近正在访问 Web 的设备数量，无论通过网线、热点还是路由器访问都会计入。只要有客户端在线，自动进入野外录像的倒计时会暂停。
 
-## 3. 监控记录、录像与删除
+## 3. 设置录像和采集
 
-固件默认生成三类数据：
+在 Web 首页「用户设置」里可以修改：
 
-- 离散识别事件：检测到目标时保存一条 JSON 记录，可选保存 JPEG 快照。
-- 分段录像：按固定 FPS 保存摄像头 MJPEG 片段，默认每段 60 秒。
-- 周期摘要：每段录像生成目标类别统计，供 API 搜索使用，不再作为首页重复词条显示。
+- 录像片段时长：每条录像记录对应一个时间片段，可设置 `5-14400` 秒（最高 4 小时），默认 60 秒。
+- 无连接进入采集：没有 Web 客户端、没有推流、没有下载和维护任务超过设定时间后，设备自动进入野外录像。
+- 自动进入野外录像：关闭后，设备不会因为空闲自动进入采集。
+- 网络模式和路由器 SSID/密码：密码不会在页面或 API 明文显示。
 
-统一存储目录结构：
+需要立刻开始采集时，点击「立即进入野外录像」。进入野外录像后，设备优先保证摄像头采集、TF 写入和模型推理；回到 Web 通常通过重启设备或 USB/Web 恢复流程完成。
 
-```text
-/sdcard/esp32p4/history.jsonl              识别事件记录
-/sdcard/esp32p4/snapshots/*.jpg            命中帧快照
-/sdcard/esp32p4/recordings/*.avi           MJPEG-in-AVI 分段录像
-/sdcard/esp32p4/recordings/*.jsonl         每帧识别 sidecar，用于回放叠框
-/sdcard/esp32p4/recordings.jsonl           录像片段索引
-/sdcard/esp32p4/summaries.jsonl            周期识别摘要
-/sdcard/esp32p4/datasets/coco_video        COCO 视频帧数据集
-/sdcard/esp32p4/dataset_runs               视频验证结果
-```
+## 4. 模型切换和演示
 
-首页“监控记录 Timeline”显示录像片段和离散识别事件，不再重复显示摘要。一条“监控录像 · 本地日期时间”对应一个实际录像时段，右侧分别提供“下载原始视频”“下载标注视频”和“删除此录像”；页面不会暴露内部文件名。详情包含时长、两种版本的大小与帧数，以及标注录像优先的检测统计。旧录像没有 UTC 时间时显示启动后的相对时间，无法可靠配对的历史录像会保留为单独词条并显示缺失的视频版本。
+点击「模型切换」选择后续采集使用的推理模型：
 
-删除合并词条会真实删除 TF 卡上该时段的原始/标注媒体、同名 sidecar 和临时残留，并同步清理当前/旧录像索引、摘要索引及事件索引。页面只有收到成功响应后才刷新词条；目标不存在会提示 `404`，部分失败会保留错误提示。批量删除和格式化均需要二次确认。
+| 模型 | 类型 | 说明 |
+|---|---|---|
+| Fish31 | 分类 | 默认模型，适合鱼类/水下背景分类。 |
+| TinyCNN | 分类 | 轻量 Marine 分类对照。 |
+| COCO | 检测 | 通用目标检测演示和对照。 |
 
-设备优先通过 NTP 校时。无法访问 NTP 时，首页会调用 `/api/time/sync` 使用手机时间作为回退，板端保存 UTC epoch，页面按手机本地时区显示。
+保存模型后，后续进入野外录像生成的推理视频和手动补帧都会使用该模型。模型面板里的「手机验证」会打开演示页，用内置图片和短视频查看当前模型效果。
 
-## 4. COCO 视频数据集导入
+## 5. 实时图传
 
-板端 COCO 模型接收 JPEG 图像。工程提供脚本把公开视频转换成 TF 卡帧数据集：
+实时图传只用于临时观察画面，不作为野外长期采集主流程。
 
-```powershell
-.\.venv_yolo\Scripts\python.exe tools\prepare_coco_tf_dataset.py --output data\tf_datasets\coco_video
-```
+1. 在 Web 首页点击「打开实时图传」。
+2. 页面会等待摄像头唤醒，并在有新帧后显示画面。
+3. 查看结束后点击「关闭实时图传」，释放采集资源。
 
-生成结果：
+如果图传打不开，先确认 TF 未被 USB 占用，再刷新页面重试；页面会显示当前摄像头或存储状态。
 
-```text
-data/tf_datasets/coco_video/frames/*.jpg
-data/tf_datasets/coco_video/manifest.jsonl
-data/tf_datasets/coco_video/summary.json
-```
+## 6. 查看和下载录像
 
-如果要使用完整 162 帧数据集，将整个 `data/tf_datasets/coco_video` 目录复制到 TF 卡：
+Web 首页「录像记录」按时间倒序显示，一条记录就是一个录像片段。每条记录包含：
+
+- 原视频：设备采集到的 raw AVI。
+- 推理视频：与原视频帧数和时长一致的 annotated AVI。
+- 补帧：手动对该条原视频逐帧重新推理，完成后覆盖生成新的推理视频。
+
+文件名包含类型、序号、时间和模型，例如：
 
 ```text
-TF卡根目录/esp32p4/datasets/coco_video
+raw_001_20260707_091633_fish31.avi
+annotated_001_20260707_091633_fish31.avi
 ```
 
-打开 `/validate` 后，可在 `Fish31 MobileNetV3`、`TinyCNN Marine`、`COCO YOLO11n` 三套验证之间切换。Fish31/TinyCNN 使用板端筛选过的分类样例，页面显示 Top-1 横幅和 Top-K；COCO 使用商店过道公开视频的 16 张连续帧，页面显示检测框。三套内置视频验证都不依赖 TF 卡。
+推理视频中的分类标签或检测框按真实推理速度更新；没有新推理结果时，会沿用最近一次结果，所以推理视频仍然和原视频保持同样帧数。点击「清空录像记录」会删除 `recordings` 文件夹下的录像、sidecar、索引和临时文件；操作前请确认已经导出需要保留的视频。
 
-TF 卡上的 `coco_video` 是可选长数据集，只通过 API 或后续扩展运行，不再由四张图片自动填充。图片验证中的 `demo_01~04` 保持为独立的 COCO classic 单图入口。
+如果设备在片段未完全闭合时重启或切换 USB，系统会在恢复后自动清理 `.part` 和未配对的半截记录。客户页面只展示同时具有原视频和推理视频的完整记录。
 
-也可以通过首页“监控记录 Timeline”的“视频验证”按钮启动同一流程。
+## 7. USB U 盘导出
 
-## 5. TF 卡格式化
+USB 导出适合客户离线批量拷贝录像：
 
-新卡未格式化时，优先使用电脑格式化为 FAT32。Windows 对大容量卡有时只显示 exFAT，建议使用 SD Card Formatter 或 DiskGenius 选择 FAT32。
+1. 将 USB HS OTG DEVICE 数据线接到电脑。
+2. 等待 Windows 出现卷标 `P4_BUOY` 的 U 盘。
+3. 打开 `P4_BUOY:\esp32p4\recordings\`，复制需要的 `raw_*.avi` 和 `annotated_*.avi`。
+4. 在 Windows 中安全弹出该磁盘。
+5. 拔掉 USB 数据线，等待设备自动恢复 TF 卡到板端。
 
-板端也提供维护接口：
+USB 导出期间 Web 服务不会主动关闭。若页面可访问，会显示 USB 已插入、TF 被 USB 占用。若安全弹出并拔线后仍提示 TF 被占用，可刷新页面；仍未恢复时点击「USB 恢复存储」或重启设备。
 
-```text
-POST http://192.168.4.1/api/storage/remount?confirm=REMOUNT
-POST http://192.168.4.1/api/storage/format?confirm=FORMAT
-```
+## 8. 常见问题
 
-板端格式化会短暂关闭网页和无线，暂停 C6 transport 后尝试识别/格式化 TF 卡，随后自动重启并恢复热点。重要限制：如果 `/api/status` 或串口显示 `ESP_ERR_TIMEOUT`，说明板子还没有在底层识别到 TF 卡，格式化命令无法执行。这时应检查 TF 卡是否插紧、卡槽触点、板卡引脚/供电，而不是继续格式化。如果显示 `ESP_ERR_NOT_FOUND` 或串口出现 `no available sd host controller`，通常表示现场刷入的仍是旧 SDIO-host 冲突固件；当前验收版本应使用 P4 SPI host + C6 SPI slave。
+| 问题 | 处理方式 |
+|---|---|
+| Web 打不开 | 优先用网线打开 `http://169.254.100.2/`，或连接热点后打开 `http://192.168.4.1/`。 |
+| 路由器地址不知道 | 先用热点/网线进入 Web，在「连接地址」中查看「路由器(STA)」。 |
+| 自动采集倒计时不走 | 有客户端在线时会显示暂停；关闭页面或断开访问后才开始倒计时。 |
+| 录像列表为空 | 确认 TF 可用，进入野外录像至少完成一个片段后再回 Web 查看。 |
+| 推理视频缺失或模型不对 | 点击该记录的「补帧」，设备会按当前保存模型重新生成推理视频。 |
+| Windows 没有出现 U 盘 | 检查 USB 数据线是否支持数据、DEVICE 口是否接对、TF 卡是否可用。 |
+| USB 拔掉后 TF 未恢复 | 等待几秒后刷新 Web；仍未恢复时点击「USB 恢复存储」或重启设备。 |
 
-## 6. 常用 API
+## 9. 交接验收建议
 
-```text
-/api/status                         当前实时状态
-/api/timeline?limit=50              统一监控时间线
-/api/history?limit=20               最近识别事件
-/api/history.jsonl                  当前存储后端历史 JSONL
-/api/recordings?limit=100           录像片段和周期摘要；首页据此合并原始/标注版本
-/api/search?label=person&min_score=50 服务端搜索历史、录像、摘要和逐帧 sidecar
-/recording/<name>.avi               播放或下载录像片段
-/recordingmeta/<name>.jsonl         查看某段录像每帧识别 sidecar
-/api/recording/frame.svg?name=<name>.avi&frame=<n>
-                                    查看录像指定帧的标注结果
-DELETE /api/recording?name=<primary>&paired_name=<secondary>&confirm=DELETE
-                                    删除一个录像时段的原始和标注版本
-/snapshot/<name>.jpg                查看某个历史快照
-/api/datasets                       列出当前存储后端视频数据集
-/api/dataset/run/start              启动视频数据集板端验证
-/api/dataset/run/status             查看视频验证进度
-/api/dataset/frame.svg?run_id=<run>&dataset=coco_video_demo&index=<n>
-                                    查看视频验证指定帧的标注结果
-/api/storage/remount?confirm=REMOUNT 进入 TF 维护窗口并重启恢复网络
-/api/storage/format?confirm=FORMAT  板端格式化 TF 卡
-/api/time/sync?epoch_ms=<unix-ms>   POST，使用手机时间回退校时
-/api/config?...                     修改阈值、推理间隔、推流 FPS、录像/历史开关
-/api/validate/run?sample=demo_01&method=coco&box_min_score=50
-                                    COCO classic 板端图片推理验证
-```
+- Web 首页无乱码，连接地址、客户端、TF、USB、录像和倒计时状态正常显示。
+- 录像片段可设置到 14400 秒（4 小时），重启后仍保留。
+- 实时图传可打开和关闭。
+- Fish31/TinyCNN/COCO 可保存切换，野外录像使用保存后的模型。
+- 野外录像后至少生成一条 raw/annotated 成对记录。
+- 点击补帧后进度条增长，完成后推理视频可下载。
+- 清空录像记录后列表为空。
+- 插入 USB 后电脑出现 `P4_BUOY`，Web 仍在线；安全弹出并拔线后 TF 自动恢复。
 
-录像文件通过异步下载 worker 发送，支持 HTTP Range。下载期间仍可查询状态或发送 wake；Standby/Wake 不再重复初始化整个摄像头硬件栈。
-
-## 现场验收口径
-
-本版本以真 TF/SD 卡为长期离线监控验收标准。`flash_fat` 只表示应急页面和小样例验证可用，不代表野外采集存储通过。打开 `/api/status` 后确认：
-
-- `tf_required=true`
-- `tf_ready=true`
-- `storage_backend=tf_sdmmc` 或 `tf_sdspi`
-- `sd_total_bytes > 100 GiB`
-- `storage_acceptance_ok=true`
-
-128 GB FAT32 TF 卡应满足以上条件。若 `storage_acceptance_ok=false`，请先处理 TF 挂载、容量或 C6 SPI transport 固件匹配问题，再做野外部署。
-
-## 7. 常见问题
-
-- 页面打不开：先连接 `P4_Buoy_Lab` 热点，再访问 `http://192.168.4.1/`；如果热点已消失，重启板子。
-- TF 显示不可用：先看 `/api/status` 的 `storage_backend`、`tf_card_mounted`、`sd_mount_mode`、`sd_last_error`。`flash_fat` 表示产品正在用内部 fallback，历史和视频验证仍可用；`ESP_ERR_TIMEOUT` 表示底层未识别卡；`ESP_ERR_NOT_FOUND/no available sd host controller` 多半是旧 SDIO-host 冲突固件或刷写不一致；`ESP_FAIL` 更可能是文件系统问题，可尝试格式化。
-- 录像没有增长：确认首页“录像 Recording”开关已打开，且 `/api/status` 中 `file_storage_mounted=true`。内部 fallback 空间有限，录像会自动降到 1 FPS 并只保留最近片段。
-- 识别慢：COCO 正常单帧约 650-700 ms；自训练 Coke/Sprite YOLO11/YOLO26 是实验对比模型，单帧十几秒，不适合作为主演示。
+板端交接前建议至少跑一次 5-10 秒短片段验证：进入野外录像，等待 2-3 个片段闭合，回到 Web 后确认每条记录都有「原视频」「推理视频」「补帧」三个入口，且没有灰色推理视频。

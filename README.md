@@ -1,41 +1,55 @@
 # ESP32-P4 Buoy Vision Lab
 
-这是 ESP32-P4 浮标视觉原型工程。当前主目标是：高帧率采集并存储视频，板端写入推理 metadata，离线或有线高效导出文件；网页图传只作为调试入口，不作为野外采集主链路。
+ESP32-P4 浮标视觉原型工程，当前交付版本为 `v3.0.0`。固件面向客户使用的主流程是：Web 配置参数，野外模式采集 raw/annotated 成对录像，录像完成后通过 Web、网线或 USB U 盘导出文件。
+
+## v3.0.0 客户交付重点
+
+- Web 首页显示客户主流程：连接地址、客户端计数、录像片段、模型切换、实时图传、USB 状态、录像记录。
+- 录像记录按时间倒序展示，一段录像一条记录，同一行提供原视频、推理视频和手动补帧。
+- 录像片段时长可在 Web 设置为 `5-14400` 秒（最高 4 小时），默认 60 秒，保存到 NVS。
+- FIELD 野外录像中采集和推理并发运行；raw 与 annotated 视频帧数和时长一致，标签/检测框按真实推理频率更新。
+- reset、USB 切换或异常恢复后会清理未配对的半截录像，客户列表只展示 raw/annotated 成对记录。
+- 默认模型为 Fish31；Web「模型切换」可保存 `fish31`、`tinycls`、`coco`，后续 FIELD 和手动补帧使用保存后的模型。
+- 手动补帧只在用户点击某条录像记录后执行，后台不再自动扫描补帧。
+- 「清空录像记录」会清理 `recordings` 目录下的录像、sidecar、索引和临时残留。
+- USB 插入后自动导出整张 TF 为卷标 `P4_BUOY` 的 U 盘；Web 服务不关闭，安全弹出并拔线后自动恢复 TF 给板端。
+- 「客户端」按最近访问 Web 的远端 IP 计数，网线、热点和路由器访问都会阻止自动进入野外录像。
 
 ## 当前默认模型
 
-当前固件默认识别方法是 `fish31`，部署模型为 `fish31-mbv3s075-224-p4`，对应板端资产 `models/fish31_mbv3s_075_224_s8_p4.espdl`。当前首页和手机验证主路径收敛到 `fish31`、`tinycls`、`coco` 和必要的 `off`：Fish31/TinyCNN 是分类模型，验证可视化显示 Top-1 横幅和 Top-K；COCO 是检测模型，验证可视化显示检测框。历史 Coke/Sprite / MLP / YOLO 源码保留作参考，不再作为主演示入口。
+| 方法 | 类型 | 当前用途 |
+|---|---|---|
+| `fish31` | 31 类鱼类/水下背景分类 | 默认模型，FIELD 和补帧主链路 |
+| `tinycls` | Marine 6 类轻量分类 | 对照验证 |
+| `coco` | COCO YOLO11n 通用检测 | 检测演示和对照 |
 
-## 连接方式速查
+板端最终运行 `.espdl` 或组件内置 ESP-DL 模型，不直接运行 `.pth`、`.pt` 或 `.onnx`。模型部署细节见 [docs/model_deployment_guide.md](docs/model_deployment_guide.md)，板端基准记录见 [docs/model_benchmark_results_cn.md](docs/model_benchmark_results_cn.md)。
+
+## 连接方式
 
 | 场景 | 地址 | 说明 |
 |---|---|---|
-| 固定网址 | `http://169.254.100.2/` | 网线直连时的稳定固定入口；Windows 多网卡时可用 `--interface` 指定本机 APIPA 地址 |
-| Wi-Fi AP | `http://192.168.4.1/` | 开发板热点入口 |
-| mDNS 别名 | `http://p4-buoy.local/` | 板端仍会广播；Windows/curl 对 `.local` 支持不稳定时不要作为唯一入口 |
-| STA | 看 `/api/status.sta_url` 或串口日志 | 接入路由器后的地址不固定 |
+| 网线直连 | `http://169.254.100.2/` | 最稳定的维护入口。电脑与板端 RJ45 直连，浏览器打开该地址。 |
+| Wi-Fi 热点 | `http://192.168.4.1/` | 连接热点 `P4_Buoy_Lab`，默认密码 `change-me-please`。 |
+| 路由器 STA | 页面显示的 STA 地址 | 先用网线或热点进入 Web，在「用户设置」填写路由器 SSID/密码，保存后从「连接地址」读取路由器分配的 IP。 |
+| mDNS | `http://p4-buoy.local/` | 作为便捷别名提供；Windows 上不稳定时以页面显示的 IP 为准。 |
+| USB U 盘 | `P4_BUOY` | 插入 USB HS OTG DEVICE 数据线后，Windows 会出现卷标 `P4_BUOY` 的可读写磁盘。 |
 
-常用确认命令：
+路由器连接不需要重新烧录。密码只用于板端连接路由器，不会在 Web 状态或 `/api/config` 明文回显。
+
+常用 API 检查：
 
 ```powershell
-curl.exe http://169.254.100.2/api/status
-curl.exe http://169.254.100.2/api/recordings?limit=20
-.\tools\open_board_url.ps1 -Open
+curl.exe --noproxy "*" http://169.254.100.2/api/status
+curl.exe --noproxy "*" http://169.254.100.2/api/config
+curl.exe --noproxy "*" http://169.254.100.2/api/recordings?limit=20
 ```
 
-当前实测：板端会注册 `p4-buoy.local`，`Resolve-DnsName`/`ping` 能解析到 `169.254.100.2`，但 Windows 上部分 HTTP 客户端会对 `.local` 超时或返回代理错误；直连固定 IP `169.254.100.2` 是当前最稳定入口。`tools/open_board_url.ps1` 会自动解析并探测可用地址。
-
-如果电脑有多块网卡，直连 `169.254.100.2` 可能走错网卡。先查看本机 APIPA 地址：
+如果电脑有多块网卡，可先查看本机 APIPA 地址，再指定接口：
 
 ```powershell
 Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -like "169.254.*" }
-```
-
-必要时绑定本机以太网地址：
-
-```powershell
-curl.exe --interface <host-apipa-ip> http://169.254.100.2/api/status
-.\tools\open_board_url.ps1 -InterfaceAddress <host-apipa-ip> -Open
+curl.exe --interface 169.254.x.x --noproxy "*" http://169.254.100.2/api/status
 ```
 
 ## 当前硬件
@@ -46,162 +60,76 @@ curl.exe --interface <host-apipa-ip> http://169.254.100.2/api/status
 | 开发板 | Waveshare ESP32-P4-WIFI6-DEV-KIT-A |
 | 摄像头 | OV5647 / Raspberry Pi Camera(B) Rev2.0，MIPI-CSI |
 | Wi-Fi | 板载 ESP32-C6，ESP-Hosted SDIO |
-| TF 卡 | 已用于视频和 metadata 存储，当前实测后端为 `tf_sdmmc` / `sdmmc_4bit`；运行时仍以 `/api/status.storage_backend` 和 `sd_mount_mode` 为准 |
 | Ethernet | RJ45，ESP32-P4 EMAC + IP101GRI PHY |
-| USB | UART Type-C 用于烧录/日志；USB HS OTG 的 DEVICE 口可把整张 TF 作为可读写 U 盘导出 |
-| LCD/触摸/DSI/音频等 | 当前核心流程未使用，定制板可按需求裁剪 |
+| TF 卡 | raw/annotated AVI、metadata 和索引存储 |
+| USB | UART Type-C 用于供电/烧录/日志；USB HS OTG DEVICE 用于整张 TF U 盘导出 |
 
-给硬件设计的完整交接见 [docs/zeqi_hardware_handoff.md](docs/zeqi_hardware_handoff.md)。
+硬件交接见 [docs/zeqi_hardware_handoff.md](docs/zeqi_hardware_handoff.md)。
 
-## 文档入口
+## Web 客户流程
 
-- 技术实现说明：[docs/developer_guide.md](docs/developer_guide.md)
-- 有线/离线传输策略：[docs/wired_transfer_plan.md](docs/wired_transfer_plan.md)
-- 模型部署教程：[docs/model_deployment_guide.md](docs/model_deployment_guide.md)
-- 三模型板端基准：[docs/model_benchmark_results_cn.md](docs/model_benchmark_results_cn.md)
-- 给禹杰的模型交接：[docs/yujie_model_handoff.md](docs/yujie_model_handoff.md)
-- 给泽奇的硬件交接：[docs/zeqi_hardware_handoff.md](docs/zeqi_hardware_handoff.md)
-
-历史参考文档：
-
-- [docs/customer_manual.md](docs/customer_manual.md)
-- [docs/ai_model_reference_cn.md](docs/ai_model_reference_cn.md)
-- [docs/coke_sprite_classifier_cn.md](docs/coke_sprite_classifier_cn.md)
-- [docs/coco_image_validation.md](docs/coco_image_validation.md)
-- [docs/yolo26_espdl_route_cn.md](docs/yolo26_espdl_route_cn.md)
+1. 打开 Web 首页，确认「连接地址」里 AP、STA、ETH 三类地址和「客户端」计数。
+2. 在「用户设置」里调整录像片段时长、自动进入野外录像等待时间、网络模式和路由器信息。
+3. 点击「模型切换」，保存 Fish31/TinyCNN/COCO；需要演示时从同一面板进入验证页。
+4. 需要临时观察画面时点击「打开实时图传」，使用结束后关闭图传。
+5. 点击「立即进入野外录像」或等待无客户端倒计时结束后自动进入 FIELD。
+6. 采集后回到 Web，录像记录按一段一条显示，可下载原视频、推理视频，或对某条记录执行手动补帧。
+7. 确认已导出需要的视频后，可点击「清空录像记录」清理 `recordings` 目录。
 
 ## 运行模式
 
-### SERVER 调试模式
+### SERVER
 
-默认启动模式。Wi-Fi、Ethernet、HTTP、mDNS 都可用，适合网页调参、查看 `/stream`、下载少量文件。
+默认模式。Web、API、AP/STA、Ethernet 和 mDNS 可用，用于设置、预览、下载和维护。
 
 常用接口：
 
 ```text
-/                       控制台
-/stream                 MJPEG 调试预览
-/api/status             当前状态 JSON
-/api/frame.jpg          当前单帧 JPEG
-/api/config             参数读取/修改
-/api/recordings?limit=20
-/recording/<name>.avi
-/recordingmeta/<name>.jsonl
+/                       Web 控制台
+/stream                 MJPEG 实时图传
+/validate               模型演示验证页
+/api/status             当前状态
+/api/config             客户配置读取/保存
+/api/recordings         录像记录
+/recording/<name>.avi   raw/annotated 视频下载
 ```
 
-### FIELD 野外采集模式
+### FIELD
 
-目标是把算力和 I/O 尽量留给采集、raw AVI 写入和推理 metadata。进入后会关闭 HTTP、Wi-Fi、Ethernet 和 mDNS；默认需要手动复位回 SERVER。
-
-进入 FIELD：
-
-```powershell
-curl.exe -X POST "http://p4-buoy.local/api/mode/field?confirm=FIELD"
-```
-
-FIELD 默认策略：
+野外录像模式。进入后固件把资源优先留给摄像头、TF 写入和模型推理。每个片段闭合后生成：
 
 ```text
-raw AVI 目标 FPS: CONFIG_APP_FIELD_RECORDING_MAX_FPS，默认 12
-推理间隔: 0 ms，尽可能连续投递最新帧
-history: 关闭
-JPEG quality: 70
-实时 annotated AVI: 不生成
-输出: raw AVI + 每帧 sidecar metadata
+raw_*.avi
+annotated_*.avi
+raw_*.jsonl / annotated_*.jsonl
 ```
 
-当前板端实测：TF 走 `sdmmc_4bit` 后，FIELD raw AVI 达到 `687 frames / 59.994 s = 11.45 FPS`；sidecar 中包含 `model`、`inference_ms`、`analysis_ms`、`detection_count` 等推理 metadata。
+FIELD 中 raw 与 annotated 每个采集帧一一对应。推理任务尽可能处理最新帧，但不会阻塞 raw 采集；没有新推理结果的帧沿用最近一次标签或检测框。
+如果 reset 或 USB 切换发生在片段未闭合时，启动恢复会丢弃 `.part` 和未配对的半截记录，避免客户页面出现只有原视频、没有推理视频的灰色记录。
 
-如果 mDNS 不通，用 `http://169.254.100.2/` 或 `http://192.168.4.1/` 替代。
+### USB_EXPORT
 
-### EXPORT 导出模式
+插入 USB HS OTG DEVICE 数据线后自动进入。固件会停止相机/录像/补帧，闭合 AVI，卸载板端 FatFS，然后把整张 TF 交给电脑作为 `P4_BUOY` U 盘。Web 服务保持在线，但存储列表和下载接口会提示 TF 被 USB 占用。安全弹出并拔线后，板端自动重新挂载 TF。
 
-目标是稳定、尽量快地通过有线下载 TF 卡里的文件。进入后停止采集、推理、录像和 Wi-Fi/AP，保留 Ethernet + HTTP + mDNS。
+## 有线与 USB 导出
 
-进入 EXPORT：
-
-```powershell
-curl.exe -X POST "http://p4-buoy.local/api/mode/export?confirm=EXPORT"
-```
-
-EXPORT 下建议只访问：
-
-```text
-/api/status
-/api/recordings
-/recording/<name>.avi
-/recordingmeta/<name>.jsonl
-```
-
-`/stream`、`/validate`、dataset run 等高负载接口会被拒绝。
-
-## 通过网线下载录像
-
-推荐直接使用脚本。它会优先访问 `http://p4-buoy.local`，失败后自动 fallback 到 `http://169.254.100.2`，并默认先切入 EXPORT 模式：
-
-```powershell
-.\tools\download_recordings_eth.ps1 -Limit 5
-```
-
-指定直连地址：
+网线下载适合维护和少量文件：
 
 ```powershell
 .\tools\download_recordings_eth.ps1 -BaseUrl http://169.254.100.2 -Limit 5
 ```
 
-指定本机以太网地址：
-
-```powershell
-.\tools\download_recordings_eth.ps1 -BaseUrl http://169.254.100.2 -InterfaceAddress <host-apipa-ip> -Limit 5
-```
-
-下载文件保存到：
+USB 导出适合客户离线批量拷贝：
 
 ```text
-artifacts/ethernet_downloads/
+1. 插入 USB HS OTG DEVICE 数据线。
+2. 等待 Windows 出现 P4_BUOY。
+3. 打开 P4_BUOY:\esp32p4\recordings\ 复制 raw_*.avi 和 annotated_*.avi。
+4. Windows 安全弹出。
+5. 拔掉 USB 数据线，等待板端自动恢复 TF。
 ```
 
-脚本会打印每个文件的 bytes、耗时、MiB/s，并校验下载大小是否等于 `/api/recordings` 里的 `bytes`。
-
-Range 下载验证：
-
-```powershell
-curl.exe --interface <host-apipa-ip> --fail -D - -H "Range: bytes=0-1023" -o NUL http://169.254.100.2/recording/<name>.avi
-```
-
-预期返回 `206 Partial Content`。
-
-当前板端实测：EXPORT 稳定后单文件下载约 `3.38 MiB/s`，下载大小与 `/api/recordings` metadata 一致。下载脚本会等模式切换和后台补帧完全停止后再开始传输。
-
-## 通过 USB 直接读写 TF
-
-USB Mass Storage 适合离线批量导出。Windows 会把整张 TF 识别为卷标 `P4_BUOY` 的可读写磁盘，可以直接打开 AVI，也可以复制、新建、重命名和删除文件。
-
-开发板需要两根 USB 线：
-
-```text
-UART Type-C -> 电脑：供电、烧录和串口日志
-USB HS OTG DEVICE -> 电脑：TF U 盘数据链路
-```
-
-Waveshare 板上两只 USB-A 下方有黄色 `HOST / DEVICE` 跳帽。断电后把跳帽移到右侧 `DEVICE` 两针，并把 USB-A 对 USB-A 数据线接到右边、靠 `SPK/MIC` 的 USB-A 口。`HOST` 位置不会在电脑上枚举为 U 盘。
-
-USB 主机枚举后固件会自动进入 `USB_EXPORT`。也可在接线前手动触发：
-
-```powershell
-curl.exe "http://169.254.100.2/api/mode/usb?confirm=USB"
-```
-
-切换过程会依次停止新请求、相机、推理、录像、补帧和网络，闭合当前 AVI，卸载 FatFS，再把 TF 独占交给 USB。进入后板端不会再访问 `/sdcard`，恢复采集必须重启。
-
-重要操作顺序：
-
-1. 等待 Windows 出现 `P4_BUOY` 后再读写文件。
-2. 不要在复制过程中拔线或复位。
-3. 完成后在 Windows 中“安全弹出”该磁盘。
-4. 等待至少 2 秒，再复位或重新上电开发板。
-
-速度和读写完整性验收：
+USB 验收辅助脚本：
 
 ```powershell
 .\tools\watch_usb_msc.ps1
@@ -209,75 +137,38 @@ curl.exe "http://169.254.100.2/api/mode/usb?confirm=USB"
 .\tools\eject_usb_msc.ps1
 ```
 
-`watch_usb_msc.ps1` 会轮询板端 USB 状态、Windows PnP 设备和卷标；`benchmark_usb_msc.ps1` 使用至少 50 MiB 文件和 `robocopy /J` 无缓冲复制，校验双向 SHA256，并验证新建、重命名和删除。合入门槛为读取 `>=6 MiB/s`、写入 `>=4 MiB/s`。
-
-当前 v2.0.0 USB 版本使用 40 MHz SDMMC 导出，并在构建时对 `esp_tinyusb` MSC 写路径应用一个幂等补丁，把单缓冲 deferred 写入改为同步 SDMMC 写入；主固件板端验收为读取约 `7.25 MiB/s`、写入约 `5.35 MiB/s`、SHA256 一致。
-
-常见文件目录：
-
-```text
-P4_BUOY:\esp32p4\recordings\raw_*.avi
-P4_BUOY:\esp32p4\recordings\annotated_*.avi
-P4_BUOY:\esp32p4\recordings\*.jsonl
-```
-
-如果 Windows 没有出现磁盘，依次检查 `DEVICE` 跳帽、右侧 USB-A 数据口、线材是否支持数据，以及 `/api/status.usb_initialized`。USB 模式不会自动格式化 TF；文件系统异常时应安全弹出后用电脑检查。
-
-## 空闲补帧
-
-SERVER 模式下相机处于 standby、没有 HTTP/下载/stream/dataset/实时推理且网络空闲 15 秒后，低优先级任务会把 FIELD 的 raw AVI 渐进生成同帧数、同时长的 annotated AVI：
-
-```text
-推理 stride: 8 -> 4 -> 2 -> 1
-关键帧: 真实 COCO 推理
-中间帧: 沿用最近结果并重新画框
-无目标: 直接复用 raw JPEG
-```
-
-每次更新先写 `.part`，再通过 `.prev` 替换完整文件。任何前台请求、相机唤醒或 USB 插入都会取消当前 pass，上一份完整 annotated AVI 保持不变。进度见 `/api/status.enrichment`；sidecar 包含 `result_source`、`source_frame_index`、`inference_age_frames` 和 `pass_stride`。
-
-## 模型现状
-
-板端最终运行的是 `.espdl`，不是 `.pth` 或 `.onnx`。
-
-| 方法 | 类型 | 当前用途 | 实测速度判断 |
-|---|---|---|---|
-| `off` | 不识别 | 只测采集、存储和传输 | 不占推理 |
-| `fish31` | MobileNetV3-Small 0.75x，224x224，31 类 | 当前默认主链路，鱼类/水下背景分类 | 5 分钟板端采样 p95 `176 ms`，latest `4.91 FPS` |
-| `tinycls` | TinyCNN-XL-Deep 192x192 6-class | Marine 6 类分类验证/对照 | 5 分钟板端采样 p95 `102 ms`，latest `8.61 FPS` |
-| `coco` | 官方 YOLO11n COCO INT8，320x320，80 类 | 通用目标检测对照/验证入口 | 5 分钟板端采样 p95 `1424 ms`，latest `0.69 FPS` |
-
-本分支的验收以真实 ESP32-P4 板端采样为准：`vision.top_k`、`vision.inference_ms`、`vision.analysis_ms` 和 `inference_fps_x100` 都需要来自 `/api/status`。三模型说明和完整实测记录见 [docs/model_benchmark_results_cn.md](docs/model_benchmark_results_cn.md)，部署细节见 [docs/model_deployment_guide.md](docs/model_deployment_guide.md)。
-
-手机验证页 `/validate` 会按模型切换内置样例：选择 `fish31` 时展示 iNaturalist/Fish31 标准候选经 ESP32-P4 板端筛选后的 4 张不同鱼类图片和 `fish31_video_demo` 16 帧视频；选择 `tinycls` 时展示 LaRS 候选经板端筛选后的 4 张非 `unknown` 图片和 `tinycls_marine_demo` 16 帧视频；选择 `coco` 时展示 COCO classic 图片和 `coco_video_demo` 16 帧视频。分类模型不画检测框，COCO 继续画检测框。TinyCNN 当前通过演示类为 `buoy`、`ship_part`，`plastic_bottle`、`foam`、`net` 没有被硬塞进演示；筛选记录见 `test_assets/fish31_validation/manifest.json` 和 `test_assets/tinycls_marine_demo/manifest.json`。
-
 ## 构建和烧录
 
-推荐脚本：
+客户手册不包含烧录步骤；以下仅供开发维护使用。
 
 ```powershell
-cd <project-directory>
 .\build_tmp.ps1
 .\flash_p4.ps1 -Port COM3
 ```
 
-只烧录、不进入 monitor 时，可用构建输出里的 `flash_args`：
+也可以使用构建输出中的 esptool 命令直接写入 `bootloader.bin`、`partition-table.bin` 和应用镜像。
 
-```powershell
-idf.py -B build -p COM3 flash
-```
+## 文档入口
 
-大 app 完整写入需要几分钟，命令超时建议放到 10 分钟左右。
+- 客户 Markdown 手册：[docs/customer_manual.md](docs/customer_manual.md)
+- 客户 Word 操作指南：[docs/p4_buoy_user_operation_guide.docx](docs/p4_buoy_user_operation_guide.docx)
+- 技术实现说明：[docs/developer_guide.md](docs/developer_guide.md)
+- 有线/离线传输策略：[docs/wired_transfer_plan.md](docs/wired_transfer_plan.md)
+- 模型部署说明：[docs/model_deployment_guide.md](docs/model_deployment_guide.md)
+- 模型板端基准：[docs/model_benchmark_results_cn.md](docs/model_benchmark_results_cn.md)
+- COCO 验证说明：[docs/coco_image_validation.md](docs/coco_image_validation.md)
 
-## 验证清单
+## v3.0.0 验收清单
 
-1. `.\build_tmp.ps1` 通过。
-2. 串口看到 `mDNS URL: http://p4-buoy.local/`、`Ethernet Started`、插网线后 `Ethernet Link Up`。
-3. `/api/status` 包含 `hostname`、`mdns_url`、`access_urls`、`eth_url`。
-4. `.\tools\download_recordings_eth.ps1 -Limit 5` 至少下载 1 个完整 `.avi`，大小与 metadata 一致。
-5. Range 请求返回 `206 Partial Content`。
-6. FIELD 模式下 HTTP/Wi-Fi/Ethernet 在 10 秒内停止响应。
-7. FIELD 采集 2-3 分钟后复位，下载最新 raw AVI 和 sidecar，检查 raw AVI FPS、`recording_sd_errors` 和 metadata。
-8. `P4_BUOY` 可读写，`benchmark_usb_msc.ps1` 的速度和 SHA256 验收通过。
-9. 安全弹出并重启后 TF 正常挂载，Windows 写入文件保留，删除的视频不再出现在索引中。
-10. annotated 与 raw 帧数相同、时长误差不超过一帧，metadata 的来源字段正确。
+1. `.\build_tmp.ps1` 构建通过。
+2. 烧录后 `/api/status` 和 `/api/config` 可访问。
+3. 录像片段时长支持 `5-14400` 秒（最高 4 小时），保存后重启仍保留。
+4. 实时图传可以唤醒摄像头并从 `/stream` 输出 MJPEG。
+5. 模型切换 Fish31/TinyCNN/COCO 后重启仍保留，FIELD 使用保存后的模型。
+6. FIELD 采集至少 1-2 段后，Web 记录中每条都有 raw 与 annotated 下载。
+7. raw 与 annotated 帧数一致，推理视频左上角标签或检测框正常。
+8. 手动补帧进度能到满帧，完成后推理视频可下载。
+9. 清空录像记录后 `recordings` 目录录像和索引被清理，Web 列表为空。
+10. 插入 USB 后 Windows 出现 `P4_BUOY`，Web 保持在线；安全弹出并拔线后 TF 自动恢复。
+
+本轮板端实测记录（2026-07-08）：`.\build_tmp.ps1` 通过；COM3 直接 esptool 写入并校验通过；首页中文、客户端计数、模型切换、`5-14400` 秒片段上限显示正常；实时图传从待机唤醒后 `/stream` 连续输出约 2.58 MB MJPEG；清空录像记录删除 7 个录像相关文件；模型 API 已验证 `tinycls -> fish31` 切换；5 秒片段 FIELD 生成 2 条 raw/annotated 成对记录，帧数为 24/24、23/23；手动补帧完成 24/24 帧，覆盖率 100%；改回 60 秒后历史整理将 2 段合并为 1 条 47/47 帧成对记录；USB 插入后 Windows 识别 `E: P4_BUOY`，Web 保持在线，`usb_storage_owner=usb`，并已从 `P4_BUOY:\esp32p4\recordings\` 成功读取和复制 AVI；安全弹出/拔线恢复流程已按客户随插随拔口径整理，Web 侧保留 TF 恢复入口作为兜底。

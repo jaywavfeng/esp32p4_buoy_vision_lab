@@ -60,11 +60,18 @@ set(cmake_dir ${espdl_dir}/fbs_loader/cmake)
 include(${cmake_dir}/utilities.cmake)
 
 if(CONFIG_APP_ENABLE_LEGACY_COKE_SPRITE)
-    # Legacy Coke/Sprite YOLO assets are kept for reproduction, but are off by default.
+    # Legacy Coke/Sprite bridge source is retained for reproduction, but the
+    # old model assets are not shipped in the v3.0.0 customer release.
     set(YOLO26_MODEL_FILE "${CMAKE_CURRENT_LIST_DIR}/../models/yolo26_coke_sprite_raw_heads_416_allint8_p4.espdl")
+    if(NOT EXISTS "${YOLO26_MODEL_FILE}")
+        message(FATAL_ERROR "CONFIG_APP_ENABLE_LEGACY_COKE_SPRITE is enabled, but ${YOLO26_MODEL_FILE} is not present. Restore the legacy asset or disable the legacy option.")
+    endif()
     target_add_aligned_binary_data(${COMPONENT_LIB} "${YOLO26_MODEL_FILE}" BINARY)
 
     set(YOLO11_MODEL_FILE "${CMAKE_CURRENT_LIST_DIR}/../models/yolo11_coke_sprite_416_s8_p4.espdl")
+    if(NOT EXISTS "${YOLO11_MODEL_FILE}")
+        message(FATAL_ERROR "CONFIG_APP_ENABLE_LEGACY_COKE_SPRITE is enabled, but ${YOLO11_MODEL_FILE} is not present. Restore the legacy asset or disable the legacy option.")
+    endif()
     target_add_aligned_binary_data(${COMPONENT_LIB} "${YOLO11_MODEL_FILE}" BINARY)
 endif()
 

@@ -40,7 +40,7 @@ LARS_TARGET_CATEGORIES = {
     17: "foam",
     19: "net",
 }
-DEFAULT_DOWNLOADS = Path(os.environ.get("LARS_DOWNLOADS_DIR", Path.home() / "Downloads"))
+DEFAULT_DOWNLOADS = Path("D:/Jaywav/Downloads")
 DEFAULT_IMAGES_ZIP = DEFAULT_DOWNLOADS / "lars_v1.0.0_images.zip"
 DEFAULT_ANNOTATIONS_ZIP = DEFAULT_DOWNLOADS / "lars_v1.0.0_annotations.zip"
 DEFAULT_WORK_DIR = Path("artifacts/tinycls_lars_candidates")

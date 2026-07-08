@@ -1,55 +1,56 @@
 # ESP32-P4 板端视觉工程技术说明
 
-本文记录当前工程的实际实现，优先服务开发和交接。入口文件是 `main/camera_web_main.c`。
+本文记录 `v3.0.0` 固件的实现现状，面向开发维护和交接验收。客户操作说明见 [customer_manual.md](customer_manual.md) 和 Word 用户手册。
 
-## 1. 当前架构
+## 1. 总体链路
 
 ```text
-OV5647 MIPI-CSI camera
+OV5647 MIPI-CSI
   -> camera_task
-  -> latest JPEG buffer for debug HTTP
-  -> recording_queue -> recording_task -> TF raw MJPEG AVI + JSONL sidecar
-  -> inference_queue -> inference_task -> ESP-DL result metadata
-  -> idle enrichment_task -> progressive annotated AVI + source-aware JSONL
-  -> HTTP API / Web UI / Ethernet export
-  -> USB HS MSC -> whole writable TF card, exclusive host ownership
+  -> latest JPEG buffer for Web preview
+  -> recording_queue -> recording_task -> raw AVI + annotated AVI + JSONL sidecar
+  -> inference_queue -> inference_task -> selected ESP-DL model result cache
+  -> manual enrichment_task -> stride=1 annotated rebuild
+  -> HTTP API / Web UI / Ethernet download
+  -> USB HS MSC -> whole TF card handoff
 ```
 
 网络链路：
 
 ```text
 Wi-Fi: ESP32-C6 + ESP-Hosted SDIO
-Ethernet: ESP32-P4 internal EMAC + IP101GRI PHY
-HTTP: one server, listens on all active netif
-mDNS: p4-buoy.local, HTTP service _http._tcp:80
+Ethernet: ESP32-P4 EMAC + IP101GRI PHY
+HTTP: one server, listens on active netifs
+mDNS: p4-buoy.local, _http._tcp:80
 ```
 
 存储链路：
 
 ```text
-Primary: TF card
-Current accepted backend: check /api/status.storage_backend
-Fallback: internal flash FAT, only for emergency demo
+Primary: TF card, normally mounted as /sdcard
+Recording dir: /sdcard/esp32p4/recordings
+USB export: app unmounts FatFS, USB owns the whole card
 ```
 
 ## 2. 关键文件
 
 | 文件 | 作用 |
 |---|---|
-| `main/camera_web_main.c` | 摄像头、HTTP、Wi-Fi/Ethernet、mDNS、录像、推理队列、模式切换 |
-| `main/coco_espdl_bridge.cpp` | 官方 COCO YOLO11n ESP-DL bridge |
+| `main/camera_web_main.c` | Web/API、相机、电源状态、网络、录像、FIELD/USB 模式主流程 |
 | `main/avi_mjpeg_writer.c` | MJPEG AVI 顺序读写、探测、恢复和 retime |
-| `main/recording_enrichment.c` | 空闲补帧、渐进 stride、metadata 和两阶段替换 |
-| `main/usb_msc_export.c` | TinyUSB MSC 初始化和 SDMMC TF 介质注册 |
-| `main/yolo11_espdl_bridge.cpp` | 自训练 YOLO11 实验模型 bridge |
-| `main/yolo26_espdl_bridge.cpp` | 自训练 YOLO26 实验模型 bridge |
-| `main/CMakeLists.txt` | 组件依赖、模型和验证图片嵌入 |
-| `main/idf_component.yml` | 外部组件依赖，包含 `espressif/mdns` 和 `espressif/esp_tinyusb` |
+| `main/recording_enrichment.c` | 手动补帧、annotated 重建、metadata 和两阶段替换 |
+| `main/fish31_espdl_bridge.cpp` | Fish31 分类模型 bridge |
+| `main/tiny_cls_espdl_bridge.cpp` | TinyCNN 分类模型 bridge |
+| `main/coco_espdl_bridge.cpp` | COCO YOLO11n 检测 bridge 和标注 fallback |
+| `main/usb_msc_export.c` | TinyUSB MSC 初始化和 SDMMC 介质注册 |
+| `main/CMakeLists.txt` | 组件依赖、模型和验证资产嵌入 |
 | `main/Kconfig.projbuild` | 项目配置项 |
-| `sdkconfig.defaults` | 默认构建配置 |
-| `tools/download_recordings_eth.ps1` | Ethernet/mDNS 下载录像脚本 |
-| `tools/benchmark_usb_msc.ps1` | USB 可读写、速度和 SHA256 验收脚本 |
-| `tools/apply_component_patches.py` | 构建期修补 managed component，目前用于 TinyUSB MSC 同步写入优化 |
+| `tools/download_recordings_eth.ps1` | 网线下载录像 |
+| `tools/watch_usb_msc.ps1` | USB 状态观察 |
+| `tools/benchmark_usb_msc.ps1` | USB 读写和 SHA256 验收 |
+| `tools/apply_component_patches.py` | 构建期幂等修补 managed component |
+
+历史实验 bridge 仍在源码中作为默认关闭的兼容路径，但不进入客户首页和默认构建资产。
 
 ## 3. 关键配置
 
@@ -57,45 +58,26 @@ Fallback: internal flash FAT, only for emergency demo
 CONFIG_APP_MDNS_ENABLE=y
 CONFIG_APP_HOSTNAME="p4-buoy"
 CONFIG_APP_ETH_ENABLE=y
-CONFIG_APP_ETH_DHCP_TIMEOUT_MS=8000
 CONFIG_APP_ETH_STATIC_FALLBACK_IP="169.254.100.2"
-CONFIG_APP_ETH_STATIC_FALLBACK_NETMASK="255.255.0.0"
-CONFIG_APP_FILE_DOWNLOAD_CHUNK_BYTES=65536
-CONFIG_APP_FIELD_RECORDING_MAX_FPS=12
-CONFIG_APP_SD_MAX_FREQ_KHZ=20000
 CONFIG_APP_RECORDING_ENABLE=y
-CONFIG_APP_RECORDING_MAX_FPS=4
+CONFIG_APP_RECORDING_SEGMENT_MS=60000
+CONFIG_APP_RECORDING_SEGMENT_MAX_MS=14400000
+CONFIG_APP_FIELD_RECORDING_MAX_FPS=12
 CONFIG_APP_USB_MSC_ENABLE=y
 CONFIG_APP_USB_MSC_AUTO_EXPORT=y
 CONFIG_APP_USB_MSC_SD_FREQ_KHZ=40000
 CONFIG_TINYUSB_MSC_BUFSIZE=32768
 CONFIG_FATFS_USE_LABEL=y
 CONFIG_APP_ENRICHMENT_ENABLE=y
-CONFIG_APP_ENRICHMENT_IDLE_MS=15000
-CONFIG_APP_ENRICHMENT_INITIAL_STRIDE=8
 ```
 
-说明：
-
-- 普通 SERVER 模式保留网页调试能力。
-- FIELD 模式用 `CONFIG_APP_FIELD_RECORDING_MAX_FPS` 控制 raw AVI 目标帧率，不再受旧的 `4 FPS` 默认录像限制。
-- 文件下载 chunk 默认 64 KiB，用于减少 HTTP 大文件下载时的循环次数。
-- TF 默认优先走 SDMMC 4-bit，`CONFIG_APP_SD_MAX_FREQ_KHZ=20000`。当前板端实测 `tf_sdmmc/sdmmc_4bit` 是 FIELD 帧率和 Ethernet 下载提速的关键：raw AVI 约 `11.45 FPS`，EXPORT 平均下载约 `3.08 MiB/s`。
+录像片段时长运行时由 Web/NVS 控制，合法范围为 `5000-14400000 ms`。`/api/status.config.recording_segment_max_ms` 会返回当前上限。
 
 ## 4. 运行模式
 
-代码中 `app_mode_t` 当前包含：
-
-```text
-APP_MODE_SERVER
-APP_MODE_FIELD
-APP_MODE_EXPORT
-APP_MODE_USB_EXPORT
-```
-
 ### SERVER
 
-默认模式。HTTP、Wi-Fi、Ethernet、mDNS 可同时存在，用于调试、看状态、少量下载和网页预览。
+默认模式。Web、API、AP/STA、Ethernet 和 mDNS 可用，用于配置、预览、下载和维护。实时图传通过 `/api/power?cmd=wake` 唤醒相机，再从 `/stream` 输出 MJPEG。
 
 ### FIELD
 
@@ -105,341 +87,124 @@ APP_MODE_USB_EXPORT
 POST /api/mode/field?confirm=FIELD
 ```
 
-代码路径：
+核心行为：
 
-```text
-field_mode_start_handler()
-  -> s_field_mode_requested = true
-  -> network_task()
-  -> network_watchdog_tick()
-  -> enter_offline_tf_capture_mode()
-```
+- 停止 Web 高负载活动，把资源优先留给摄像头、TF 写入和推理。
+- 使用 Web/NVS 保存的模型，默认 `fish31`。
+- 采集与推理并发运行。
+- recording task 对每个 raw 采集帧写 1 帧 raw 和 1 帧 annotated。
+- annotated 使用当前 raw 图像叠加最近一次真实推理结果，保证 raw/annotated 帧数一致。
+- 每段闭合后保留 raw AVI、annotated AVI 和必要 sidecar，清理 `.part/.new/.prev` 等临时文件。
+- raw/annotated 采用成对轮转和成对闭合。若 reset 或 USB 切换打断片段，启动恢复会删除 `.part` 文件和未配对的 orphan raw/annotated，客户 `recording_groups` 不展示半截记录。
 
-行为：
-
-- `stop_webserver()`，同时关闭 mDNS。
-- `wifi_shutdown_for_storage_window()`，停止 Wi-Fi/ESP-Hosted 网络链路。
-- 如果 TF 已通过 SDMMC 挂载，FIELD 会保留 ESP-Hosted 的底层 SDMMC 初始化状态，避免破坏共享 SDMMC host；网络服务仍会关闭。
-- `eth_stop_runtime("field capture")`，停止 Ethernet。
-- 重新确认 TF 挂载。
-- 设置 `s_app_mode=APP_MODE_FIELD`。
-- 开启 raw AVI 录像和 COCO 推理 metadata。
-- `s_history_enabled=false`。
-- `s_inference_interval_ms=0`。
-- `s_jpeg_quality=70`。
-- 不调用 `classify_coco_annotated_jpeg()`，不实时生成 annotated AVI。
-
-回 SERVER 目前默认靠复位。这样做是为了让野外采集模式尽可能简单，把资源留给采集、TF 写入和推理。
-
-### EXPORT
-
-入口：
-
-```text
-POST /api/mode/export?confirm=EXPORT
-```
-
-代码路径：
-
-```text
-export_mode_start_handler()
-  -> s_export_mode_requested = true
-  -> network_task()
-  -> network_watchdog_tick()
-  -> enter_export_mode()
-```
-
-行为：
-
-- `s_app_mode=APP_MODE_EXPORT`。
-- 停止视觉、录像、history 和高频推理。
-- 发送 `CAMERA_CMD_STANDBY`。
-- 等待 `recording_task` 关闭当前 `.part` 分段。
-- `wifi_stop_for_export_mode()` 停止 Wi-Fi/AP。
-- 保留或启动 Ethernet。
-- 保留 HTTP server 和 mDNS。
-- `/stream`、`/validate`、dataset run、`/api/frame.jpg` 等高负载入口返回 `409 Conflict`。
-
-EXPORT 模式下建议只访问：
-
-```text
-/api/status
-/api/recordings
-/recording/<name>.avi
-/recordingmeta/<name>.jsonl
-```
+无 Web 客户端、无推流、无下载、无补帧/整理任务并超过配置空闲时间后，自动 FIELD 才会触发。Web 客户端按远端 IP 活动表统计，网线、AP 和 STA 访问都计入。
 
 ### USB_EXPORT
 
-入口：USB HS 主机枚举自动触发，或手动调用：
+入口：USB HS 主机枚举自动触发，或维护 API：
 
 ```text
 GET /api/mode/usb?confirm=USB
 POST /api/mode/usb?confirm=USB
 ```
 
-所有权切换路径：
+切换流程：
 
 ```text
-usb_host_event_callback()
-  -> s_usb_export_requested=true
-  -> network_watchdog_tick()
-  -> enter_usb_export_mode()
+detect USB host
   -> reject new storage/stream/dataset work
-  -> camera standby + drain queues + finalize AVI
-  -> stop HTTP/mDNS/Wi-Fi/Ethernet
+  -> camera standby
+  -> stop recording/inference/enrichment
+  -> finalize AVI and cleanup temp files
+  -> keep Web/AP/STA/Ethernet online
   -> storage_unmount()
-  -> esp_hosted_deinit()
-  -> raw SDMMC 4-bit card init
-  -> tinyusb_msc_new_storage_sdmmc(MOUNT_USB)
+  -> expose whole TF as writable TinyUSB MSC
 ```
 
-关键约束：
+约束：
 
-- MSC 注册整张 TF，默认可读写，不暴露内部 flash，也不限制到单一目录。
-- `auto_mount_off=1`，拔线或安全弹出后不会自动把 TF 重新交给板端。
-- USB 模式中板端不得访问 `/sdcard`；恢复只能安全弹出、等待 2 秒并重启。
-- TinyUSB 使用 ESP32-P4 HS OTG、32 KiB MSC buffer；TF 使用 SDMMC 4-bit、默认 40 MHz。
-- 构建时根 `CMakeLists.txt` 会调用 `tools/apply_component_patches.py` 修补 `managed_components/espressif__esp_tinyusb/tinyusb_msc.c`，把 MSC 写请求从 deferred 单缓冲路径切到同步 SDMMC 写入。独立 smoke app 实测 deferred 写约 `1.89 MiB/s`，同步写约 `5.35 MiB/s`；主固件最终 USB 验收读约 `7.25 MiB/s`、写约 `5.35 MiB/s`。
-- FAT 卷标在正常板端挂载时设为 `P4_BUOY`，不会自动格式化。
-- Waveshare 板必须断电后把黄色跳帽从 `HOST` 切到 `DEVICE`，并连接 DEVICE 对应 USB-A 数据口。
+- USB 模式下板端不得访问 `/sdcard`。
+- `/api/status` 继续上报 `usb_host_connected`、`usb_storage_owner`、`storage_quiescing`、`usb_last_error`。
+- 安全弹出并物理拔线后，detach 事件触发 TF 自动重新挂载。
+- 不再设置“抑制下次自动导出”；下一次物理插入仍会自动导出。
 
-`/api/status` 的 USB 字段包括：
+## 5. API 摘要
 
 ```text
-usb_msc_enabled
-usb_initialized
-usb_host_connected
-usb_export_requested
-usb_storage_owner
-usb_writable
-storage_quiescing
-file_download_clients
-usb_last_error
+GET  /api/status
+GET  /api/config
+POST /api/config
+GET  /api/config?recording_segment_ms=<ms>&method=<fish31|tinycls|coco>
+GET  /api/recordings?limit=20
+DELETE /api/recordings?confirm=DELETE
+POST /api/recording/enrich?name=<raw-name>
+POST /api/mode/field?confirm=FIELD
+GET|POST /api/mode/usb?confirm=USB
+GET|POST /api/mode/usb/restore?confirm=RESTORE
+GET  /api/power?cmd=wake|standby
+GET  /stream
+GET  /validate
 ```
 
-### 空闲补帧
+`GET /api/recordings` 兼容旧 `recordings` 字段，同时提供客户页面使用的段级 `recording_groups`。每组包含时间、模型、raw 信息、annotated 信息、补帧状态和下载链接。
 
-`enrichment_task` 仅在以下条件全部成立时运行：
+## 6. 手动补帧
+
+补帧任务只处理用户显式点击排队的 raw AVI，不做闲时自动扫描。运行条件：
 
 ```text
 app_mode == SERVER
 camera == standby
 TF mounted by app
-network active and idle >= 15 s
-no HTTP download / stream / dataset / live inference
-recording, history and inference queues empty
-no USB or mode-switch request
+no stream/download/dataset/mode switch
+manual enrichment request queued
 ```
 
-每个 raw AVI 按 `8 -> 4 -> 2 -> 1` 逐级重建 annotated AVI。每个 pass 的输出帧数和时长都与 raw 相同；关键帧真实推理，其他帧传播最近结果，无目标帧复用 raw JPEG。`coco_espdl_annotate_jpeg()` 只画已有结果，不重复推理。
+补帧按 stride=1 逐帧推理并覆盖生成 annotated AVI。分类模型写左上角 Top-1/Top-K，COCO 写检测框。失败时保留旧 annotated，临时文件清理后在 `/api/status.enrichment.last_error` 暴露错误。
 
-后台补帧使用独立的 COCO detector，FIELD 实时推理使用前台 detector。进入 FIELD、EXPORT 或 USB_EXPORT 前会等待补帧停止并释放后台实例，避免 ESP-DL 的模型执行上下文跨任务复用。
+## 7. 模型选择
 
-替换协议：
+当前客户入口只开放三种模型：
 
 ```text
-annotated.avi.part -> annotated.avi.new
-old annotated.avi -> annotated.avi.prev
-new video + new metadata -> final names
-validate frame count and duration
-delete .prev
+fish31  -> Fish31 MobileNetV3-Small 224, default
+tinycls -> TinyCNN Marine 192
+coco    -> COCO YOLO11n 320 INT8
 ```
 
-取消或失败会删除临时文件并恢复 `.prev`。`/api/status.enrichment` 上报 segment、stride、frame progress、真实推理覆盖率和错误。逐帧 metadata 增加：
+模型选择通过 Web 保存到 NVS。FIELD、实时预览推理、验证页和手动补帧都读取当前保存模型。
 
-```text
-result_source
-source_frame_index
-inference_age_frames
-pass_stride
-```
-
-## 5. mDNS 固定网址
-
-依赖：
-
-```text
-main/idf_component.yml: espressif/mdns
-main/CMakeLists.txt: mdns
-```
-
-启动逻辑：
-
-```text
-start_webserver()
-  -> httpd_start()
-  -> mdns_start_runtime()
-```
-
-注册内容：
-
-```text
-hostname: p4-buoy
-service: _http._tcp:80
-URL: http://p4-buoy.local/
-```
-
-`/api/status` 新增字段：
-
-```json
-{
-  "hostname": "p4-buoy",
-  "mdns_url": "http://p4-buoy.local/",
-  "access_urls": {
-    "mdns": "http://p4-buoy.local/",
-    "ap": "http://192.168.4.1/",
-    "sta": "http://...",
-    "eth": "http://169.254.100.2/"
-  }
-}
-```
-
-Windows 上 `.local` 解析可能受系统服务、防火墙或网卡优先级影响，所以 README 保留 IP 兜底。
-
-## 6. Ethernet
-
-硬件参数：
-
-```text
-PHY: IP101GRI
-PHY_ADDR=1
-MDC=31
-MDIO=52
-RST=51
-REF_CLK=50
-TX_EN=49
-TXD0=34
-TXD1=35
-CRS_DV=28
-RXD0=29
-RXD1=30
-```
-
-启动逻辑：
-
-```text
-app_main()
-  -> esp_netif_init()
-  -> esp_event_loop_create_default()
-  -> storage_mount()
-  -> eth_init_runtime()
-  -> start_webserver()
-  -> wifi_init_runtime()
-```
-
-DHCP fallback：
-
-```text
-Ethernet Link Up
-  -> start DHCP
-  -> wait CONFIG_APP_ETH_DHCP_TIMEOUT_MS
-  -> if no DHCP IP:
-       stop DHCP client
-       set static 169.254.100.2/16
-       log ETH static fallback URL
-```
-
-`network_watchdog_tick()` 会先处理 FIELD/EXPORT 请求，再判断 `s_eth_started`。这样 Ethernet 已启动时也不会挡住手动进入 FIELD。
-
-## 7. 文件下载
-
-索引：
-
-```text
-GET /api/recordings?limit=20
-```
-
-下载：
-
-```text
-GET /recording/<name>.avi
-GET /recordingmeta/<name>.jsonl
-```
-
-Range：
-
-```text
-Range: bytes=0-1023
-HTTP/1.1 206 Partial Content
-Accept-Ranges: bytes
-```
-
-下载脚本：
-
-```powershell
-.\tools\download_recordings_eth.ps1 -Limit 5
-```
-
-脚本流程：
-
-```text
-try http://p4-buoy.local
-  -> POST /api/mode/export?confirm=EXPORT
-  -> GET /api/status
-fallback http://169.254.100.2
-  -> auto-detect local 169.254.* interface
-  -> curl --interface <local-ip>
-GET /api/recordings
-download .avi files
-compare downloaded size with metadata bytes
-print MiB/s
-```
-
-## 8. 推理和模型
-
-板端最终运行格式是 `.espdl`。
-
-```text
-.pth/.pt  训练权重
-.onnx     中间交换格式
-.espdl    ESP32-P4 固件调用格式
-```
-
-当前 COCO 模型是官方组件内置的 INT8 ESP-DL 模型，不是本工程本地量化生成。
-
-当前速度结论：
-
-```text
-COCO YOLO11n 320 INT8: analysis_ms 约 650-700 ms，只能约 1.5 FPS
-自训练 YOLO11/YOLO26 检测实验: 约 14-16 s/帧，不适合最终部署
-```
-
-达到 `>=5 FPS` 的下一步应切向轻量分类模型，例如 ResNet/MobileNet/EfficientNet-lite 一类的小输入分类网络，并由训练侧交付可转 `.espdl` 的资产。
-
-完整部署说明见 [model_deployment_guide.md](model_deployment_guide.md)。
-
-## 9. 构建、烧录和验证
-
-构建：
+## 8. 构建和烧录
 
 ```powershell
 .\build_tmp.ps1
-```
-
-烧录：
-
-```powershell
 .\flash_p4.ps1 -Port COM3
 ```
 
-只烧录不进 monitor：
+大镜像写入较慢；直接 esptool 写入时建议给命令 3-5 分钟超时。
 
-```powershell
-cd <project-directory>\build
-idf.py -p COM3 flash
-```
+## 9. 验收清单
 
-验证重点：
+1. 构建通过，应用分区剩余空间充足。
+2. 烧录后 `/api/status`、`/api/config` 可访问。
+3. 录像片段时长可设置到 `14400000 ms`，重启后保留。
+4. `/api/power?cmd=wake` 后 `power_mode=running`，`/stream` 有 MJPEG 输出。
+5. `DELETE /api/recordings?confirm=DELETE` 清空录像目录和索引。
+6. FIELD 生成 raw/annotated 成对片段，帧数和时长一致。
+7. 手动补帧进度到满帧，输出 annotated 可播放。
+8. USB 插入后 Windows 识别 `P4_BUOY`，Web 保持在线，`usb_storage_owner=usb`。
+9. 安全弹出并拔线后 TF 自动恢复，下一次插入仍自动导出。
+10. 文档和 Word 手册不包含面向客户的烧录要求。
 
-```text
-build passes
-serial log shows mDNS URL and Ethernet Link Up
-/api/status has hostname/mdns_url/access_urls
-download script gets at least one .avi
-download size equals metadata bytes
-Range returns 206
-FIELD disables HTTP/Wi-Fi/Ethernet within 10 seconds
-FIELD raw AVI target >=8 FPS in acceptance test
-recording_sd_errors=0
-```
+## 10. 2026-07-08 板端实测摘要
+
+- `.\build_tmp.ps1` 通过，应用镜像大小 `0x96f210`，最小 app 分区剩余约 33%。
+- COM3 直接 esptool 写入 `bootloader.bin`、`partition-table.bin`、`esp32p4_buoy_vision_lab.bin` 并 hash verified。
+- `/api/status` 返回 `recording_segment_max_ms=14400000`，首页 UTF-8 中文、模型切换、客户端计数和 14400 秒上限显示正常；有线 Web 访问时 `client_count=1` 且自动采集倒计时暂停。
+- `/stream` 可从 standby 自动唤醒摄像头，12 秒抓取约 2.58 MB MJPEG 数据，随后 `/api/power?cmd=standby` 可回待机。
+- `DELETE /api/recordings?confirm=DELETE` 删除 7 个录像相关文件，释放约 9.6 MB，`recording_groups` 清空。
+- 模型保存 API 已验证 `tinycls -> fish31` 可切换，最终交付配置恢复为 Fish31 和 60 秒片段。
+- 5 秒片段 FIELD 生成 2 条客户记录，raw/annotated 帧数分别为 24/24、23/23，`recording_groups` 全部 `ready`，raw 与 annotated 均可通过 Web 下载。
+- 手动补帧 `POST /api/recording/enrich?name=raw_001...avi` 完成 24/24 帧，`inference_coverage_x1000=1000`，annotated 仍在同一条记录内下载。
+- 片段时长从 5 秒恢复到 60 秒后，历史整理完成 `input=2, output=1`，合并后记录 raw/annotated 为 47/47 帧。
+- USB 自动导出已实测：Windows 枚举 `USB\VID_303A&PID_4002\P4E8F60AE0A565`，出现 `E: P4_BUOY` FAT32 卷；Web 保持在线，`app_mode=usb_export`、`usb_storage_owner=usb`；已从 `P4_BUOY:\esp32p4\recordings\` 成功读取和复制 AVI。安全弹出/拔线恢复流程按客户随插随拔口径收敛，Web 恢复接口已验证可把 TF 挂回应用侧作为兜底。

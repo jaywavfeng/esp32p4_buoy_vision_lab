@@ -11,10 +11,10 @@
  *
  * 中文结构说明：
  * - 摄像头任务负责 Wake/Standby、采集、编码和发布最新帧，网页命令只入队，不阻塞 HTTP。
- * - 独立 inference_task 负责 YOLO11/YOLO26 长耗时推理，摄像头和 /stream 不等待模型跑完。
+ * - 独立 inference_task 负责板端模型推理，摄像头和 /stream 不等待模型跑完。
  * - HTTP worker 并发服务多个 /stream 客户端，所有客户端读取同一份最新帧缓存。
  * - 历史任务把抽帧识别结果写入 RAM 环形队列和 TF 卡，并按数量/索引大小自动淘汰旧数据。
- * - 当前主验证路径聚焦 TinyCNN Marine 分类和 COCO YOLO11n 检测；历史 Coke/Sprite 后端源码保留，不再作为页面默认入口。
+ * - 当前主验证路径聚焦 Fish31/TinyCNN 分类和 COCO YOLO11n 检测；历史实验后端源码保留，不再作为页面默认入口。
  * - 无线模式运行时可切换：STA 连路由器，SoftAP 让板子自己开热点，APSTA 同时保留两条链路做稳定性对比。
  */
 
@@ -35,6 +35,9 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+
+#include "lwip/inet.h"
+#include "lwip/sockets.h"
 
 #include "driver/gpio.h"
 #include "driver/sdmmc_host.h"
@@ -284,7 +287,7 @@ extern int esp_hosted_connect_to_slave(void);
 #define WIFI_AP_SSID CONFIG_APP_AP_SSID
 #define WIFI_AP_PASSWORD CONFIG_APP_AP_PASSWORD
 #define SETTINGS_NAMESPACE "buoy_lab"
-#define SETTINGS_VERSION 15
+#define SETTINGS_VERSION 16
 #define YOLO26_MODEL_NAME "coke-sprite-yolo26n-416-p4"
 #define YOLO11_MODEL_NAME "coke-sprite-yolo11n-416-p4"
 #define COCO_MODEL_NAME "coco-yolo11n-320-s8-v3-p4"
@@ -350,6 +353,12 @@ extern int esp_hosted_connect_to_slave(void);
 #define APP_RECORDING_MIN_FREE_PERCENT 5U
 #define APP_MIN_VALID_EPOCH_MS 1577836800000ULL
 #define APP_MAX_VALID_EPOCH_MS 4102444800000ULL
+#define APP_RECORDING_SEGMENT_MIN_MS 5000U
+#define APP_RECORDING_SEGMENT_MAX_MS 14400000U
+#define APP_FIELD_IDLE_TIMEOUT_MIN_MS 10000U
+#define APP_FIELD_IDLE_TIMEOUT_MAX_MS 86400000U
+#define APP_WEB_CLIENT_TIMEOUT_MS 10000U
+#define APP_WEB_CLIENT_SLOTS 12U
 
 #define VISION_GRID_W 16
 #define VISION_GRID_H 12
@@ -534,9 +543,15 @@ typedef struct {
     uint8_t *jpeg;
     uint32_t jpeg_size;
     recording_kind_t kind;
+    recognition_method_t method;
     bool finalize;
     SemaphoreHandle_t finalize_done;
 } recording_item_t;
+
+typedef struct {
+    char addr[48];
+    int64_t last_seen_ms;
+} web_client_slot_t;
 
 typedef struct {
     avi_mjpeg_writer_t *writer;
@@ -548,6 +563,8 @@ typedef struct {
     char meta_uri[128];
     char part_path[384];
     char final_path[384];
+    recognition_method_t method;
+    char model[48];
     int64_t start_ms;
     int64_t last_ms;
     uint64_t start_epoch_ms;
@@ -593,6 +610,17 @@ typedef struct {
     int64_t finished_ms;
     label_count_t labels[RECORDING_LABEL_BUCKETS];
 } dataset_run_status_t;
+
+typedef struct {
+    bool requested;
+    bool running;
+    bool cancelled;
+    uint32_t target_ms;
+    uint32_t input_segments;
+    uint32_t processed_segments;
+    uint32_t output_segments;
+    char last_error[128];
+} recording_resegment_status_t;
 
 typedef struct {
     bool valid;
@@ -657,7 +685,7 @@ typedef struct {
 
 /*
  * 推理任务队列只保存“要分析的一帧 JPEG 副本”和当时的元数据。
- * 摄像头任务发布图传后立刻返回采集循环，YOLO11/YOLO26 这种秒级推理由 inference_task 独立完成。
+ * 摄像头任务发布图传后立刻返回采集循环，模型推理由 inference_task 独立完成。
  * 队列长度在 app_main() 中固定为 1：如果上一帧还没推理完，新的抽帧会被丢弃而不是堆积，避免内存被长耗时模型拖垮。
  */
 typedef struct {
@@ -713,9 +741,9 @@ static TaskHandle_t s_inference_task_handle;
 static TaskHandle_t s_history_task_handle;
 static TaskHandle_t s_recording_task_handle;
 static TaskHandle_t s_enrichment_task_handle;
+static TaskHandle_t s_resegment_task_handle;
 static TaskHandle_t s_network_task_handle;
 static TaskHandle_t s_eth_fallback_task_handle;
-static TaskHandle_t s_validation_selftest_task_handle;
 static TaskHandle_t s_dataset_task_handle;
 static TaskHandle_t s_storage_service_task_handle;
 
@@ -755,10 +783,14 @@ static volatile bool s_network_shutdown_for_idle;
 static volatile bool s_field_mode_requested;
 static volatile bool s_export_mode_requested;
 static volatile bool s_usb_export_requested;
+static volatile bool s_usb_restore_requested;
+static volatile bool s_wifi_reconfigure_requested;
+static volatile bool s_usb_auto_export_suppressed;
 static volatile bool s_mdns_started;
 static volatile app_mode_t s_app_mode = APP_MODE_SERVER;
 static volatile bool s_storage_quiescing;
 static int64_t s_last_network_activity_ms;
+static int64_t s_last_web_client_activity_ms;
 static int64_t s_network_boot_window_until_ms;
 static volatile bool s_storage_mount_allowed;
 static bool s_video_hw_ready;
@@ -766,11 +798,16 @@ static volatile power_state_t s_power_state = CONFIG_APP_BOOT_STANDBY ? POWER_ST
 static volatile bool s_vision_enabled = true;
 static volatile bool s_history_enabled = CONFIG_APP_HISTORY_ENABLE;
 static volatile bool s_recording_enabled = CONFIG_APP_RECORDING_ENABLE;
+static volatile uint32_t s_segment_sequence = 0;
+static char s_current_segment_base[64] = {0};
 static volatile uint32_t s_box_min_score = CONFIG_APP_CAN_BOX_MIN_SCORE;
 static volatile uint32_t s_stream_max_fps = CONFIG_APP_STREAM_MAX_FPS;
 static volatile uint32_t s_inference_interval_ms = CONFIG_APP_INFERENCE_INTERVAL_MS;
 static volatile uint32_t s_history_sample_interval_ms = CONFIG_APP_HISTORY_SAMPLE_INTERVAL_MS;
 static volatile uint32_t s_jpeg_quality = CONFIG_EXAMPLE_JPEG_COMPRESSION_QUALITY;
+static volatile uint32_t s_recording_segment_ms = CONFIG_APP_RECORDING_SEGMENT_MS;
+static volatile uint32_t s_field_idle_timeout_ms = CONFIG_APP_NETWORK_IDLE_TIMEOUT_MS;
+static volatile bool s_field_auto_enable = true;
 static volatile recognition_method_t s_recognition_method = CONFIG_APP_DEFAULT_RECOGNITION_METHOD == 6 ? RECOGNITION_METHOD_FISH31 :
                                                             (CONFIG_APP_DEFAULT_RECOGNITION_METHOD == 5 ? RECOGNITION_METHOD_TINYCLS :
                                                              (CONFIG_APP_DEFAULT_RECOGNITION_METHOD == 4 ? RECOGNITION_METHOD_COCO :
@@ -821,6 +858,8 @@ static sdmmc_card_t *s_sd_card;
 static sdmmc_card_t *s_usb_sd_card;
 static wl_handle_t s_flash_wl_handle = WL_INVALID_HANDLE;
 static char s_storage_backend[20] = "none";
+static char s_router_ssid[33] = WIFI_SSID;
+static char s_router_password[65] = WIFI_PASSWORD;
 static volatile bool s_storage_flash_fallback_enabled;
 static uint64_t s_sd_total_bytes;
 static uint64_t s_sd_free_bytes;
@@ -878,9 +917,22 @@ static volatile uint32_t s_recording_current_frames;
 static volatile uint64_t s_recording_bytes;
 static volatile uint64_t s_recording_current_bytes;
 static int64_t s_last_recording_frame_ms;
+static volatile bool s_recording_reset_requested = false;
 static char s_recording_current_uri[128];
 static char s_usb_last_error[96] = "not initialized";
 static volatile bool s_usb_storage_ready;
+static bool s_usb_sdmmc_host_initialized;
+static bool s_usb_sdmmc_slot_initialized;
+static bool s_usb_prev_vision_enabled;
+static bool s_usb_prev_history_enabled;
+static bool s_usb_prev_recording_enabled;
+static recognition_method_t s_usb_prev_recognition_method;
+static power_state_t s_usb_prev_power_state;
+static web_client_slot_t s_web_clients[APP_WEB_CLIENT_SLOTS];
+static portMUX_TYPE s_web_client_mux = portMUX_INITIALIZER_UNLOCKED;
+static volatile uint32_t s_web_client_count;
+static portMUX_TYPE s_resegment_mux = portMUX_INITIALIZER_UNLOCKED;
+static recording_resegment_status_t s_resegment_status;
 
 static uint32_t s_capture_fps_window_count;
 static uint32_t s_stream_fps_window_count;
@@ -897,19 +949,28 @@ static int wifi_rssi(void);
 static void sample_memory_stats(uint32_t *free_heap, uint32_t *min_free_heap,
                                 uint32_t *free_psram, uint32_t *min_free_psram);
 static bool inference_worker_busy(void);
-static bool queue_yolo_inference(const uint8_t *jpeg, uint32_t jpeg_size,
+static bool queue_inference_job(const uint8_t *jpeg, uint32_t jpeg_size,
                                  const frame_meta_t *meta, recognition_method_t method);
-static void recording_maybe_queue(const uint8_t *jpeg, uint32_t jpeg_size, const frame_meta_t *meta);
+static bool recording_maybe_queue(const uint8_t *jpeg, uint32_t jpeg_size, const frame_meta_t *meta);
+static bool network_mode_has_sta(network_mode_t mode);
 static bool network_mode_has_ap(network_mode_t mode);
 static void mark_network_activity(void);
 static void open_network_access_window(const char *reason);
-static void record_http_request(void);
+static uint32_t web_client_count(int64_t now_ms);
+static void record_http_request(httpd_req_t *req);
+static void record_http_poll(httpd_req_t *req);
 static esp_err_t eth_init_runtime(void);
 static void log_acceleration_status(void);
 static void dataset_status_copy(dataset_run_status_t *out);
 static bool validation_sample_image(validation_sample_t sample, const uint8_t **start, const uint8_t **end);
 static esp_err_t queue_async_request(httpd_req_t *req, async_req_handler_t handler);
 static uint32_t remove_recording_index_rows(const char *name, bool *failed);
+static int delete_recording_files_by_name(const char *name, uint64_t *freed_bytes, bool *failed);
+static void cleanup_recording_temp_files(void);
+static bool query_confirm_delete(httpd_req_t *req, char *query, size_t query_size);
+static bool json_get_int64_field(const char *line, const char *key, int64_t *out);
+static bool json_get_u32_field(const char *line, const char *key, uint32_t *out);
+static bool json_get_string_field(const char *line, const char *key, char *out, size_t out_size);
 
 static const char *recognition_method_name(recognition_method_t method)
 {
@@ -1166,6 +1227,39 @@ static recognition_method_t recognition_method_or_fallback(recognition_method_t 
     return method;
 }
 
+static void recording_time_slug(uint64_t epoch_ms, int64_t now_ms, char *out, size_t out_size)
+{
+    if (!out || out_size == 0) {
+        return;
+    }
+    if (epoch_ms >= APP_MIN_VALID_EPOCH_MS && epoch_ms <= APP_MAX_VALID_EPOCH_MS) {
+        time_t sec = (time_t)(epoch_ms / 1000ULL);
+        struct tm tm_value = {0};
+        localtime_r(&sec, &tm_value);
+        if (strftime(out, out_size, "%Y%m%d_%H%M%S", &tm_value) > 0) {
+            return;
+        }
+    }
+    snprintf(out, out_size, "b%08" PRIx32 "_t%010" PRId64, s_boot_id, now_ms);
+}
+
+static recognition_method_t recognition_method_from_text_hint(const char *text)
+{
+    if (!text) {
+        return RECOGNITION_METHOD_OFF;
+    }
+    if (strstr(text, "fish31") || strstr(text, "fish")) {
+        return RECOGNITION_METHOD_FISH31;
+    }
+    if (strstr(text, "tinycls") || strstr(text, "tiny")) {
+        return RECOGNITION_METHOD_TINYCLS;
+    }
+    if (strstr(text, "coco")) {
+        return RECOGNITION_METHOD_COCO;
+    }
+    return RECOGNITION_METHOD_OFF;
+}
+
 static void detections_to_json(char *buf, size_t size, const vision_result_t *vision)
 {
     if (!buf || size == 0) {
@@ -1417,87 +1511,6 @@ static esp_err_t send_overlay_svg_response(httpd_req_t *req,
     free(svg);
     return ret;
 }
-
-static const char s_index_html[] =
-"<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
-"<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-"<title>ESP32-P4 摄像头</title><style>"
-":root{color-scheme:dark light;--bg:#101418;--panel:#191f24;--line:#2d3740;--text:#eef3f7;--muted:#9aa8b3;--ok:#64d68a;--bad:#ff7b7b;--accent:#7cc7ff}"
-"*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text)}"
-"main{width:min(1180px,100%);margin:0 auto;padding:18px;display:grid;gap:14px}"
-".top,.histHead{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.title{font-size:22px;font-weight:700}.title.small{font-size:18px}.sub{color:var(--muted);font-size:13px;margin-top:3px}"
-".view{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:14px;align-items:start}.video{background:#050708;border:1px solid var(--line);border-radius:8px;min-height:220px;overflow:hidden;display:grid;place-items:center}"
-".videoFrame{position:relative;width:100%}img{display:block;width:100%;height:auto;min-height:220px;object-fit:contain}.boxes{position:absolute;inset:0;pointer-events:none}.bbox{position:absolute;border:2px solid var(--accent);box-shadow:0 0 0 1px #0008;pointer-events:none}.bbox span{position:absolute;left:0;top:-24px;background:#000b;color:var(--accent);font-size:12px;padding:3px 6px;border-radius:4px;white-space:nowrap}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}"
-".card,.history{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px}.label{color:var(--muted);font-size:12px}.value{font-size:22px;font-weight:700;margin-top:4px}.wide{grid-column:1/-1}"
-".actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}button,select,input{border:1px solid var(--line);background:#22303a;color:var(--text);border-radius:8px;padding:9px 13px;font-weight:650}button,select{cursor:pointer}input{width:110px}button:hover,select:hover{border-color:var(--accent)}button.active{border-color:var(--accent);color:var(--accent)}"
-".toggle{display:flex;align-items:center;gap:8px;border:1px solid var(--line);background:#17212a;border-radius:8px;padding:8px 11px;font-weight:650}.toggle input{width:18px;height:18px;accent-color:var(--accent)}"
-".rows{display:grid;gap:8px;margin-top:10px}.row{display:grid;grid-template-columns:90px minmax(0,1fr) 168px;gap:10px;align-items:center;border-top:1px solid var(--line);padding-top:8px;font-size:13px}.row a{color:var(--accent);text-decoration:none}.tag{font-weight:700}.recordTitle{font-size:15px;font-weight:700}.recordActions{display:grid;gap:6px}.recordActions a,.recordActions button,.recordActions span{width:100%;text-align:center}.recordActions a,.recordActions span{padding:7px 8px;border:1px solid var(--line);border-radius:7px}.ok{color:var(--ok)}.badText{color:var(--bad)}.muted{color:var(--muted)}.logRow{grid-template-columns:120px 1fr 110px}"
-"@media(max-width:880px){.view{grid-template-columns:1fr}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.row{grid-template-columns:1fr}.recordActions{display:flex;flex-wrap:wrap}.recordActions a,.recordActions button,.recordActions span{width:auto;flex:1 1 140px}}"
-"</style></head><body><main>"
-"<section class=\"top\"><div><div class=\"title\">ESP32-P4 摄像头控制</div><div class=\"sub\"><span id=\"ip\">--</span> | <span id=\"mode\">--</span></div></div>"
-"<div class=\"actions\"><label class=\"toggle\"><input id=\"visionToggle\" type=\"checkbox\" onchange=\"setVision(this.checked)\"><span>识别 Vision</span></label><select id=\"methodSelect\" onchange=\"setMethod(this.value)\"><option value=\"off\">关闭 Off</option><option value=\"fish31\">Fish31 MobileNetV3 224</option><option value=\"tinycls\">TinyCNN Marine 192</option><option value=\"coco\">COCO YOLO11n 320</option></select><select id=\"netSelect\" onchange=\"setNetMode(this.value)\"><option value=\"sta\">STA</option><option value=\"softap\">热点 SoftAP</option><option value=\"apsta\">AP+STA</option></select><button id=\"wakeBtn\" onclick=\"cmd('wake')\">唤醒 Wake</button><button id=\"standbyBtn\" onclick=\"cmd('standby')\">待机 Standby</button><a href=\"/validate\">手机验证</a></div></section>"
-"<section class=\"view\"><div class=\"video\"><div class=\"videoFrame\"><img id=\"stream\" src=\"/stream\" alt=\"camera stream\"><div id=\"boxes\" class=\"boxes\"></div></div></div>"
-"<aside><div class=\"grid\">"
-"<div class=\"card\"><div class=\"label\">采集帧率 Capture FPS</div><div class=\"value\" id=\"cfps\">--</div></div>"
-"<div class=\"card\"><div class=\"label\">传输帧率 Send FPS</div><div class=\"value\" id=\"sfps\">--</div></div>"
-"<div class=\"card\"><div class=\"label\">客户端 Clients</div><div class=\"value\" id=\"clients\">--</div></div>"
-"<div class=\"card\"><div class=\"label\">帧年龄 Frame Age</div><div class=\"value\" id=\"age\">--</div></div>"
-"<div class=\"card\"><div class=\"label\">采集延时 Latency</div><div class=\"value\" id=\"lat\">--</div></div>"
-"<div class=\"card\"><div class=\"label\">推理延时 Inference</div><div class=\"value\" id=\"infer\">--</div></div>"
-"<div class=\"card\"><div class=\"label\">图像大小 JPEG</div><div class=\"value\" id=\"jpg\">--</div></div>"
-"<div class=\"card\"><div class=\"label\">运动 Motion</div><div class=\"value\" id=\"motion\">--</div></div>"
-"<div class=\"card\"><div class=\"label\">场景 Scene</div><div class=\"value\" id=\"scene\">--</div></div>"
-"<div class=\"card wide\"><div class=\"label\">板端识别 Vision</div><div class=\"value\" id=\"vision\">--</div><div class=\"sub\" id=\"vision2\"></div></div>"
-"<div class=\"card wide\"><div class=\"label\">无线与实验 Link Lab</div><div class=\"sub\" id=\"netlab\">--</div></div>"
-"<div class=\"card wide\"><div class=\"label\">存储 Storage</div><div class=\"sub\" id=\"storage\">--</div></div>"
-"<div class=\"card wide\"><div class=\"label\">系统 System</div><div class=\"sub\" id=\"sys\">--</div><div class=\"sub\" id=\"err\"></div></div>"
-"</div></aside></section>"
-"<section class=\"history\"><div class=\"histHead\"><div><div class=\"title small\">调试参数 Debug Config</div><div class=\"sub\">这些参数会写入 NVS，重启后继续生效。</div></div><button onclick=\"applyConfig()\">应用 Apply</button></div>"
-"<div class=\"actions\"><label>框阈值 <input id=\"boxMin\" type=\"number\" min=\"50\" max=\"100\"></label><label>推流FPS <input id=\"streamFps\" type=\"number\" min=\"1\" max=\"30\"></label><label>推理间隔ms <input id=\"infMs\" type=\"number\" min=\"0\" max=\"600000\"></label><label>历史间隔ms <input id=\"histMs\" type=\"number\" min=\"250\" max=\"600000\"></label><label>JPEG质量 <input id=\"jpegQ\" type=\"number\" min=\"1\" max=\"100\"></label><label class=\"toggle\"><input id=\"historyToggle\" type=\"checkbox\"><span>历史 History</span></label><label class=\"toggle\"><input id=\"recordingToggle\" type=\"checkbox\"><span>录像 Recording</span></label></div><div class=\"sub\" id=\"configMsg\">--</div></section>"
-"<section class=\"history\"><div class=\"histHead\"><div><div class=\"title small\">监控记录 Timeline</div><div class=\"sub\" id=\"timelineMeta\">--</div></div><div class=\"actions\"><button onclick=\"loadTimeline()\">刷新</button><button onclick=\"startVideoValidation()\">视频验证</button><button onclick=\"remountTf()\">TF重挂载</button><button onclick=\"formatTf()\">格式化TF</button><button onclick=\"clearRecords()\">清空记录</button></div></div><div class=\"sub\" id=\"datasetMeta\">--</div><div id=\"timelineList\" class=\"rows\"></div></section>"
-"<section class=\"history\"><div class=\"histHead\"><div><div class=\"title small\">实验日志 Experiment Log</div><div class=\"sub\">自动记录识别方法、无线模式、RTT、RSSI、内存和图传状态，便于对比稳定性。</div></div><button onclick=\"experimentLog=[];renderExperimentLog()\">清空 Clear</button></div><div id=\"experimentList\" class=\"rows\"></div></section>"
-"</main><script>"
-"let lastMode='',experimentLog=[],lastLogKey='',lastLogAt=0,timeSyncAttempted=false;function esc(v){return String(v==null?'':v).replace(/[&<>\"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[m]))}"
-"function keepInput(el,val){if(document.activeElement!==el)el.value=val}"
-"function streamUrl(){return '/stream?ts='+Date.now()}function setMode(m){wakeBtn.className=m==='running'?'active':'';standbyBtn.className=m==='standby'?'active':''}"
-"async function load(){try{const t=performance.now();let r=await fetch('/api/status?ts='+Date.now(),{cache:'no-store'});let s=await r.json();paint(s,Math.round(performance.now()-t))}catch(e){err.textContent='status offline'}}"
-"function cname(o){let m={unknown:'未知 Unknown',plastic_bottle:'plastic bottle',foam:'foam',buoy:'buoy',net:'net',ship_part:'ship part'};return m[o]||o||'未知 Unknown'}"
-"function paintObject(s){let v=s.vision||{},ds=v.detections||[];boxes.innerHTML='';if(!ds.length&&v.object_count>0)ds=[{label:v.object,score:v.object_score,x:v.object_x,y:v.object_y,w:v.object_w,h:v.object_h}];if(!s.width||!s.height)return;ds.forEach(d=>{if(!d.w||!d.h)return;let b=document.createElement('div');b.className='bbox';b.style.left=(100*d.x/s.width)+'%';b.style.top=(100*d.y/s.height)+'%';b.style.width=(100*d.w/s.width)+'%';b.style.height=(100*d.h/s.height)+'%';let sp=document.createElement('span');sp.textContent=cname(d.label)+' '+d.score;b.appendChild(sp);boxes.appendChild(b)})}"
-"function paint(s,rtt){ip.textContent=s.eth_url||s.mdns_url||('http://'+s.ip+'/');mode.textContent=(s.app_mode||'server')+' | '+s.power_mode+' | '+s.network_mode+(s.rescue_ap?' + rescue AP':'')+' | '+s.recognition_method;setMode(s.power_mode);visionToggle.checked=!!s.vision_enabled;methodSelect.value=s.recognition_method||'fish31';netSelect.value=s.network_mode||'sta';historyToggle.checked=!!s.history_enabled;recordingToggle.checked=!!s.recording_enabled;keepInput(boxMin,s.config.box_min_score);keepInput(streamFps,s.config.stream_max_fps);keepInput(infMs,s.config.inference_interval_ms);keepInput(histMs,s.config.history_sample_interval_ms);keepInput(jpegQ,s.config.jpeg_quality);if(lastMode!=='running'&&s.power_mode==='running'){stream.src=streamUrl()}lastMode=s.power_mode;"
-"cfps.textContent=(s.capture_fps_x100/100).toFixed(1);sfps.textContent=(s.stream_fps_x100/100).toFixed(1);clients.textContent=s.stream_clients+'/'+s.max_stream_clients;age.textContent=s.last_frame_age_ms+' ms';"
-"lat.textContent=s.last_capture_ms+' ms';infer.textContent=(s.vision.inference_ms||0)+' ms';jpg.textContent=Math.round(s.last_jpeg_bytes/1024)+' KB';motion.textContent=s.vision.motion?'是 YES':'否 NO';scene.textContent=s.vision.scene;"
-"vision.textContent=cname(s.vision.object)+' / '+s.vision.label;let topk=(s.vision.top_k||[]).map(x=>cname(x.label)+' '+x.score+'%').join(' / ')||'--';vision2.textContent='模型 '+s.vision.model+' | 方法 '+s.recognition_method+' | 模型大小 '+Math.round((s.model_info?.bytes||s.model_bytes||0)/1024)+' KB | 输入 '+(s.model_info?.input_size||s.config.yolo_input_size||0)+' | Top-K '+topk+' | 检测框 '+(s.vision.detection_count||0)+'/'+(s.model_info?.max_detections||8)+' | raw候选 '+(s.vision.raw_candidate_count||0)+' | NMS '+(s.model_info?.nms_threshold||70)+' | 候选分 '+s.vision.candidate_score+' | 画框阈值 '+s.vision.box_min_score+' | 目标分 '+s.vision.object_score+' | 未知 '+s.vision.unknown_score+' | 运动 '+s.vision.motion_score+' | 边缘 '+s.vision.edge_score+' | 亮度 '+s.vision.avg_luma+' | 推理 '+s.vision.inference_ms+' ms | 分析 '+s.vision.analysis_ms+' ms';"
-"netlab.textContent='模式 '+s.network_mode+' | 救援AP '+(s.rescue_ap?'开':'关')+' | STA '+s.sta_ip+' | AP '+s.ap_ip+' | AP客户端 '+s.ap_clients+' | 重连 '+s.reconnect_count+' | 推理FPS '+(s.inference_fps_x100/100).toFixed(1)+' | 推理忙 '+(s.inference_busy?'是':'否')+' | 队列 '+s.inference_queue_depth+' | 已完成 '+s.inference_jobs_completed+' | 丢弃推理帧 '+s.dropped_inference_frames+' | 队列丢弃 '+s.inference_queue_drops+' | 模型 '+Math.round(s.model_bytes/1024)+' KB | YOLO输入 '+s.config.yolo_input_size;"
-"storage.textContent=(s.file_storage_mounted?'存储可用':'存储不可用')+' | 后端 '+(s.storage_backend||'none')+' | TF '+(s.tf_card_mounted?'已挂载':'未挂载')+' | '+s.storage_status+' | 存储窗口 '+((s.storage_service&&s.storage_service.mode)||'--')+' '+((s.storage_service&&s.storage_service.status)||'')+' | 模式 '+(s.sd_mount_mode||'--')+' | 错误 '+(s.sd_last_error||'--')+' | 历史 '+s.history_saved+' | 录像段 '+s.recording_segments+' | 录像帧 '+s.recording_frames+' | 当前 '+(s.recording_current_uri||'--')+' '+s.recording_current_frames+' 帧 | 视频验证 '+((s.dataset_run&&s.dataset_run.running)?('运行 '+s.dataset_run.processed+'/'+s.dataset_run.ok_frames):'空闲')+' | 剩余 '+Math.round(s.sd_free_bytes/1048576)+' MB';"
-"sys.textContent='帧 '+s.frame_seq+' | 已发 '+s.stream_frames+' | 流量 '+Math.round(s.stream_bytes/1024)+' KB | RSSI '+s.rssi_dbm+' dBm | 网页RTT '+rtt+' ms | 堆 '+Math.round(s.free_heap/1024)+'/'+Math.round(s.min_free_heap/1024)+' KB | PSRAM '+Math.round(s.free_psram/1024)+'/'+Math.round(s.min_free_psram/1024)+' KB';"
-"err.textContent=(s.camera_error||'')+' | time '+(s.time_source||'unsynced');paintObject(s);appendExperiment(s,rtt);syncBrowserClock(s)}"
-"async function cmd(c){await fetch('/api/power?cmd='+c,{cache:'no-store'}).catch(()=>{});if(c==='standby'){lastMode='standby';stream.removeAttribute('src')}if(c==='wake'){setTimeout(()=>{stream.src=streamUrl()},800)}setTimeout(load,150)}"
-"async function setVision(on){await fetch('/api/vision?enabled='+(on?1:0),{cache:'no-store'}).catch(()=>{});setTimeout(load,150);setTimeout(loadHistory,250)}"
-"async function setMethod(m){await fetch('/api/recognition?method='+encodeURIComponent(m),{cache:'no-store'}).catch(()=>{});setTimeout(load,150)}"
-"async function setNetMode(m){await fetch('/api/netmode?mode='+encodeURIComponent(m),{cache:'no-store'}).catch(()=>{});setTimeout(load,500);setTimeout(load,2500)}"
-"async function applyConfig(){let q=new URLSearchParams();q.set('box_min_score',boxMin.value);q.set('stream_max_fps',streamFps.value);q.set('inference_interval_ms',infMs.value);q.set('history_sample_interval_ms',histMs.value);q.set('jpeg_quality',jpegQ.value);q.set('history',historyToggle.checked?1:0);q.set('recording',recordingToggle.checked?1:0);let r=await fetch('/api/config?'+q.toString(),{cache:'no-store'}).catch(()=>null);configMsg.textContent=r?'已应用，新的推流FPS会在下次打开 /stream 时生效':'配置失败';setTimeout(load,150);setTimeout(loadTimeline,400)}"
-"function labelSummary(labels){return (labels||[]).map(x=>esc(x.label)+' '+x.count).join('，')||'无目标'}"
-"function fmtBytes(v){v=Number(v)||0;if(v>=1048576)return (v/1048576).toFixed(1)+' MB';if(v>=1024)return Math.round(v/1024)+' KB';return v+' B'}"
-"function fmtBoot(ms){ms=Math.max(0,Number(ms)||0);let s=Math.floor(ms/1000),h=Math.floor(s/3600),m=Math.floor((s%3600)/60);return '本次启动 + '+String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+':'+String(s%60).padStart(2,'0')}"
-"function recordingTime(d){if(Number(d.start_epoch_ms)>0){let a=new Date(Number(d.start_epoch_ms)),b=new Date(Number(d.end_epoch_ms||d.start_epoch_ms));return a.toLocaleString()+' - '+b.toLocaleTimeString()}return fmtBoot(d.start_ms)}"
-"function recordingTitle(d){return '监控录像 · '+(Number(d.start_epoch_ms)>0?new Date(Number(d.start_epoch_ms)).toLocaleString():fmtBoot(d.start_ms))}"
-"function recordingBoot(d){let m=String(d.name||'').match(/_b([0-9a-f]+)_/i);return m?m[1]:''}"
-"function recordingBounds(d){let s=Number(d.start_ms)||0,e=Number(d.end_ms)||0;if(e<=s)e=s+(Number(d.duration_ms)||0);return {start:s,end:e,duration:Math.max(0,e-s)}}"
-"function pairRecordings(records){let raws=(records||[]).filter(x=>x.kind==='raw').sort((a,b)=>(Number(a.start_ms)||0)-(Number(b.start_ms)||0)),anns=(records||[]).filter(x=>x.kind==='annotated'),used=new Set(),pairs=[];raws.forEach(raw=>{let rb=recordingBounds(raw),boot=recordingBoot(raw),best=null;anns.forEach(ann=>{if(used.has(ann.name)||!boot||recordingBoot(ann)!==boot)return;let ab=recordingBounds(ann),shorter=Math.min(rb.duration,ab.duration);if(shorter<=0)return;let overlap=Math.max(0,Math.min(rb.end,ab.end)-Math.max(rb.start,ab.start)),ratio=overlap/shorter,delta=Math.abs(rb.start-ab.start);if(ratio<.5)return;if(!best||ratio>best.ratio||(ratio===best.ratio&&delta<best.delta))best={ann:ann,ratio:ratio,delta:delta}});if(best){used.add(best.ann.name);pairs.push({raw:raw,annotated:best.ann})}else pairs.push({raw:raw,annotated:null})});anns.forEach(ann=>{if(!used.has(ann.name))pairs.push({raw:null,annotated:ann})});return pairs.map(p=>{let d=p.raw||p.annotated;return {type:'recording_pair',data:p,sort_time:Number(d.start_epoch_ms)||Number(d.start_ms)||0}})}"
-"function recordingDownload(d,label){return d?'<a href=\"'+esc(d.uri)+'\" download>'+label+'</a>':'<span class=\"muted\">暂无'+label.replace('下载','')+'</span>'}"
-"function rowForRecordingPair(p){let raw=p.raw,ann=p.annotated,base=raw||ann,stats=ann||raw,duration=Math.round((Number((raw||ann).duration_ms)||0)/1000),rawInfo=raw?fmtBytes(raw.bytes)+' · '+(raw.frames||0)+' 帧':'暂无',annInfo=ann?fmtBytes(ann.bytes)+' · '+(ann.frames||0)+' 帧':'暂无',primary=raw||ann,secondary=raw&&ann?ann:null;return '<div class=\"row\"><div class=\"tag\">监控录像</div><div><div class=\"recordTitle\">'+esc(recordingTitle(base))+'</div><div class=\"sub\">'+esc(recordingTime(base))+' | 时长 '+duration+' s</div><div class=\"sub\">原始视频 '+rawInfo+' | 标注视频 '+annInfo+'</div><div class=\"sub\">命中帧 '+(stats.hit_frames||0)+' | 检测 '+(stats.detection_total||0)+' | '+labelSummary(stats.labels)+'</div></div><div class=\"recordActions\">'+recordingDownload(raw,'下载原始视频')+recordingDownload(ann,'下载标注视频')+'<button onclick=\"deleteRecording(\\''+esc(primary.name)+'\\',\\''+esc(secondary?secondary.name:'')+'\\')\">删除此录像</button></div></div>'}"
-"async function syncBrowserClock(s){if(timeSyncAttempted)return;let board=Number(s.epoch_ms)||0;if(!s.time_synced||Math.abs(Date.now()-board)>300000){timeSyncAttempted=true;await fetch('/api/time/sync?epoch_ms='+Date.now(),{method:'POST',cache:'no-store'}).catch(()=>{timeSyncAttempted=false})}}"
-"function rowForTimeline(x){if(x.type==='recording_pair')return rowForRecordingPair(x.data);let d=x.data||{},ds=d.detections||[],det=ds.length?ds.map(y=>cname(y.label)+' '+y.score+'%').join('，'):'无正式框',snap=d.snapshot?'<a href=\"'+esc(d.snapshot)+'\" target=\"_blank\">快照</a>':'';return '<div class=\"row\"><div class=\"tag\">识别</div><div>'+esc(d.source||'camera')+' / '+esc(d.recognition_method)+'<div class=\"sub\">'+det+' | 检测 '+(d.detection_count||0)+' | 推理 '+(d.inference_ms||0)+' ms | 分析 '+(d.analysis_ms||0)+' ms</div></div><div>'+snap+'</div></div>'}"
-"async function loadTimeline(){try{let ts=Date.now(),rs=await Promise.all([fetch('/api/timeline?limit=50&ts='+ts,{cache:'no-store'}),fetch('/api/recordings?limit=100&ts='+ts,{cache:'no-store'})]),h=await rs[0].json(),rec=await rs[1].json(),pairs=pairRecordings(rec.recordings||[]),events=(h.timeline||[]).filter(x=>x.type!=='summary'&&x.type!=='recording').map(x=>{let d=x.data||{};x.sort_time=Number(d.epoch_ms)||Number(d.time_ms)||0;return x}),rows=events.concat(pairs).sort((a,b)=>(b.sort_time||0)-(a.sort_time||0)).slice(0,50);timelineMeta.textContent='TF '+(h.sd_mounted?'已挂载':'未挂载')+' | '+h.storage_status+' | 历史 '+h.history_saved+' | 监控录像 '+pairs.length;timelineList.innerHTML=rows.map(rowForTimeline).join('')||'<div class=\"row\"><div class=\"muted\">暂无监控记录</div></div>'}catch(e){timelineMeta.textContent='监控记录离线'}}"
-"async function deleteRecording(n,p){if(!confirm('删除这段监控录像的原始视频、标注视频及全部索引？'))return;let q=new URLSearchParams({name:n,confirm:'DELETE'});if(p)q.set('paired_name',p);let r=await fetch('/api/recording?'+q.toString(),{method:'DELETE',cache:'no-store'}).catch(()=>null);let j=r?await r.json().catch(()=>null):null;if(!r||!r.ok||!j||!j.ok){datasetMeta.textContent='删除失败：'+(j&&j.error?j.error:(r?'HTTP '+r.status:'网络错误'));return}datasetMeta.textContent='已删除 '+j.deleted_files+' 个文件，清理 '+j.removed_index_rows+' 条索引，释放 '+fmtBytes(j.freed_bytes);await loadTimeline()}"
-"async function clearRecords(){if(!confirm('清空全部监控记录？'))return;let r=await fetch('/api/storage/records?scope=all&confirm=DELETE',{method:'DELETE',cache:'no-store'}).catch(()=>null);let j=r?await r.json().catch(()=>null):null;if(!r||!r.ok||!j||!j.ok){datasetMeta.textContent='清空失败：'+(r?'HTTP '+r.status:'网络错误');return}datasetMeta.textContent='已清理 '+j.deleted_files+' 个文件，释放 '+fmtBytes(j.freed_bytes);await loadTimeline()}"
-"async function remountTf(){if(!confirm('将关闭热点/网页并重新挂载TF卡，维护后板子会自动重启恢复热点，确认？'))return;let r=await fetch('/api/storage/remount?confirm=REMOUNT&hold_ms=2000',{method:'POST',cache:'no-store'}).catch(()=>null);datasetMeta.textContent=r?await r.text():'TF重挂载请求失败';}"
-"async function formatTf(){if(!confirm('格式化TF卡会清空卡内数据；若TF未挂载，板子会进入维护窗口并自动重启，确认？'))return;let r=await fetch('/api/storage/format?confirm=FORMAT',{method:'POST',cache:'no-store'}).catch(()=>null);datasetMeta.textContent=r?await r.text():'格式化请求失败';setTimeout(loadTimeline,800)}"
-"async function startVideoValidation(){let m=methodSelect.value||'fish31';if(m==='off')m='fish31';let ds=m==='coco'?'coco_video_demo':(m==='tinycls'?'tinycls_marine_demo':'fish31_video_demo');let r=await fetch('/api/dataset/run/start?dataset='+encodeURIComponent(ds)+'&method='+encodeURIComponent(m)+'&limit=16&stride=1',{cache:'no-store'}).catch(()=>null);datasetMeta.textContent=r?await r.text():'视频验证启动失败';setTimeout(checkVideoValidation,500)}"
-"async function checkVideoValidation(){try{let r=await fetch('/api/dataset/run/status?ts='+Date.now(),{cache:'no-store'});let s=await r.json();datasetMeta.textContent='视频验证 '+(s.state||'idle')+' | '+(s.dataset||'--')+' | 帧 '+s.processed+'/'+s.limit+' | ok '+s.ok_frames+' | 失败 '+s.failed_frames+' | 平均 '+s.avg_analysis_ms+' ms | P95 '+s.p95_analysis_ms+' ms | '+labelSummary(s.labels)+' | '+(s.error||'');if(s.queued||s.running)setTimeout(checkVideoValidation,1000)}catch(e){datasetMeta.textContent='视频验证状态离线'}}"
-"function appendExperiment(s,rtt){let now=Date.now();let key=s.network_mode+'|'+s.recognition_method+'|'+s.power_mode+'|'+s.stream_clients+'|'+Math.floor(now/5000);if(key===lastLogKey&&now-lastLogAt<5000)return;lastLogKey=key;lastLogAt=now;experimentLog.unshift({t:new Date().toLocaleTimeString(),mode:s.network_mode,method:s.recognition_method,power:s.power_mode,rtt:rtt,rssi:s.rssi_dbm,cfps:s.capture_fps_x100,sfps:s.stream_fps_x100,heap:s.free_heap,psram:s.free_psram,clients:s.stream_clients,ap:s.ap_clients,err:s.stream_errors,drop:s.dropped_inference_frames,inf:s.vision?s.vision.inference_ms:0});if(experimentLog.length>24)experimentLog.pop();renderExperimentLog()}"
-"function renderExperimentLog(){experimentList.innerHTML=experimentLog.map(x=>'<div class=\"row logRow\"><div class=\"tag\">'+esc(x.t)+'</div><div>'+esc(x.mode)+' / '+esc(x.method)+' / '+esc(x.power)+'<div class=\"sub\">RTT '+x.rtt+' ms | RSSI '+x.rssi+' dBm | Capture '+(x.cfps/100).toFixed(1)+' FPS | Send '+(x.sfps/100).toFixed(1)+' FPS | 推理 '+x.inf+' ms | heap '+Math.round(x.heap/1024)+' KB | PSRAM '+Math.round(x.psram/1024)+' KB</div></div><div>流 '+x.clients+' / AP '+x.ap+'</div></div>').join('')||'<div class=\"row\"><div class=\"muted\">等待状态采样</div></div>'}"
-"setInterval(load,500);setInterval(loadTimeline,3000);setInterval(checkVideoValidation,5000);load();loadTimeline();checkVideoValidation();</script></body></html>";
 
 static const char s_validate_html[] =
 "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
@@ -2074,7 +2087,7 @@ static void classify_can_candidate(const uint8_t *data, uint32_t data_size, uint
 /*
  * YOLO 板端入口：
  * - PC 端训练 YOLO26n/YOLO11n 后导出 raw-head ONNX，再用 ESP-PPQ/ESP-DL 量化为 P4 `.espdl`。
- * - 当前固件加载的模型文件见 main/CMakeLists.txt，均为本工程训练并量化的 Coke/Sprite 模型。
+ * - 当前客户主路径加载 Fish31/TinyCNN/COCO；历史实验后端只保留为 legacy 代码。
  * - C++ 桥接层负责 JPEG/RGB 解码、letterbox 预处理、ESP-DL 推理、NMS 后处理和坐标映射。
  * - C 主程序只关心统一的 vision_result_t，这样网页、历史记录和 API 不需要知道底层是 MLP、YOLO26 还是 YOLO11。
  */
@@ -2298,7 +2311,7 @@ static void apply_yolo_detection_common(const vision_detection_t *candidates,
     strlcpy(result->model, model, sizeof(result->model));
 
     /*
-     * YOLO26 和 YOLO11 都已经替换为自训练 Coke/Sprite 两类模型。
+     * 历史 YOLO26/YOLO11 只作为 legacy 对照路径保留，客户主路径不再启用。
      * 两个桥接层已经输出 ESP-DL 后处理/NMS 后的 Top-N 候选框。这里根据网页可调
      * box_min_score 过滤正式检测框，同时保留最高候选分用于调参观察。
      */
@@ -2362,90 +2375,6 @@ static void apply_yolo_detection_common(const vision_detection_t *candidates,
             strlcpy(result->label, "no-object", sizeof(result->label));
         }
     }
-}
-
-static void classify_yolo26_jpeg(const uint8_t *jpeg, uint32_t jpeg_size, vision_result_t *result)
-{
-    yolo26_espdl_result_t det = {0};
-    vision_detection_t candidates[APP_MAX_DETECTIONS] = {0};
-    fill_yolo_pending(result, RECOGNITION_METHOD_YOLO26);
-
-    esp_err_t err = yolo26_espdl_detect_jpeg(jpeg, jpeg_size, &det);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "YOLO26 inference failed: %s", esp_err_to_name(err));
-        strlcpy(result->label, "yolo26-error", sizeof(result->label));
-        result->unknown_score = 100;
-        return;
-    }
-    uint32_t count = det.detection_count > APP_MAX_DETECTIONS ? APP_MAX_DETECTIONS : det.detection_count;
-    for (uint32_t i = 0; i < count; i++) {
-        candidates[i].class_id = det.detections[i].class_id;
-        candidates[i].score = det.detections[i].score;
-        candidates[i].x = det.detections[i].x > 0 ? (uint32_t)det.detections[i].x : 0;
-        candidates[i].y = det.detections[i].y > 0 ? (uint32_t)det.detections[i].y : 0;
-        candidates[i].w = det.detections[i].w > 0 ? (uint32_t)det.detections[i].w : 0;
-        candidates[i].h = det.detections[i].h > 0 ? (uint32_t)det.detections[i].h : 0;
-        strlcpy(candidates[i].label, det.detections[i].label, sizeof(candidates[i].label));
-    }
-    apply_yolo_detection_common(candidates, count, det.raw_candidate_count,
-                                det.inference_ms, YOLO26_MODEL_NAME,
-                                det.source_w, det.source_h, s_box_min_score, false, result);
-}
-
-static void classify_yolo11_jpeg(const uint8_t *jpeg, uint32_t jpeg_size, vision_result_t *result)
-{
-    yolo11_espdl_result_t det = {0};
-    vision_detection_t candidates[APP_MAX_DETECTIONS] = {0};
-    fill_yolo_pending(result, RECOGNITION_METHOD_YOLO11);
-
-    esp_err_t err = yolo11_espdl_detect_jpeg(jpeg, jpeg_size, &det);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "YOLO11 inference failed: %s", esp_err_to_name(err));
-        strlcpy(result->label, "yolo11-error", sizeof(result->label));
-        result->unknown_score = 100;
-        return;
-    }
-    uint32_t count = det.detection_count > APP_MAX_DETECTIONS ? APP_MAX_DETECTIONS : det.detection_count;
-    for (uint32_t i = 0; i < count; i++) {
-        candidates[i].class_id = det.detections[i].class_id;
-        candidates[i].score = det.detections[i].score;
-        candidates[i].x = det.detections[i].x > 0 ? (uint32_t)det.detections[i].x : 0;
-        candidates[i].y = det.detections[i].y > 0 ? (uint32_t)det.detections[i].y : 0;
-        candidates[i].w = det.detections[i].w > 0 ? (uint32_t)det.detections[i].w : 0;
-        candidates[i].h = det.detections[i].h > 0 ? (uint32_t)det.detections[i].h : 0;
-        strlcpy(candidates[i].label, det.detections[i].label, sizeof(candidates[i].label));
-    }
-    apply_yolo_detection_common(candidates, count, det.raw_candidate_count,
-                                det.inference_ms, YOLO11_MODEL_NAME,
-                                det.source_w, det.source_h, s_box_min_score, false, result);
-}
-
-static void classify_coco_jpeg(const uint8_t *jpeg, uint32_t jpeg_size, vision_result_t *result)
-{
-    coco_espdl_result_t det = {0};
-    vision_detection_t candidates[APP_MAX_DETECTIONS] = {0};
-    fill_yolo_pending(result, RECOGNITION_METHOD_COCO);
-
-    esp_err_t err = coco_espdl_detect_jpeg(jpeg, jpeg_size, &det);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "COCO inference failed: %s", esp_err_to_name(err));
-        strlcpy(result->label, "coco-error", sizeof(result->label));
-        result->unknown_score = 100;
-        return;
-    }
-    uint32_t count = det.detection_count > APP_MAX_DETECTIONS ? APP_MAX_DETECTIONS : det.detection_count;
-    for (uint32_t i = 0; i < count; i++) {
-        candidates[i].class_id = det.detections[i].class_id;
-        candidates[i].score = det.detections[i].score;
-        candidates[i].x = det.detections[i].x > 0 ? (uint32_t)det.detections[i].x : 0;
-        candidates[i].y = det.detections[i].y > 0 ? (uint32_t)det.detections[i].y : 0;
-        candidates[i].w = det.detections[i].w > 0 ? (uint32_t)det.detections[i].w : 0;
-        candidates[i].h = det.detections[i].h > 0 ? (uint32_t)det.detections[i].h : 0;
-        strlcpy(candidates[i].label, det.detections[i].label, sizeof(candidates[i].label));
-    }
-    apply_yolo_detection_common(candidates, count, det.raw_candidate_count,
-                                det.inference_ms, COCO_MODEL_NAME,
-                                det.source_w, det.source_h, s_box_min_score, false, result);
 }
 
 static void apply_tinycls_result(const tiny_cls_espdl_result_t *cls,
@@ -3266,6 +3195,82 @@ static bool is_safe_recording_name(const char *name)
            (has_suffix(name, ".mjpg") || has_suffix(name, ".avi"));
 }
 
+static bool is_annotated_recording_name(const char *name)
+{
+    return name && (strncmp(name, "annotated_", 10) == 0 ||
+                    strncmp(name, "ann_", 4) == 0);
+}
+
+static bool annotated_name_for_raw(const char *raw_name, char *out, size_t out_size)
+{
+    if (!raw_name || !out || out_size == 0 || strncmp(raw_name, "raw_", 4) != 0) {
+        return false;
+    }
+    const char prefix[] = "annotated_";
+    const char *suffix = raw_name + 4;
+    size_t prefix_len = strlen(prefix);
+    size_t suffix_len = strlen(suffix);
+    if (prefix_len + suffix_len + 1 > out_size) {
+        out[0] = '\0';
+        return false;
+    }
+    memcpy(out, prefix, prefix_len);
+    memcpy(out + prefix_len, suffix, suffix_len + 1);
+    return true;
+}
+
+static bool legacy_annotated_name_for_raw(const char *raw_name, char *out, size_t out_size)
+{
+    if (!raw_name || !out || out_size == 0 || strncmp(raw_name, "raw_", 4) != 0) {
+        return false;
+    }
+    const char prefix[] = "ann_";
+    const char *suffix = raw_name + 4;
+    size_t prefix_len = strlen(prefix);
+    size_t suffix_len = strlen(suffix);
+    if (prefix_len + suffix_len + 1 > out_size) {
+        out[0] = '\0';
+        return false;
+    }
+    memcpy(out, prefix, prefix_len);
+    memcpy(out + prefix_len, suffix, suffix_len + 1);
+    return true;
+}
+
+static bool raw_name_for_annotated(const char *annotated_name, char *out, size_t out_size)
+{
+    if (!annotated_name || !out || out_size == 0) {
+        return false;
+    }
+    if (strncmp(annotated_name, "annotated_", 10) == 0) {
+        const char prefix[] = "raw_";
+        const char *suffix = annotated_name + 10;
+        size_t prefix_len = strlen(prefix);
+        size_t suffix_len = strlen(suffix);
+        if (prefix_len + suffix_len + 1 > out_size) {
+            out[0] = '\0';
+            return false;
+        }
+        memcpy(out, prefix, prefix_len);
+        memcpy(out + prefix_len, suffix, suffix_len + 1);
+        return true;
+    }
+    if (strncmp(annotated_name, "ann_", 4) == 0) {
+        const char prefix[] = "raw_";
+        const char *suffix = annotated_name + 4;
+        size_t prefix_len = strlen(prefix);
+        size_t suffix_len = strlen(suffix);
+        if (prefix_len + suffix_len + 1 > out_size) {
+            out[0] = '\0';
+            return false;
+        }
+        memcpy(out, prefix, prefix_len);
+        memcpy(out + prefix_len, suffix, suffix_len + 1);
+        return true;
+    }
+    return false;
+}
+
 static bool is_safe_recording_meta_name(const char *name)
 {
     return is_safe_snapshot_name(name) && has_suffix(name, ".jsonl");
@@ -3437,6 +3442,188 @@ static void cleanup_old_recordings(void)
     }
 }
 
+static uint32_t cleanup_recording_dir_all(uint64_t *freed_bytes)
+{
+    if (!s_sd_mounted) {
+        return 0;
+    }
+    uint32_t deleted = 0;
+    DIR *dir = opendir(RECORDING_DIR);
+    if (!dir) {
+        return 0;
+    }
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (!is_safe_snapshot_name(entry->d_name)) {
+            continue;
+        }
+        if (has_suffix(entry->d_name, ".avi") ||
+            has_suffix(entry->d_name, ".mjpg") ||
+            has_suffix(entry->d_name, ".jsonl") ||
+            has_suffix(entry->d_name, ".idx") ||
+            has_suffix(entry->d_name, ".part") ||
+            has_suffix(entry->d_name, ".new") ||
+            has_suffix(entry->d_name, ".prev") ||
+            has_suffix(entry->d_name, ".corrupt")) {
+            char path[384];
+            snprintf(path, sizeof(path), "%s/%s", RECORDING_DIR, entry->d_name);
+            struct stat st = {0};
+            if (stat(path, &st) == 0 && S_ISREG(st.st_mode) && unlink(path) == 0) {
+                deleted++;
+                if (freed_bytes && st.st_size > 0) {
+                    *freed_bytes += (uint64_t)st.st_size;
+                }
+            }
+        }
+    }
+    closedir(dir);
+    const char *indexes[] = {
+        RECORDING_INDEX_PATH, RECORDING_INDEX_OLD_PATH,
+        RECORDING_SUMMARY_PATH, RECORDING_SUMMARY_OLD_PATH,
+        EVENT_INDEX_PATH,
+    };
+    for (size_t i = 0; i < sizeof(indexes) / sizeof(indexes[0]); i++) {
+        struct stat st = {0};
+        if (stat(indexes[i], &st) == 0 && S_ISREG(st.st_mode) &&
+            unlink(indexes[i]) == 0) {
+            deleted++;
+            if (freed_bytes && st.st_size > 0) {
+                *freed_bytes += (uint64_t)st.st_size;
+            }
+        }
+    }
+    s_recording_segments = 0;
+    s_recording_frames = 0;
+    s_recording_bytes = 0;
+    s_recording_queued = 0;
+    s_recording_dropped = 0;
+    s_recording_files_deleted = 0;
+    s_recording_summary_count = 0;
+    s_segment_sequence = 0;
+    s_current_segment_base[0] = '\0';
+    ESP_LOGI(TAG, "recording dir cleaned: deleted=%" PRIu32, deleted);
+    return deleted;
+}
+
+static void cleanup_recording_temp_files(void)
+{
+    if (!s_sd_mounted) {
+        return;
+    }
+    DIR *dir = opendir(RECORDING_DIR);
+    if (!dir) {
+        return;
+    }
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (!is_safe_snapshot_name(entry->d_name)) {
+            continue;
+        }
+        /* 删除所有 .part、.part.corrupt、.idx */
+        if (has_suffix(entry->d_name, ".avi.part") ||
+            has_suffix(entry->d_name, ".new") ||
+            has_suffix(entry->d_name, ".prev") ||
+            has_suffix(entry->d_name, ".part.corrupt") ||
+            has_suffix(entry->d_name, ".idx")) {
+            char path[384];
+            snprintf(path, sizeof(path), "%s/%s", RECORDING_DIR, entry->d_name);
+            unlink(path);
+            continue;
+        }
+        /* 删除没有对应 .avi 的孤立 .jsonl */
+        if (has_suffix(entry->d_name, ".jsonl")) {
+            char avi_name[128];
+            strlcpy(avi_name, entry->d_name, sizeof(avi_name));
+            size_t len = strlen(avi_name);
+            if (len > 6 && strcmp(avi_name + len - 6, ".jsonl") == 0) {
+                avi_name[len - 6] = '\0';
+                strlcat(avi_name, ".avi", sizeof(avi_name));
+            }
+            char avi_path[384];
+            snprintf(avi_path, sizeof(avi_path), "%s/%s", RECORDING_DIR, avi_name);
+            struct stat st = {0};
+            if (stat(avi_path, &st) != 0 || st.st_size == 0) {
+                char path[384];
+                snprintf(path, sizeof(path), "%s/%s", RECORDING_DIR, entry->d_name);
+                unlink(path);
+            }
+        }
+    }
+    closedir(dir);
+}
+
+static bool recording_file_ready(const char *name)
+{
+    if (!is_safe_recording_name(name)) {
+        return false;
+    }
+    char path[384];
+    snprintf(path, sizeof(path), "%s/%s", RECORDING_DIR, name);
+    struct stat st = {0};
+    return stat(path, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0;
+}
+
+static bool recording_has_paired_file(const char *name)
+{
+    if (!is_safe_recording_name(name)) {
+        return false;
+    }
+    char pair[96] = {0};
+    if (is_annotated_recording_name(name)) {
+        return raw_name_for_annotated(name, pair, sizeof(pair)) &&
+               recording_file_ready(pair);
+    }
+    if (annotated_name_for_raw(name, pair, sizeof(pair)) &&
+        recording_file_ready(pair)) {
+        return true;
+    }
+    return legacy_annotated_name_for_raw(name, pair, sizeof(pair)) &&
+           recording_file_ready(pair);
+}
+
+static uint32_t purge_unpaired_recording_files(uint64_t *freed_bytes)
+{
+    if (!s_sd_mounted) {
+        return 0;
+    }
+    DIR *dir = opendir(RECORDING_DIR);
+    if (!dir) {
+        return 0;
+    }
+    uint32_t deleted = 0;
+    uint32_t removed_rows = 0;
+    bool failed = false;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (!is_safe_recording_name(entry->d_name) ||
+            !has_suffix(entry->d_name, ".avi") ||
+            recording_has_paired_file(entry->d_name)) {
+            continue;
+        }
+        bool delete_failed = false;
+        int ret = delete_recording_files_by_name(entry->d_name, freed_bytes,
+                                                 &delete_failed);
+        if (ret > 0) {
+            deleted += (uint32_t)ret;
+        }
+        bool row_failed = false;
+        uint32_t rows = remove_recording_index_rows(entry->d_name, &row_failed);
+        removed_rows += rows;
+        failed |= delete_failed || row_failed;
+        ESP_LOGW(TAG, "removed unpaired recording %s (files=%d rows=%" PRIu32 ")",
+                 entry->d_name, ret, rows);
+    }
+    closedir(dir);
+    if (deleted > 0 || removed_rows > 0) {
+        update_sd_info();
+        ESP_LOGW(TAG,
+                 "unpaired recording cleanup complete: files=%" PRIu32
+                 " rows=%" PRIu32 " failed=%s",
+                 deleted, removed_rows, failed ? "true" : "false");
+    }
+    return deleted;
+}
+
 static void label_count_add_with_unknown(label_count_t *labels, const char *label, bool include_unknown)
 {
     if (!labels || !label || !label[0] || (!include_unknown && strcmp(label, "unknown") == 0)) {
@@ -3515,6 +3702,15 @@ static esp_err_t append_recording_segment_jsonl(const recording_segment_t *seg)
 
     char labels[512];
     label_counts_to_json(labels, sizeof(labels), seg->labels);
+    char raw_name[96] = {0};
+    char annotated_name[96] = {0};
+    if (seg->kind == RECORDING_KIND_RAW) {
+        strlcpy(raw_name, seg->name, sizeof(raw_name));
+        annotated_name_for_raw(seg->name, annotated_name, sizeof(annotated_name));
+    } else {
+        strlcpy(annotated_name, seg->name, sizeof(annotated_name));
+        raw_name_for_annotated(seg->name, raw_name, sizeof(raw_name));
+    }
     uint64_t end_epoch_ms = seg->start_epoch_ms;
     if (end_epoch_ms > 0 && seg->last_ms > seg->start_ms) {
         end_epoch_ms += (uint64_t)(seg->last_ms - seg->start_ms);
@@ -3522,6 +3718,7 @@ static esp_err_t append_recording_segment_jsonl(const recording_segment_t *seg)
     fprintf(file,
             "{\"index_version\":%" PRIu32 ",\"kind\":\"%s\",\"container\":\"avi\",\"codec\":\"mjpeg\","
             "\"name\":\"%s\",\"uri\":\"%s\",\"meta\":\"%s\",\"meta_uri\":\"%s\","
+            "\"method\":\"%s\",\"model\":\"%s\",\"raw_name\":\"%s\",\"annotated_name\":\"%s\","
             "\"annotated_uri\":\"%s\",\"manifest_uri\":\"%s?name=%s\","
             "\"first_frame_overlay_uri\":\"%s?name=%s&frame=1\",\"storage_backend\":\"%s\","
             "\"start_ms\":%" PRId64 ",\"end_ms\":%" PRId64
@@ -3532,6 +3729,7 @@ static esp_err_t append_recording_segment_jsonl(const recording_segment_t *seg)
             (uint32_t)APP_JSONL_INDEX_VERSION,
             seg->kind == RECORDING_KIND_ANNOTATED ? "annotated" : "raw",
             seg->name, seg->uri, seg->meta_name, seg->meta_uri,
+            recognition_method_name(seg->method), seg->model, raw_name, annotated_name,
             seg->kind == RECORDING_KIND_ANNOTATED ? seg->uri : "",
             RECORDING_MANIFEST_URI, seg->name,
             RECORDING_FRAME_SVG_URI, seg->name, s_storage_backend,
@@ -3559,24 +3757,35 @@ static esp_err_t append_recording_summary_jsonl(const recording_segment_t *seg)
 
     char labels[512];
     label_counts_to_json(labels, sizeof(labels), seg->labels);
+    char raw_name[96] = {0};
+    char annotated_name[96] = {0};
+    if (seg->kind == RECORDING_KIND_RAW) {
+        strlcpy(raw_name, seg->name, sizeof(raw_name));
+        annotated_name_for_raw(seg->name, annotated_name, sizeof(annotated_name));
+    } else {
+        strlcpy(annotated_name, seg->name, sizeof(annotated_name));
+        raw_name_for_annotated(seg->name, raw_name, sizeof(raw_name));
+    }
     uint64_t end_epoch_ms = seg->start_epoch_ms;
     if (end_epoch_ms > 0 && seg->last_ms > seg->start_ms) {
         end_epoch_ms += (uint64_t)(seg->last_ms - seg->start_ms);
     }
     fprintf(file,
-            "{\"index_version\":%" PRIu32 ",\"period_ms\":%d,\"kind\":\"%s\","
+            "{\"index_version\":%" PRIu32 ",\"period_ms\":%" PRIu32 ",\"kind\":\"%s\","
             "\"segment\":\"%s\",\"uri\":\"%s\",\"annotated_uri\":\"%s\",\"manifest_uri\":\"%s?name=%s\","
+            "\"method\":\"%s\",\"model\":\"%s\",\"raw_name\":\"%s\",\"annotated_name\":\"%s\","
             "\"first_frame_overlay_uri\":\"%s?name=%s&frame=1\",\"storage_backend\":\"%s\","
             "\"start_ms\":%" PRId64
             ",\"end_ms\":%" PRId64 ",\"start_epoch_ms\":%" PRIu64
             ",\"end_epoch_ms\":%" PRIu64 ",\"clock_source\":\"%s\""
             ",\"frames\":%" PRIu32 ",\"hit_frames\":%" PRIu32
             ",\"detection_total\":%" PRIu32 ",\"labels\":%s}\n",
-            (uint32_t)APP_JSONL_INDEX_VERSION, CONFIG_APP_SUMMARY_INTERVAL_MS,
+            (uint32_t)APP_JSONL_INDEX_VERSION, s_recording_segment_ms,
             seg->kind == RECORDING_KIND_ANNOTATED ? "annotated" : "raw",
             seg->name, seg->uri,
             seg->kind == RECORDING_KIND_ANNOTATED ? seg->uri : "",
             RECORDING_MANIFEST_URI, seg->name,
+            recognition_method_name(seg->method), seg->model, raw_name, annotated_name,
             RECORDING_FRAME_SVG_URI, seg->name, s_storage_backend, seg->start_ms, seg->last_ms,
             seg->start_epoch_ms, end_epoch_ms, time_source_name(seg->time_source),
             seg->frames, seg->hit_frames, seg->detection_total, labels);
@@ -3680,15 +3889,40 @@ static esp_err_t recording_open_segment(recording_segment_t *seg, int64_t now_ms
     seg->last_ms = now_ms;
     seg->start_epoch_ms = wall_clock_epoch_ms();
     seg->time_source = seg->start_epoch_ms > 0 ? s_time_source : TIME_SOURCE_UNSYNCED;
-    snprintf(seg->name, sizeof(seg->name), "%s_b%08" PRIx32 "_t%010" PRId64 ".avi",
-             kind == RECORDING_KIND_ANNOTATED ? "annotated" : "raw", s_boot_id, now_ms);
+    seg->method = recognition_method_or_fallback(s_recognition_method);
+    if (seg->method == RECOGNITION_METHOD_OFF ||
+        seg->method == RECOGNITION_METHOD_MLP ||
+        seg->method == RECOGNITION_METHOD_YOLO11 ||
+        seg->method == RECOGNITION_METHOD_YOLO26) {
+        seg->method = fish31_espdl_available() ? RECOGNITION_METHOD_FISH31 :
+                      recognition_method_or_fallback(preferred_recognition_method());
+    }
+    strlcpy(seg->model, model_name_for_method(seg->method), sizeof(seg->model));
+    char slug[40];
+    recording_time_slug(seg->start_epoch_ms, now_ms, slug, sizeof(slug));
+    if (kind == RECORDING_KIND_RAW) {
+        s_segment_sequence++;
+        if (s_segment_sequence == 0) {
+            s_segment_sequence = 1;
+        }
+        snprintf(s_current_segment_base, sizeof(s_current_segment_base), "%03" PRIu32 "_%s_%s",
+                 s_segment_sequence, slug, recognition_method_name(seg->method));
+        snprintf(seg->name, sizeof(seg->name), "raw_%s.avi", s_current_segment_base);
+    } else {
+        if (s_current_segment_base[0]) {
+            snprintf(seg->name, sizeof(seg->name), "annotated_%s.avi", s_current_segment_base);
+        } else {
+            snprintf(seg->name, sizeof(seg->name), "annotated_%s_%s.avi",
+                     slug, recognition_method_name(seg->method));
+        }
+    }
     meta_name_for_recording(seg->name, seg->meta_name, sizeof(seg->meta_name));
     snprintf(seg->uri, sizeof(seg->uri), RECORDING_URI_PREFIX "%s", seg->name);
     snprintf(seg->meta_uri, sizeof(seg->meta_uri), RECORDING_META_URI_PREFIX "%s", seg->meta_name);
 
     snprintf(seg->final_path, sizeof(seg->final_path), "%s/%s", RECORDING_DIR, seg->name);
     snprintf(seg->part_path, sizeof(seg->part_path), "%s/%s.part", RECORDING_DIR, seg->name);
-    uint32_t fps = kind == RECORDING_KIND_ANNOTATED ? 1U : CONFIG_APP_FIELD_RECORDING_MAX_FPS;
+    uint32_t fps = CONFIG_APP_FIELD_RECORDING_MAX_FPS;
     if (fps == 0) {
         fps = 1;
     }
@@ -3761,11 +3995,9 @@ static void recording_write_item(recording_segment_t *seg, const recording_item_
     }
 
     int64_t now_ms = item->meta.timestamp_ms ? item->meta.timestamp_ms : esp_timer_get_time() / 1000;
+    uint32_t segment_ms = s_recording_segment_ms;
     if (!seg->writer ||
-        (CONFIG_APP_RECORDING_SEGMENT_MS > 0 &&
-         now_ms - seg->start_ms >= (int64_t)CONFIG_APP_RECORDING_SEGMENT_MS) ||
-        (CONFIG_APP_SUMMARY_INTERVAL_MS > 0 &&
-         now_ms - seg->start_ms >= (int64_t)CONFIG_APP_SUMMARY_INTERVAL_MS)) {
+        (segment_ms > 0 && now_ms - seg->start_ms >= (int64_t)segment_ms)) {
         recording_close_segment(seg);
         if (recording_open_segment(seg, now_ms, item->kind,
                                    item->meta.width, item->meta.height) != ESP_OK) {
@@ -3794,7 +4026,9 @@ static void recording_write_item(recording_segment_t *seg, const recording_item_
     recording_segment_add_vision(seg, &item->meta.vision);
     if (seg->meta_file) {
         char detections[1280];
+        char top_k[512];
         detections_to_json(detections, sizeof(detections), &item->meta.vision);
+        top_k_to_json(top_k, sizeof(top_k), &item->meta.vision);
         int meta_ret = fprintf(seg->meta_file,
                 "{\"index_version\":%" PRIu32 ",\"segment\":\"%s\",\"segment_uri\":\"%s\","
                 "\"kind\":\"%s\","
@@ -3803,7 +4037,9 @@ static void recording_write_item(recording_segment_t *seg, const recording_item_
                 ",\"time_ms\":%" PRId64 ",\"epoch_ms\":%" PRIu64
                 ",\"jpeg_bytes\":%" PRIu32
                 ",\"width\":%" PRIu32 ",\"height\":%" PRIu32
-                ",\"model\":\"%s\",\"box_min_score\":%" PRIu32 ",\"best_score\":%" PRIu32
+                ",\"method\":\"%s\",\"model\":\"%s\",\"label\":\"%s\",\"object\":\"%s\""
+                ",\"object_count\":%" PRIu32 ",\"top_k\":%s"
+                ",\"box_min_score\":%" PRIu32 ",\"best_score\":%" PRIu32
                 ",\"candidate_score\":%" PRIu32 ",\"raw_candidate_count\":%" PRIu32
                 ",\"inference_ms\":%" PRId64 ",\"analysis_ms\":%" PRId64
                 ",\"detection_count\":%" PRIu32 ",\"detections\":%s}\n",
@@ -3815,7 +4051,10 @@ static void recording_write_item(recording_segment_t *seg, const recording_item_
                     seg->start_epoch_ms + (uint64_t)(now_ms - seg->start_ms) : 0,
                 item->jpeg_size,
                 item->meta.width, item->meta.height,
-                item->meta.vision.model, item->meta.vision.box_min_score,
+                recognition_method_name(seg->method), item->meta.vision.model,
+                item->meta.vision.label, item->meta.vision.object,
+                item->meta.vision.object_count, top_k,
+                item->meta.vision.box_min_score,
                 item->meta.vision.object_score, item->meta.vision.candidate_score,
                 item->meta.vision.raw_candidate_count,
                 item->meta.vision.inference_ms, item->meta.vision.analysis_ms,
@@ -3850,20 +4089,20 @@ static void recording_write_item(recording_segment_t *seg, const recording_item_
     }
 }
 
-static void recording_maybe_queue(const uint8_t *jpeg, uint32_t jpeg_size, const frame_meta_t *meta)
+static bool recording_maybe_queue(const uint8_t *jpeg, uint32_t jpeg_size, const frame_meta_t *meta)
 {
     if (s_storage_quiescing || s_app_mode != APP_MODE_FIELD ||
         !CONFIG_APP_RECORDING_ENABLE || !s_recording_enabled || !s_sd_mounted ||
         !storage_acceptance_ok() ||
         !s_recording_queue || !jpeg || !jpeg_size || !meta || meta->seq == 0) {
-        return;
+        return false;
     }
 
     int64_t now_ms = esp_timer_get_time() / 1000;
     uint32_t max_fps = CONFIG_APP_FIELD_RECORDING_MAX_FPS;
     int64_t min_interval_ms = max_fps > 0 ? 1000 / max_fps : 0;
     if (s_last_recording_frame_ms != 0 && now_ms - s_last_recording_frame_ms < min_interval_ms) {
-        return;
+        return false;
     }
     s_last_recording_frame_ms = now_ms;
 
@@ -3871,18 +4110,19 @@ static void recording_maybe_queue(const uint8_t *jpeg, uint32_t jpeg_size, const
         .meta = *meta,
         .jpeg_size = jpeg_size,
         .kind = RECORDING_KIND_RAW,
+        .method = recognition_method_or_fallback(s_recognition_method),
     };
     item.jpeg = alloc_psram_buffer(jpeg_size);
     if (!item.jpeg) {
         s_recording_dropped++;
-        return;
+        return false;
     }
     memcpy(item.jpeg, jpeg, jpeg_size);
 
-    if (xQueueSend(s_recording_queue, &item, 0) != pdTRUE) {
+    if (xQueueSend(s_recording_queue, &item, pdMS_TO_TICKS(50)) != pdTRUE) {
         free(item.jpeg);
         s_recording_dropped++;
-        return;
+        return false;
     }
     s_recording_queued++;
     if (s_recording_queued == 1 || (s_recording_queued % 100U) == 0U) {
@@ -3890,6 +4130,7 @@ static void recording_maybe_queue(const uint8_t *jpeg, uint32_t jpeg_size, const
                  " seq=%" PRIu32 " jpeg=%" PRIu32,
                  s_recording_queued, meta->seq, jpeg_size);
     }
+    return true;
 }
 
 static const char *sd_error_hint(esp_err_t err)
@@ -3930,32 +4171,21 @@ static void recover_incomplete_recordings(void)
             continue;
         }
         char part_path[384];
-        char final_path[384];
         char final_name[128];
         strlcpy(final_name, entry->d_name, sizeof(final_name));
         final_name[strlen(final_name) - strlen(".part")] = '\0';
         snprintf(part_path, sizeof(part_path), "%s/%s", RECORDING_DIR, entry->d_name);
-        snprintf(final_path, sizeof(final_path), "%s/%s", RECORDING_DIR, final_name);
-        esp_err_t ret = avi_mjpeg_recover_part(part_path, final_path);
-        if (ret == ESP_OK) {
-            ESP_LOGI(TAG, "recovered interrupted recording %s", final_name);
-        } else {
-            ESP_LOGW(TAG, "could not recover %s: %s", entry->d_name, esp_err_to_name(ret));
-            struct stat st = {0};
-            if ((ret == ESP_ERR_INVALID_RESPONSE ||
-                 (ret == ESP_FAIL && stat(part_path, &st) == 0 && st.st_size <= 224)) &&
-                stat(part_path, &st) == 0) {
-                char corrupt_path[400];
-                snprintf(corrupt_path, sizeof(corrupt_path), "%s.corrupt", part_path);
-                unlink(corrupt_path);
-                if (rename(part_path, corrupt_path) == 0) {
-                    ESP_LOGW(TAG, "quarantined unusable recording part %s (%" PRId64 " bytes)",
-                             entry->d_name, (int64_t)st.st_size);
-                }
-            }
+        struct stat st = {0};
+        if (stat(part_path, &st) == 0) {
+            ESP_LOGW(TAG, "discarding incomplete recording part %s (%" PRId64 " bytes)",
+                     entry->d_name, (int64_t)st.st_size);
         }
+        unlink(part_path);
     }
     closedir(dir);
+    cleanup_recording_temp_files();
+    uint64_t freed = 0;
+    purge_unpaired_recording_files(&freed);
 }
 
 static bool recording_index_contains_name(const char *name)
@@ -3985,6 +4215,118 @@ static bool recording_index_contains_name(const char *name)
     return found;
 }
 
+typedef struct {
+    char (*slots)[96];
+    uint32_t capacity;
+    uint32_t count;
+    bool overflow;
+} recording_name_set_t;
+
+static uint32_t recording_name_hash(const char *name)
+{
+    uint32_t hash = 2166136261U;
+    if (!name) {
+        return hash;
+    }
+    while (*name) {
+        hash ^= (uint8_t)*name++;
+        hash *= 16777619U;
+    }
+    return hash;
+}
+
+static bool recording_name_set_init(recording_name_set_t *set, uint32_t capacity)
+{
+    if (!set || capacity == 0) {
+        return false;
+    }
+    memset(set, 0, sizeof(*set));
+    set->slots = (char (*)[96])heap_caps_calloc(capacity, sizeof(*set->slots),
+                                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!set->slots) {
+        set->slots = (char (*)[96])calloc(capacity, sizeof(*set->slots));
+    }
+    if (!set->slots) {
+        return false;
+    }
+    set->capacity = capacity;
+    return true;
+}
+
+static void recording_name_set_free(recording_name_set_t *set)
+{
+    if (!set) {
+        return;
+    }
+    free(set->slots);
+    memset(set, 0, sizeof(*set));
+}
+
+static bool recording_name_set_contains(const recording_name_set_t *set, const char *name)
+{
+    if (!set || !set->slots || !name || !name[0] || set->capacity == 0) {
+        return false;
+    }
+    uint32_t hash = recording_name_hash(name);
+    for (uint32_t probe = 0; probe < set->capacity; probe++) {
+        uint32_t idx = (hash + probe) % set->capacity;
+        if (!set->slots[idx][0]) {
+            return false;
+        }
+        if (strcmp(set->slots[idx], name) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void recording_name_set_add(recording_name_set_t *set, const char *name)
+{
+    if (!set || !set->slots || !name || !name[0] || set->capacity == 0) {
+        return;
+    }
+    uint32_t hash = recording_name_hash(name);
+    for (uint32_t probe = 0; probe < set->capacity; probe++) {
+        uint32_t idx = (hash + probe) % set->capacity;
+        if (!set->slots[idx][0]) {
+            strlcpy(set->slots[idx], name, sizeof(set->slots[idx]));
+            set->count++;
+            return;
+        }
+        if (strcmp(set->slots[idx], name) == 0) {
+            return;
+        }
+    }
+    set->overflow = true;
+}
+
+static void recording_name_set_load(recording_name_set_t *set)
+{
+    if (!set || !set->slots) {
+        return;
+    }
+    const char *paths[] = {RECORDING_INDEX_PATH, RECORDING_INDEX_OLD_PATH};
+    char *line = (char *)alloc_psram_buffer(JSONL_TAIL_LINE_BYTES);
+    if (!line) {
+        set->overflow = true;
+        return;
+    }
+    for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+        FILE *file = fopen(paths[i], "r");
+        if (!file) {
+            continue;
+        }
+        while (fgets(line, JSONL_TAIL_LINE_BYTES, file)) {
+            char name[96] = {0};
+            if (json_get_string_field(line, "name", name, sizeof(name))) {
+                recording_name_set_add(set, name);
+            }
+        }
+        fclose(file);
+    }
+    free(line);
+}
+
 static int64_t json_number_from_line(const char *line, const char *key)
 {
     char needle[48];
@@ -4008,6 +4350,21 @@ static void recovered_segment_read_meta(recording_segment_t *seg, const char *pa
     int64_t first_ms = -1;
     int64_t last_ms = -1;
     while (fgets(line, JSONL_TAIL_LINE_BYTES, file)) {
+        char text[64] = {0};
+        if (seg->method == RECOGNITION_METHOD_OFF &&
+            json_get_string_field(line, "method", text, sizeof(text))) {
+            recognition_method_t method = recognition_method_from_text_hint(text);
+            if (method != RECOGNITION_METHOD_OFF) {
+                seg->method = method;
+            }
+        }
+        if (!seg->model[0] && json_get_string_field(line, "model", text, sizeof(text))) {
+            strlcpy(seg->model, text, sizeof(seg->model));
+            recognition_method_t method = recognition_method_from_text_hint(text);
+            if (seg->method == RECOGNITION_METHOD_OFF && method != RECOGNITION_METHOD_OFF) {
+                seg->method = method;
+            }
+        }
         int64_t time_ms = json_number_from_line(line, "time_ms");
         if (time_ms >= 0) {
             if (first_ms < 0) {
@@ -4052,13 +4409,33 @@ static void reconcile_recording_indexes(void)
     if (!dir) {
         return;
     }
+    recording_name_set_t indexed = {0};
+    bool have_indexed_set = recording_name_set_init(&indexed, 8192);
+    if (have_indexed_set) {
+        recording_name_set_load(&indexed);
+        ESP_LOGI(TAG, "recording reconcile loaded %" PRIu32 " indexed names%s",
+                 indexed.count, indexed.overflow ? " (overflow)" : "");
+    } else {
+        ESP_LOGW(TAG, "recording reconcile index cache unavailable; using slow lookup");
+    }
+    uint32_t scanned = 0;
+    uint32_t added = 0;
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
         if (!is_safe_recording_name(entry->d_name) ||
             !has_suffix(entry->d_name, ".avi")) {
             continue;
         }
-        bool already_indexed = recording_index_contains_name(entry->d_name);
+        scanned++;
+        bool already_indexed = have_indexed_set ?
+            recording_name_set_contains(&indexed, entry->d_name) :
+            recording_index_contains_name(entry->d_name);
+        if (!already_indexed && have_indexed_set && indexed.overflow) {
+            already_indexed = recording_index_contains_name(entry->d_name);
+        }
+        if (already_indexed) {
+            continue;
+        }
 
         char path[384];
         snprintf(path, sizeof(path), "%s/%s", RECORDING_DIR, entry->d_name);
@@ -4070,9 +4447,14 @@ static void reconcile_recording_indexes(void)
         if (!seg) {
             break;
         }
-        seg->kind = strncmp(entry->d_name, "annotated_", strlen("annotated_")) == 0 ?
+        seg->kind = is_annotated_recording_name(entry->d_name) ?
             RECORDING_KIND_ANNOTATED : RECORDING_KIND_RAW;
         strlcpy(seg->name, entry->d_name, sizeof(seg->name));
+        seg->method = recognition_method_from_text_hint(seg->name);
+        if (seg->method == RECOGNITION_METHOD_OFF) {
+            seg->method = RECOGNITION_METHOD_FISH31;
+        }
+        strlcpy(seg->model, model_name_for_method(seg->method), sizeof(seg->model));
         meta_name_for_recording(seg->name, seg->meta_name, sizeof(seg->meta_name));
         snprintf(seg->uri, sizeof(seg->uri), RECORDING_URI_PREFIX "%s", seg->name);
         snprintf(seg->meta_uri, sizeof(seg->meta_uri), RECORDING_META_URI_PREFIX "%s",
@@ -4102,6 +4484,10 @@ static void reconcile_recording_indexes(void)
         }
         if (!already_indexed && append_recording_segment_jsonl(seg) == ESP_OK) {
             append_recording_summary_jsonl(seg);
+            if (have_indexed_set) {
+                recording_name_set_add(&indexed, seg->name);
+            }
+            added++;
             ESP_LOGI(TAG,
                      "reconciled recording index: %s frames=%" PRIu32
                      " duration_ms=%" PRId64,
@@ -4109,8 +4495,15 @@ static void reconcile_recording_indexes(void)
                      seg->last_ms > seg->start_ms ? seg->last_ms - seg->start_ms : 0);
         }
         free(seg);
+        if ((scanned % 64U) == 0U) {
+            ESP_LOGI(TAG, "recording reconcile progress: scanned=%" PRIu32
+                     " added=%" PRIu32, scanned, added);
+        }
     }
     closedir(dir);
+    recording_name_set_free(&indexed);
+    ESP_LOGI(TAG, "recording reconcile complete: scanned=%" PRIu32
+             " added=%" PRIu32, scanned, added);
 }
 
 static void append_field_session(void)
@@ -4286,8 +4679,12 @@ static void storage_ensure_usb_volume_label(void)
 
 static esp_err_t storage_prepare_dirs_after_mount(const char *mode)
 {
+    ESP_LOGI(TAG, "TF post-mount prepare begin: mode=%s app_mode=%s",
+             mode ? mode : "unknown", app_mode_name(s_app_mode));
     update_sd_info();
+    ESP_LOGI(TAG, "TF post-mount: capacity sampled");
     storage_ensure_usb_volume_label();
+    ESP_LOGI(TAG, "TF post-mount: volume label checked");
     strlcpy(s_sd_mount_mode, mode, sizeof(s_sd_mount_mode));
     s_sd_last_error[0] = '\0';
     s_sd_last_error_code = 0;
@@ -4296,8 +4693,11 @@ static esp_err_t storage_prepare_dirs_after_mount(const char *mode)
          * SERVER_MODE does not create new monitoring data, but it must make an
          * interrupted field segment playable before exposing the card.
          */
+        ESP_LOGI(TAG, "TF post-mount: recovering incomplete recordings");
         recover_incomplete_recordings();
+        ESP_LOGI(TAG, "TF post-mount: reconciling recording index");
         reconcile_recording_indexes();
+        ESP_LOGI(TAG, "TF post-mount: recording index ready");
         set_storage_status("mounted on %s; server read-only", mode);
         return ESP_OK;
     }
@@ -4311,6 +4711,7 @@ static esp_err_t storage_prepare_dirs_after_mount(const char *mode)
         s_history_sd_errors++;
         return ESP_FAIL;
     }
+    ESP_LOGI(TAG, "TF post-mount: directories ready");
     esp_err_t write_test_ret = storage_write_selftest();
     if (write_test_ret != ESP_OK) {
         s_recording_sd_errors++;
@@ -4612,8 +5013,18 @@ static void storage_unmount(const char *reason)
     }
 
     if (s_sd_mounted && s_sd_card) {
+        bool was_sdmmc = strcmp(s_storage_backend, "tf_sdmmc") == 0;
         ESP_LOGI(TAG, "Unmounting TF card: %s", reason ? reason : "no reason");
         esp_vfs_fat_sdcard_unmount(CONFIG_APP_SD_MOUNT_POINT, s_sd_card);
+        if (was_sdmmc) {
+            esp_err_t slot_ret = sdmmc_host_deinit_slot(SDMMC_HOST_SLOT_0);
+            if (slot_ret != ESP_OK &&
+                slot_ret != ESP_ERR_INVALID_ARG &&
+                slot_ret != ESP_ERR_INVALID_STATE) {
+                ESP_LOGW(TAG, "SDMMC slot0 explicit release failed: %s",
+                         esp_err_to_name(slot_ret));
+            }
+        }
         if (strcmp(s_storage_backend, "tf_sdspi") == 0) {
             esp_err_t bus_ret = spi_bus_free(s_sd_spi_host);
             if (bus_ret != ESP_OK && bus_ret != ESP_ERR_INVALID_STATE) {
@@ -4859,7 +5270,7 @@ static bool inference_worker_busy(void)
     return s_inference_worker_busy || queued > 0;
 }
 
-static bool queue_yolo_inference(const uint8_t *jpeg, uint32_t jpeg_size,
+static bool queue_inference_job(const uint8_t *jpeg, uint32_t jpeg_size,
                                  const frame_meta_t *meta, recognition_method_t method)
 {
     if (s_storage_quiescing) {
@@ -4919,6 +5330,12 @@ static void validation_cache_update(validation_context_t *ctx)
     s_validation_last.completed_ms = ctx->completed_ms;
     xSemaphoreGive(s_validation_lock);
 }
+
+static esp_err_t generate_annotated_jpeg_from_vision(
+    const uint8_t *jpeg, uint32_t jpeg_size,
+    recognition_method_t method, const vision_result_t *vision,
+    uint32_t source_w, uint32_t source_h,
+    uint8_t **annotated_jpeg, size_t *annotated_size);
 
 static void inference_task(void *arg)
 {
@@ -5005,27 +5422,39 @@ static void inference_task(void *arg)
 
         if (!stale) {
             int64_t start_us = esp_timer_get_time();
+            uint32_t source_w = 0;
+            uint32_t source_h = 0;
             if (job.method == RECOGNITION_METHOD_TINYCLS) {
-                uint32_t source_w = 0;
-                uint32_t source_h = 0;
                 classify_validation_tinycls_jpeg(job.jpeg, job.jpeg_size, s_box_min_score,
                                                  &vision, &source_w, &source_h);
             } else if (job.method == RECOGNITION_METHOD_FISH31) {
-                uint32_t source_w = 0;
-                uint32_t source_h = 0;
                 classify_validation_fish31_jpeg(job.jpeg, job.jpeg_size, s_box_min_score,
                                                 &vision, &source_w, &source_h);
-            } else if (job.method == RECOGNITION_METHOD_YOLO11) {
-                classify_yolo11_jpeg(job.jpeg, job.jpeg_size, &vision);
-            } else if (job.method == RECOGNITION_METHOD_COCO) {
-                classify_coco_jpeg(job.jpeg, job.jpeg_size, &vision);
             } else {
-                classify_yolo26_jpeg(job.jpeg, job.jpeg_size, &vision);
+                classify_validation_yolo_jpeg(job.jpeg, job.jpeg_size, job.method,
+                                              s_box_min_score, &vision, &source_w, &source_h);
             }
             vision.analysis_ms = (esp_timer_get_time() - start_us) / 1000;
 
             job.meta.vision = vision;
             update_latest_vision_from_inference(&vision, job.method);
+
+            /* FIELD 录像中只发布最新推理结果；每个 raw 帧的 annotated 图像由 recording_task
+             * 使用当前 raw 图像和最近一次推理标签生成，确保 raw/annotated 帧数一致。 */
+            if (s_recording_enabled && s_app_mode == APP_MODE_FIELD && s_sd_mounted) {
+                recording_item_t ann_update = {
+                    .meta = job.meta,
+                    .kind = RECORDING_KIND_ANNOTATED,
+                    .method = job.method,
+                };
+                ann_update.meta.width = source_w ? source_w : ann_update.meta.width;
+                ann_update.meta.height = source_h ? source_h : ann_update.meta.height;
+                if (xQueueSend(s_recording_queue, &ann_update, 0) != pdTRUE) {
+                    ESP_LOGW(TAG, "recording vision update dropped: seq=%" PRIu32,
+                             ann_update.meta.seq);
+                }
+            }
+
             history_maybe_queue(job.jpeg, job.jpeg_size, &job.meta, job.method, "camera",
                                 vision.object_count > 0);
             update_inference_fps(esp_timer_get_time() / 1000);
@@ -5101,6 +5530,29 @@ static void camera_close(void)
     s_prev_luma_valid = false;
     clear_latest_frame();
     set_camera_error("standby");
+}
+
+static void camera_reset_video_hw_after_open_failure(esp_err_t open_ret, int saved_errno)
+{
+    if (!s_video_hw_ready) {
+        return;
+    }
+    if (open_ret != ESP_ERR_NO_MEM && saved_errno != EINVAL) {
+        return;
+    }
+
+    ESP_LOGW(TAG,
+             "resetting esp-video after camera open failure ret=%s errno=%d",
+             esp_err_to_name(open_ret), saved_errno);
+    esp_err_t deinit_ret = example_video_deinit();
+    if (deinit_ret == ESP_OK) {
+        s_video_hw_ready = false;
+        s_prev_luma_valid = false;
+        clear_latest_frame();
+    } else {
+        ESP_LOGW(TAG, "esp-video deinit after camera failure returned %s",
+                 esp_err_to_name(deinit_ret));
+    }
 }
 
 static esp_err_t camera_open(void)
@@ -5205,10 +5657,13 @@ static esp_err_t camera_open(void)
     return ESP_OK;
 
 fail:
+    int saved_errno = errno;
+    esp_err_t open_ret = ret == ESP_OK ? ESP_FAIL : ret;
     set_camera_error("camera open failed: %s (errno=%d)",
-                     esp_err_to_name(ret == ESP_OK ? ESP_FAIL : ret), errno);
+                     esp_err_to_name(open_ret), saved_errno);
     camera_release_device(fd, false);
-    return ret == ESP_OK ? ESP_FAIL : ret;
+    camera_reset_video_hw_after_open_failure(open_ret, saved_errno);
+    return open_ret;
 }
 
 static esp_err_t camera_capture_once(void)
@@ -5262,7 +5717,7 @@ static esp_err_t camera_capture_once(void)
             run_recognition = recognition_due(now_for_interval_ms);
         }
     }
-    bool need_yolo = run_recognition && method_uses_jpeg_inference;
+    bool need_inference = run_recognition && method_uses_jpeg_inference;
     if (method_enabled && !run_recognition) {
         frame_meta_t previous = {0};
         if (method_uses_jpeg_inference && copy_completed_yolo_vision(&vision, method)) {
@@ -5283,7 +5738,7 @@ static esp_err_t camera_capture_once(void)
     if (s_camera.pixel_format == V4L2_PIX_FMT_JPEG) {
         jpeg_ptr = raw_ptr;
         jpeg_size = buf.bytesused;
-        if (need_yolo) {
+        if (need_inference) {
             strlcpy(vision.scene, "jpeg", sizeof(vision.scene));
             strlcpy(vision.color, "unknown", sizeof(vision.color));
             if (method == RECOGNITION_METHOD_TINYCLS) {
@@ -5322,7 +5777,7 @@ static esp_err_t camera_capture_once(void)
         jpeg_ptr = s_camera.jpeg_buf;
     }
 
-    if (need_yolo && jpeg_ptr && jpeg_size > 0) {
+    if (need_inference && jpeg_ptr && jpeg_size > 0) {
         frame_meta_t previous = {0};
         if (copy_completed_yolo_vision(&vision, method)) {
             /* 新任务已经投递时，画面继续显示上一轮真实 YOLO 结果，避免 waiting 闪烁。 */
@@ -5347,9 +5802,9 @@ static esp_err_t camera_capture_once(void)
 
     ret = publish_frame(jpeg_ptr, jpeg_size, &meta);
     if (ret == ESP_OK) {
-        recording_maybe_queue(jpeg_ptr, jpeg_size, &meta);
-        if (need_yolo) {
-            queue_yolo_inference(jpeg_ptr, jpeg_size, &meta, method);
+        bool recording_queued = recording_maybe_queue(jpeg_ptr, jpeg_size, &meta);
+        if (need_inference && (s_app_mode != APP_MODE_FIELD || recording_queued)) {
+            queue_inference_job(jpeg_ptr, jpeg_size, &meta, method);
         } else if (run_recognition) {
             history_maybe_queue(jpeg_ptr, jpeg_size, &meta, method, "camera",
                                 meta.vision.object_count > 0);
@@ -5504,6 +5959,16 @@ static void save_setting_u32(const char *key, uint32_t value)
     }
 }
 
+static void save_setting_str(const char *key, const char *value)
+{
+    nvs_handle_t nvs;
+    if (nvs_open(SETTINGS_NAMESPACE, NVS_READWRITE, &nvs) == ESP_OK) {
+        nvs_set_str(nvs, key, value ? value : "");
+        nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+}
+
 static uint32_t clamp_u32(uint32_t value, uint32_t min_value, uint32_t max_value)
 {
     if (value < min_value) {
@@ -5513,6 +5978,38 @@ static uint32_t clamp_u32(uint32_t value, uint32_t min_value, uint32_t max_value
         return max_value;
     }
     return value;
+}
+
+static void json_escape_string(char *out, size_t out_size, const char *in)
+{
+    if (!out || out_size == 0) {
+        return;
+    }
+    size_t off = 0;
+    if (!in) {
+        out[0] = '\0';
+        return;
+    }
+    for (const unsigned char *p = (const unsigned char *)in;
+         *p && off + 1 < out_size; p++) {
+        if ((*p == '"' || *p == '\\') && off + 2 < out_size) {
+            out[off++] = '\\';
+            out[off++] = (char)*p;
+        } else if (*p >= 0x20) {
+            out[off++] = (char)*p;
+        }
+    }
+    out[off] = '\0';
+}
+
+static uint32_t network_access_window_ms(void)
+{
+    uint32_t configured = s_field_idle_timeout_ms;
+    uint32_t boot_window = CONFIG_APP_NETWORK_BOOT_WINDOW_MS;
+    if (configured < APP_FIELD_IDLE_TIMEOUT_MIN_MS) {
+        configured = APP_FIELD_IDLE_TIMEOUT_MIN_MS;
+    }
+    return boot_window > configured ? configured : boot_window;
 }
 
 static void load_runtime_settings(void)
@@ -5542,6 +6039,15 @@ static void load_runtime_settings(void)
         s_inference_interval_ms = CONFIG_APP_INFERENCE_INTERVAL_MS;
         s_history_sample_interval_ms = CONFIG_APP_HISTORY_SAMPLE_INTERVAL_MS;
         s_jpeg_quality = CONFIG_EXAMPLE_JPEG_COMPRESSION_QUALITY;
+        s_recording_segment_ms = clamp_u32(CONFIG_APP_RECORDING_SEGMENT_MS,
+                                           APP_RECORDING_SEGMENT_MIN_MS,
+                                           APP_RECORDING_SEGMENT_MAX_MS);
+        s_field_idle_timeout_ms = clamp_u32(CONFIG_APP_NETWORK_IDLE_TIMEOUT_MS,
+                                            APP_FIELD_IDLE_TIMEOUT_MIN_MS,
+                                            APP_FIELD_IDLE_TIMEOUT_MAX_MS);
+        s_field_auto_enable = true;
+        strlcpy(s_router_ssid, WIFI_SSID, sizeof(s_router_ssid));
+        strlcpy(s_router_password, WIFI_PASSWORD, sizeof(s_router_password));
         nvs_set_u32(nvs, "version", SETTINGS_VERSION);
         nvs_set_u8(nvs, "method", (uint8_t)s_recognition_method);
         nvs_set_u8(nvs, "netmode", (uint8_t)s_network_mode);
@@ -5553,6 +6059,11 @@ static void load_runtime_settings(void)
         nvs_set_u32(nvs, "inf_ms", s_inference_interval_ms);
         nvs_set_u32(nvs, "hist_ms", s_history_sample_interval_ms);
         nvs_set_u32(nvs, "jpeg_q", s_jpeg_quality);
+        nvs_set_u32(nvs, "seg_ms", s_recording_segment_ms);
+        nvs_set_u32(nvs, "idle_ms", s_field_idle_timeout_ms);
+        nvs_set_u8(nvs, "field_auto", s_field_auto_enable ? 1 : 0);
+        nvs_set_str(nvs, "router_ssid", s_router_ssid);
+        nvs_set_str(nvs, "router_pass", s_router_password);
         nvs_commit(nvs);
         nvs_close(nvs);
         return;
@@ -5600,6 +6111,34 @@ static void load_runtime_settings(void)
     if (nvs_get_u32(nvs, "jpeg_q", &value) == ESP_OK) {
         s_jpeg_quality = clamp_u32(value, 1, 100);
     }
+    if (nvs_get_u32(nvs, "seg_ms", &value) == ESP_OK) {
+        s_recording_segment_ms = clamp_u32(value, APP_RECORDING_SEGMENT_MIN_MS,
+                                           APP_RECORDING_SEGMENT_MAX_MS);
+    } else {
+        s_recording_segment_ms = clamp_u32(CONFIG_APP_RECORDING_SEGMENT_MS,
+                                           APP_RECORDING_SEGMENT_MIN_MS,
+                                           APP_RECORDING_SEGMENT_MAX_MS);
+    }
+    if (nvs_get_u32(nvs, "idle_ms", &value) == ESP_OK) {
+        s_field_idle_timeout_ms = clamp_u32(value, APP_FIELD_IDLE_TIMEOUT_MIN_MS,
+                                            APP_FIELD_IDLE_TIMEOUT_MAX_MS);
+    } else {
+        s_field_idle_timeout_ms = clamp_u32(CONFIG_APP_NETWORK_IDLE_TIMEOUT_MS,
+                                            APP_FIELD_IDLE_TIMEOUT_MIN_MS,
+                                            APP_FIELD_IDLE_TIMEOUT_MAX_MS);
+    }
+    uint8_t field_auto = s_field_auto_enable ? 1 : 0;
+    if (nvs_get_u8(nvs, "field_auto", &field_auto) == ESP_OK) {
+        s_field_auto_enable = field_auto != 0;
+    }
+    size_t str_len = sizeof(s_router_ssid);
+    if (nvs_get_str(nvs, "router_ssid", s_router_ssid, &str_len) != ESP_OK) {
+        strlcpy(s_router_ssid, WIFI_SSID, sizeof(s_router_ssid));
+    }
+    str_len = sizeof(s_router_password);
+    if (nvs_get_str(nvs, "router_pass", s_router_password, &str_len) != ESP_OK) {
+        strlcpy(s_router_password, WIFI_PASSWORD, sizeof(s_router_password));
+    }
     nvs_close(nvs);
 }
 
@@ -5609,21 +6148,165 @@ static void mark_network_activity(void)
                      __ATOMIC_RELEASE);
 }
 
+static bool http_remote_addr(httpd_req_t *req, char *addr, size_t addr_size)
+{
+    if (!req || !addr || addr_size == 0) {
+        return false;
+    }
+    int sockfd = httpd_req_to_sockfd(req);
+    if (sockfd < 0) {
+        return false;
+    }
+
+    struct sockaddr_storage peer = {0};
+    socklen_t peer_len = sizeof(peer);
+    if (getpeername(sockfd, (struct sockaddr *)&peer, &peer_len) != 0) {
+        return false;
+    }
+    if (peer.ss_family == AF_INET) {
+        const struct sockaddr_in *in = (const struct sockaddr_in *)&peer;
+        return inet_ntop(AF_INET, &in->sin_addr, addr, addr_size) != NULL;
+    }
+#if LWIP_IPV6
+    if (peer.ss_family == AF_INET6) {
+        const struct sockaddr_in6 *in6 = (const struct sockaddr_in6 *)&peer;
+        return inet_ntop(AF_INET6, &in6->sin6_addr, addr, addr_size) != NULL;
+    }
+#endif
+    return false;
+}
+
+static uint32_t web_client_count_locked(int64_t now_ms)
+{
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < APP_WEB_CLIENT_SLOTS; i++) {
+        if (s_web_clients[i].last_seen_ms > 0 &&
+            now_ms - s_web_clients[i].last_seen_ms <= APP_WEB_CLIENT_TIMEOUT_MS) {
+            count++;
+        }
+    }
+    s_web_client_count = count;
+    return count;
+}
+
+static uint32_t web_client_count(int64_t now_ms)
+{
+    uint32_t count;
+    taskENTER_CRITICAL(&s_web_client_mux);
+    count = web_client_count_locked(now_ms);
+    taskEXIT_CRITICAL(&s_web_client_mux);
+    return count;
+}
+
+static void clear_web_clients(void)
+{
+    taskENTER_CRITICAL(&s_web_client_mux);
+    memset(s_web_clients, 0, sizeof(s_web_clients));
+    s_web_client_count = 0;
+    taskEXIT_CRITICAL(&s_web_client_mux);
+}
+
+static void record_http_client(httpd_req_t *req)
+{
+    char addr[48] = {0};
+    if (!http_remote_addr(req, addr, sizeof(addr))) {
+        strlcpy(addr, "unknown", sizeof(addr));
+    }
+    int64_t now_ms = esp_timer_get_time() / 1000;
+    __atomic_store_n(&s_last_web_client_activity_ms, now_ms, __ATOMIC_RELEASE);
+
+    taskENTER_CRITICAL(&s_web_client_mux);
+    int replace = -1;
+    int64_t oldest_ms = INT64_MAX;
+    for (uint32_t i = 0; i < APP_WEB_CLIENT_SLOTS; i++) {
+        if (s_web_clients[i].last_seen_ms <= 0 ||
+            now_ms - s_web_clients[i].last_seen_ms > APP_WEB_CLIENT_TIMEOUT_MS) {
+            if (replace < 0) {
+                replace = (int)i;
+            }
+            continue;
+        }
+        if (strcmp(s_web_clients[i].addr, addr) == 0) {
+            replace = (int)i;
+            break;
+        }
+        if (s_web_clients[i].last_seen_ms < oldest_ms) {
+            oldest_ms = s_web_clients[i].last_seen_ms;
+            if (replace < 0) {
+                replace = (int)i;
+            }
+        }
+    }
+    if (replace < 0) {
+        replace = 0;
+    }
+    strlcpy(s_web_clients[replace].addr, addr, sizeof(s_web_clients[replace].addr));
+    s_web_clients[replace].last_seen_ms = now_ms;
+    web_client_count_locked(now_ms);
+    taskEXIT_CRITICAL(&s_web_client_mux);
+}
+
 static void open_network_access_window(const char *reason)
 {
     int64_t now_ms = esp_timer_get_time() / 1000;
+    uint32_t window_ms = network_access_window_ms();
     __atomic_store_n(&s_last_network_activity_ms, now_ms, __ATOMIC_RELEASE);
-    s_network_boot_window_until_ms = now_ms + CONFIG_APP_NETWORK_BOOT_WINDOW_MS;
-    ESP_LOGI(TAG, "network access window opened for %d ms%s%s",
-             CONFIG_APP_NETWORK_BOOT_WINDOW_MS,
+    __atomic_store_n(&s_last_web_client_activity_ms, now_ms, __ATOMIC_RELEASE);
+    s_network_boot_window_until_ms = now_ms + window_ms;
+    ESP_LOGI(TAG, "network access window opened for %" PRIu32 " ms%s%s",
+             window_ms,
              reason && reason[0] ? ": " : "",
              reason && reason[0] ? reason : "");
 }
 
-static void record_http_request(void)
+static void record_http_request(httpd_req_t *req)
 {
     s_requests++;
+    record_http_client(req);
     mark_network_activity();
+}
+
+static void record_http_poll(httpd_req_t *req)
+{
+    s_requests++;
+    record_http_client(req);
+}
+
+static void resegment_status_request(uint32_t target_ms)
+{
+    taskENTER_CRITICAL(&s_resegment_mux);
+    s_resegment_status.requested = true;
+    s_resegment_status.cancelled = false;
+    s_resegment_status.target_ms = target_ms;
+    strlcpy(s_resegment_status.last_error, "queued", sizeof(s_resegment_status.last_error));
+    taskEXIT_CRITICAL(&s_resegment_mux);
+}
+
+static void resegment_status_copy(recording_resegment_status_t *out)
+{
+    if (!out) {
+        return;
+    }
+    taskENTER_CRITICAL(&s_resegment_mux);
+    *out = s_resegment_status;
+    taskEXIT_CRITICAL(&s_resegment_mux);
+}
+
+static void resegment_status_update(bool running, bool requested, bool cancelled,
+                                    uint32_t input_segments, uint32_t processed_segments,
+                                    uint32_t output_segments, const char *message)
+{
+    taskENTER_CRITICAL(&s_resegment_mux);
+    s_resegment_status.running = running;
+    s_resegment_status.requested = requested;
+    s_resegment_status.cancelled = cancelled;
+    s_resegment_status.input_segments = input_segments;
+    s_resegment_status.processed_segments = processed_segments;
+    s_resegment_status.output_segments = output_segments;
+    if (message) {
+        strlcpy(s_resegment_status.last_error, message, sizeof(s_resegment_status.last_error));
+    }
+    taskEXIT_CRITICAL(&s_resegment_mux);
 }
 
 static void log_acceleration_status(void)
@@ -5669,30 +6352,86 @@ static void log_acceleration_status(void)
              jpeg_encode, jpeg_decode_hw);
 }
 
+static const char s_customer_index_html_v2[] __attribute__((unused)) =
+"<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
+"<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+"<title>P4 Buoy Vision</title><style>"
+":root{color-scheme:light;--bg:#f6f7f9;--panel:#fff;--line:#d7dde5;--text:#17202a;--muted:#667085;--ok:#147a44;--bad:#b42318;--accent:#146c94;--warn:#a15c07}"
+"*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}"
+"main{width:min(1180px,100%);margin:0 auto;padding:16px;display:grid;gap:14px}.top{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}"
+".title{font-size:24px;font-weight:760}.small{font-size:18px}.sub,.hint,.muted{color:var(--muted);font-size:13px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}"
+".panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px}.rows{display:grid;gap:8px;margin-top:10px}.row{display:grid;grid-template-columns:126px minmax(0,1fr);gap:10px;border-top:1px solid var(--line);padding-top:8px;align-items:center}"
+".row:first-child{border-top:0;padding-top:0}.label{font-weight:700;color:#344054}.ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}"
+".actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}button,select,input,a.btn{border:1px solid var(--line);border-radius:7px;background:#fff;color:var(--text);padding:9px 11px;font:inherit;font-weight:650;text-decoration:none}"
+"button,a.btn{cursor:pointer;background:#edf6f9}button:hover,a.btn:hover,select:hover,input:hover{border-color:var(--accent)}button:disabled{opacity:.45;cursor:not-allowed}input,select{width:100%}"
+"label{display:grid;gap:5px;font-size:13px;color:#344054}.form{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-top:10px}.toggle{display:flex;gap:8px;align-items:center}.toggle input{width:auto}"
+".preview{display:none;margin-top:12px}.preview img{display:block;width:100%;max-height:70vh;object-fit:contain;background:#111;border-radius:6px}.hidden{display:none}"
+".records .row{grid-template-columns:minmax(0,1fr) 300px}.record-title{font-weight:760}.record-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}.record-actions a,.record-actions button,.record-actions span{min-width:76px;text-align:center}"
+".bar{height:8px;border-radius:999px;background:#e8edf2;overflow:hidden;margin-top:8px}.bar>i{display:block;height:100%;width:0;background:var(--accent)}@media(max-width:760px){.records .row,.row{grid-template-columns:1fr}.record-actions{justify-content:flex-start}.title{font-size:21px}}"
+"</style></head><body><main>"
+"<section class=\"top\"><div><div class=\"title\">P4 Buoy Vision</div><div class=\"sub\" id=\"modeLine\">正在加载...</div></div><div class=\"actions\"><button onclick=\"loadAll()\">刷新</button><button onclick=\"rebootDevice()\">重启设备</button></div></section>"
+"<section class=\"grid\"><div class=\"panel\"><div class=\"title small\">连接地址</div><div class=\"rows\" id=\"netRows\"></div></div><div class=\"panel\"><div class=\"title small\">采集状态</div><div class=\"rows\" id=\"stateRows\"></div></div></section>"
+"<section class=\"panel\"><div class=\"title small\">现场查看</div><div class=\"hint\">默认不打开实时图传，需要时再开启。</div><div class=\"actions\"><button id=\"previewBtn\" onclick=\"togglePreview()\">打开实时图传</button><button onclick=\"toggleModelPanel()\">模型切换</button></div><div id=\"modelPanel\" class=\"panel hidden\" style=\"margin-top:12px\"><div class=\"form\"><label>推理模型<select id=\"modelSelect\"><option value=\"fish31\">Fish31</option><option value=\"tinycls\">TinyCNN</option><option value=\"coco\">COCO</option></select></label></div><div class=\"actions\"><button onclick=\"saveModel()\">保存模型</button><a class=\"btn\" href=\"/validate\" target=\"_blank\">手机验证</a></div><div class=\"hint\" id=\"modelMsg\">Fish31 为默认模型。</div></div><div id=\"previewBox\" class=\"preview\"><img id=\"previewStream\" alt=\"camera stream\"></div></section>"
+"<section class=\"panel\"><div class=\"title small\">用户设置</div><div class=\"form\">"
+"<label>录像片段时长(秒)<input id=\"segmentSec\" type=\"number\" min=\"5\" max=\"14400\" step=\"1\"><span class=\"hint\" id=\"segmentHint\">5-14400 秒，默认 60 秒。</span></label>"
+"<label>无连接进入采集(秒)<input id=\"idleSec\" type=\"number\" min=\"10\" max=\"86400\" step=\"1\"></label>"
+"<label>网络模式<select id=\"netMode\"><option value=\"apsta\">AP+STA</option><option value=\"softap\">SoftAP</option><option value=\"sta\">STA</option></select></label>"
+"<label>路由器 SSID<input id=\"routerSsid\" maxlength=\"32\" autocomplete=\"off\"></label>"
+"<label>路由器密码<input id=\"routerPass\" maxlength=\"64\" type=\"password\" autocomplete=\"new-password\"></label>"
+"<label class=\"toggle\"><input id=\"fieldAuto\" type=\"checkbox\">自动进入野外采集</label>"
+"</div><div class=\"actions\"><button onclick=\"applyCustomerConfig()\">保存设置</button><button onclick=\"enterFieldMode()\">立即进入野外录像</button><button onclick=\"usbExportNow()\">USB 立即导出</button><button onclick=\"usbRestore()\">USB 恢复存储</button></div><div class=\"hint\" id=\"configMsg\">USB 插入后会自动导出 TF 为 P4_BUOY，Web 保持在线。</div></section>"
+"<section class=\"panel\"><div class=\"top\"><div><div class=\"title small\">录像记录</div><div class=\"hint\" id=\"recordMeta\">--</div></div><button onclick=\"clearRecordings()\">清空录像记录</button></div><div class=\"rows records\" id=\"recordRows\"></div></section>"
+"</main><script>"
+"let lastStatus=null,lastGroups=[];function esc(v){return String(v==null?'':v).replace(/[&<>\\\"]/g,m=>m==='&'?'&amp;':m==='<'?'&lt;':m==='>'?'&gt;':'&quot;')}"
+"function yes(v){return v?'<span class=\"ok\">是</span>':'<span class=\"bad\">否</span>'}function link(u){return u?'<a href=\"'+esc(u)+'\" target=\"_blank\">'+esc(u)+'</a>':'--'}"
+"function keep(id,v){let e=document.getElementById(id);if(e&&document.activeElement!==e)e.value=v}function row(k,v){return '<div class=\"row\"><div class=\"label\">'+esc(k)+'</div><div>'+v+'</div></div>'}"
+"function fmtBytes(v){v=Number(v)||0;return v>=1048576?Math.round(v/1048576)+' MB':Math.round(v/1024)+' KB'}function fmtSec(v){v=Number(v)||0;return v?Math.round(v/1000)+' 秒':'--'}"
+"function modelName(m){return m==='tinycls'?'TinyCNN':(m==='coco'?'COCO':'Fish31')}function recTime(x){let t=Number(x&&x.start_epoch_ms)||0;return t?new Date(t).toLocaleString():('boot '+Math.round((Number(x&&x.start_ms)||0)/1000)+'s')}"
+"function recInfo(x){return x?fmtSec(x.duration_ms)+' | '+(x.frames||0)+' 帧 | '+fmtBytes(x.bytes)+' | '+modelName(x.method):'--'}"
+"function labelSummary(a){return (a||[]).slice(0,3).map(x=>esc(x.label)+' x'+(x.count||0)).join(' / ')||'--'}"
+"async function syncTime(){await fetch('/api/time/sync?epoch_ms='+Date.now(),{method:'POST',cache:'no-store'}).catch(()=>{})}"
+"async function loadAll(){await loadStatus();await loadRecords()}async function loadStatus(){try{let r=await fetch('/api/status?ts='+Date.now(),{cache:'no-store'});let s=await r.json(),c=s.config||{};lastStatus=s;let clients=Number(s.client_count||s.web_clients||0),segMaxSec=Math.max(5,Math.floor(Number(c.recording_segment_max_ms||14400000)/1000));segmentSec.max=String(segMaxSec);segmentHint.textContent='5-'+segMaxSec+' 秒，默认 60 秒。';modeLine.textContent='模式 '+(s.app_mode||'--')+' | 电源 '+(s.power_mode||'--')+' | 网络 '+(s.network_mode||'--')+' | 模型 '+modelName(s.recognition_method);netRows.innerHTML=row('热点(AP)',link(s.ap_url))+row('路由器(STA)',link(s.sta_url))+row('网线(ETH)',link(s.eth_url))+row('mDNS',link(s.mdns_url))+row('客户端',String(clients));let remain=!c.field_auto_enable?'关闭':(clients>0||c.field_idle_paused?'客户端在线，暂停':(c.field_idle_remaining_ms>=0?Math.ceil(c.field_idle_remaining_ms/1000)+' 秒':'--')),rg=s.resegment||{},rgState=rg.running?'整理中 ':rg.requested?'排队中 ':'空闲 ',rgText=rgState+(rg.processed_segments||0)+'/'+(rg.input_segments||0)+' -> '+(rg.output_segments||0)+' | '+(rg.last_error||'');stateRows.innerHTML=row('TF存储',yes(s.file_storage_mounted&&s.usb_storage_owner!=='usb')+' '+esc(s.storage_status||''))+row('USB插入',yes(s.usb_host_connected))+row('USB占用',esc(s.usb_storage_owner||'none')+' '+esc(s.usb_last_error||''))+row('录像',esc(s.recording_segments||0)+' 段 / '+esc(s.recording_frames||0)+' 帧')+row('历史整理',esc(rgText))+row('自动采集倒计时',remain);keep('segmentSec',Math.round((c.recording_segment_ms||60000)/1000));keep('idleSec',Math.round((c.field_idle_timeout_ms||300000)/1000));keep('routerSsid',c.router_ssid||'');netMode.value=s.network_mode||'apsta';modelSelect.value=s.recognition_method||'fish31';fieldAuto.checked=!!c.field_auto_enable;routerPass.placeholder=c.router_password_set?'已保存，留空不修改':'8-64 位，开放路由器可留空';updateRecordProgress()}catch(e){modeLine.textContent='状态读取失败'}}"
+"async function applyCustomerConfig(){let q=new URLSearchParams(),segMax=Number(segmentSec.max)||14400;q.set('recording_segment_ms',Math.max(5,Math.min(segMax,Number(segmentSec.value)||60))*1000);q.set('field_idle_timeout_ms',Math.max(10,Math.min(86400,Number(idleSec.value)||300))*1000);q.set('field_auto_enable',fieldAuto.checked?1:0);q.set('network_mode',netMode.value);q.set('router_ssid',routerSsid.value.trim());if(routerPass.value.length>0)q.set('router_password',routerPass.value);let r=await fetch('/api/config?'+q.toString(),{cache:'no-store'}).catch(()=>null);configMsg.textContent=r&&r.ok?'设置已保存，历史片段将后台整理':'保存失败';routerPass.value='';setTimeout(loadAll,800)}"
+"function toggleModelPanel(){modelPanel.classList.toggle('hidden')}async function saveModel(){let q=new URLSearchParams();q.set('method',modelSelect.value);let r=await fetch('/api/config?'+q.toString(),{cache:'no-store'}).catch(()=>null);modelMsg.textContent=r&&r.ok?'模型已保存: '+modelName(modelSelect.value):'模型保存失败';setTimeout(loadStatus,400)}"
+"async function enterFieldMode(){if(!confirm('确认立即进入野外录像？Web 可能断开，设备开始写入 TF。'))return;let r=await fetch('/api/mode/field?confirm=FIELD',{method:'POST',cache:'no-store'}).catch(()=>null);configMsg.textContent=r&&r.ok?'正在进入野外录像':'进入失败'}"
+"async function usbExportNow(){let r=await fetch('/api/mode/usb?confirm=USB',{method:'POST',cache:'no-store'}).catch(()=>null);configMsg.textContent=r&&r.ok?'USB 导出已请求，等待 P4_BUOY':'USB 导出失败';setTimeout(loadAll,1200)}"
+"async function usbRestore(){let r=await fetch('/api/mode/usb/restore?confirm=RESTORE',{method:'POST',cache:'no-store'}).catch(()=>null);configMsg.textContent=r&&r.ok?'USB 恢复已请求':'USB 恢复失败';setTimeout(loadAll,1500)}async function rebootDevice(){if(!confirm('确认重启设备？'))return;await fetch('/api/system/reboot?confirm=REBOOT',{method:'POST',cache:'no-store'}).catch(()=>{});configMsg.textContent='设备正在重启'}"
+"async function waitCameraReady(){let lastErr='';for(let i=0;i<40;i++){let r=await fetch('/api/status?ts='+Date.now(),{cache:'no-store'}).catch(()=>null);if(r&&r.ok){let s=await r.json().catch(()=>null);if(s){lastStatus=s;if(s.power_mode==='running'&&(Number(s.last_jpeg_bytes)||0)>0)return s;if(s.power_mode==='error')lastErr=s.camera_error||'camera error';configMsg.textContent=lastErr?'摄像头重试中：'+lastErr:'正在等待摄像头画面...'}}await new Promise(resolve=>setTimeout(resolve,500))}throw new Error(lastErr||'camera wake timeout')}async function togglePreview(){let box=previewBox,img=previewStream,on=box.style.display==='block';if(on){previewBtn.disabled=true;img.removeAttribute('src');box.style.display='none';previewBtn.textContent='打开实时图传';await fetch('/api/power?cmd=standby',{cache:'no-store'}).catch(()=>{});previewBtn.disabled=false;setTimeout(loadAll,600);return}previewBtn.disabled=true;box.style.display='block';previewBtn.textContent='正在打开...';configMsg.textContent='正在唤醒摄像头...';img.onerror=()=>{configMsg.textContent='实时图传连接中断，请稍后重试';};try{await fetch('/api/power?cmd=wake',{cache:'no-store'}).catch(()=>{});img.src='/stream?ts='+Date.now();previewBtn.textContent='关闭实时图传';previewBtn.disabled=false;configMsg.textContent='实时图传正在打开，首帧出来前可能需要几秒';waitCameraReady().then(()=>{configMsg.textContent='实时图传已打开'}).catch(e=>{configMsg.textContent='摄像头仍在启动：'+(e&&e.message?e.message:e)})}catch(e){img.removeAttribute('src');box.style.display='none';previewBtn.textContent='打开实时图传';previewBtn.disabled=false;configMsg.textContent='实时图传打开失败：'+(e&&e.message?e.message:e)}finally{setTimeout(loadAll,600)}}"
+"function pairFallback(records){let raws=(records||[]).filter(x=>x.kind==='raw'),anns=(records||[]).filter(x=>x.kind==='annotated');return raws.map(raw=>{let expected=raw.name&&raw.name.startsWith('raw_')?'annotated_'+raw.name.slice(4):'',legacy=raw.name&&raw.name.startsWith('raw_')?'ann_'+raw.name.slice(4):'';let ann=anns.find(a=>a.name===expected||a.name===legacy)||null;return {raw:raw,annotated:ann,method:raw.method||'fish31',model:raw.model||'',fill_state:ann?'ready':'missing',needs_rebuild:!ann}}).reverse()}"
+"function rawOf(g){return g.raw||g.data&&g.data.raw}function annOf(g){return g.annotated||g.data&&g.data.annotated}function groupMethod(g){return g.method||(rawOf(g)&&rawOf(g).method)||'fish31'}"
+"function renderRecord(g){let raw=rawOf(g),ann=annOf(g),base=raw||ann;if(!base)return '';let method=groupMethod(g),need=g.needs_rebuild||!ann;let status=need?'<span class=\"warn\">需补帧/重建</span>':'<span class=\"ok\">已生成</span>';let actions=(raw?'<a class=\"btn\" href=\"'+esc(raw.uri)+'\" target=\"_blank\">原视频</a>':'<span class=\"muted\">原视频</span>')+(ann?'<a class=\"btn\" href=\"'+esc(ann.uri)+'\" target=\"_blank\">推理视频</a>':'<span class=\"muted\">推理视频</span>')+(raw?'<button data-fill=\"'+esc(raw.name)+'\">补帧</button>':'');let progress=raw?'<div class=\"bar\" data-progress=\"'+esc(raw.name)+'\"><i></i></div><div class=\"sub\" data-progress-text=\"'+esc(raw.name)+'\"></div>':'';return '<div class=\"row\"><div><div class=\"record-title\">'+esc(recTime(base))+' | '+modelName(method)+'</div><div class=\"sub\">原视频 '+recInfo(raw)+'</div><div class=\"sub\">推理视频 '+recInfo(ann)+' | '+status+'</div><div class=\"sub\">'+labelSummary((ann||raw||{}).labels)+'</div>'+progress+'</div><div class=\"record-actions\">'+actions+'</div></div>'}"
+"async function startFill(name){let r=await fetch('/api/recording/enrich?name='+encodeURIComponent(name),{method:'POST',cache:'no-store'}).catch(()=>null);configMsg.textContent=r&&r.ok?'补帧任务已加入队列':'补帧启动失败';setTimeout(loadAll,800)}"
+"async function clearRecordings(){if(!confirm('确认清空全部录像记录？'))return;let r=await fetch('/api/recordings?confirm=DELETE',{method:'DELETE',cache:'no-store'}).catch(()=>null);let j=r?await r.json().catch(()=>null):null;if(!r||!r.ok||!j||!j.ok){configMsg.textContent='清空失败 '+(j&&j.error?j.error:(r?'HTTP '+r.status:'网络错误'));return}configMsg.textContent='已清空 '+(j.deleted_files||0)+' 个文件，释放 '+fmtBytes(j.freed_bytes||0);await loadRecords()}"
+"function updateRecordProgress(){let e=lastStatus&&lastStatus.enrichment;if(!e)return;document.querySelectorAll('[data-progress]').forEach(bar=>{let name=bar.getAttribute('data-progress'),i=bar.querySelector('i'),txt=Array.from(document.querySelectorAll('[data-progress-text]')).find(x=>x.getAttribute('data-progress-text')===name);if(e.raw_name===name&&(e.running||e.frame_count)){let pct=e.frame_count?Math.round((e.output_frames||0)*100/e.frame_count):0;i.style.width=pct+'%';if(txt)txt.textContent='补帧 '+(e.output_frames||0)+' / '+(e.frame_count||0)+' 帧 | stride '+(e.pass_stride||0)+' | '+(e.last_error||'')}else{i.style.width='0';if(txt)txt.textContent=''}})}"
+"async function loadRecords(){try{let r=await fetch('/api/recordings?limit=30&ts='+Date.now(),{cache:'no-store'});let j=await r.json();recordMeta.textContent='TF '+(j.sd_mounted?'可用':'不可用')+' | '+(j.storage_status||'')+' | 当前 '+(j.current_uri||'--');lastGroups=(j.recording_groups&&j.recording_groups.length)?j.recording_groups:pairFallback(j.recordings||[]);recordRows.innerHTML=lastGroups.map(renderRecord).join('')||'<div class=\"row\"><div class=\"muted\">暂无录像记录</div></div>';document.querySelectorAll('[data-fill]').forEach(b=>b.onclick=()=>startFill(b.getAttribute('data-fill')));updateRecordProgress()}catch(e){recordMeta.textContent='录像记录读取失败';recordRows.innerHTML=''}}"
+"setInterval(loadStatus,1000);setInterval(loadRecords,5000);syncTime().then(loadAll);"
+"</script></body></html>";
+
 static esp_err_t root_get_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    return http_send_cstr_chunked(req, s_index_html);
+    return http_send_cstr_chunked(req, s_customer_index_html_v2);
 }
 
 static bool export_mode_reject(httpd_req_t *req, const char *feature)
 {
-    if (s_app_mode != APP_MODE_EXPORT) {
+    if (s_app_mode != APP_MODE_EXPORT && s_app_mode != APP_MODE_USB_EXPORT) {
         return false;
     }
     httpd_resp_set_status(req, "409 Conflict");
     httpd_resp_set_type(req, "text/plain");
     char msg[128];
-    snprintf(msg, sizeof(msg), "%s disabled in export mode", feature ? feature : "feature");
+    snprintf(msg, sizeof(msg), "%s disabled while %s is active",
+             feature ? feature : "feature", app_mode_name(s_app_mode));
     httpd_resp_sendstr(req, msg);
     return true;
 }
 
 static esp_err_t validate_get_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     if (export_mode_reject(req, "validation")) {
         return ESP_OK;
     }
@@ -5715,7 +6454,7 @@ static bool validation_sample_image(validation_sample_t sample, const uint8_t **
 
 static esp_err_t validate_demo_jpg_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     validation_sample_t sample = VALIDATION_SAMPLE_NONE;
     if (strcmp(req->uri, "/validate/demo_01.jpg") == 0) {
         sample = VALIDATION_SAMPLE_DEMO_01;
@@ -5959,154 +6698,6 @@ static bool validation_selftest_method_available(recognition_method_t method)
     return false;
 }
 
-static void run_board_image_validation_case(validation_sample_t sample,
-                                            recognition_method_t method,
-                                            uint32_t threshold,
-                                            const char *trial)
-{
-    const uint8_t *jpg_start = NULL;
-    const uint8_t *jpg_end = NULL;
-
-    if (!recognition_method_uses_jpeg_inference(method) || !validation_selftest_method_available(method)) {
-        ESP_LOGW(TAG, "BOARD_IMAGE_VALIDATION trial=%s sample=%s method=%s unavailable",
-                 trial, validation_sample_name(sample), recognition_method_name(method));
-        return;
-    }
-    if (!validation_sample_image(sample, &jpg_start, &jpg_end)) {
-        ESP_LOGE(TAG, "BOARD_IMAGE_VALIDATION trial=%s sample=%s method=%s unavailable: embedded sample missing",
-                 trial, validation_sample_name(sample), recognition_method_name(method));
-        return;
-    }
-
-    const uint32_t jpeg_size = (uint32_t)(jpg_end - jpg_start);
-    validation_context_t *ctx = (validation_context_t *)calloc(1, sizeof(validation_context_t));
-    if (!ctx) {
-        ESP_LOGE(TAG, "BOARD_IMAGE_VALIDATION trial=%s sample=%s method=%s unavailable: no context memory",
-                 trial, validation_sample_name(sample), recognition_method_name(method));
-        return;
-    }
-
-    ctx->done = xSemaphoreCreateBinary();
-    if (!ctx->done) {
-        ESP_LOGE(TAG, "BOARD_IMAGE_VALIDATION trial=%s sample=%s method=%s unavailable: no semaphore",
-                 trial, validation_sample_name(sample), recognition_method_name(method));
-        free(ctx);
-        return;
-    }
-    ctx->sample = sample;
-    ctx->method = method;
-    ctx->box_min_score = threshold;
-    ctx->jpeg_size = jpeg_size;
-    ctx->queued_ms = esp_timer_get_time() / 1000;
-
-    inference_job_t job = {
-        .jpeg_size = jpeg_size,
-        .method = method,
-        .box_min_score = threshold,
-        .validation = true,
-        .validation_sample = sample,
-        .validation_ctx = ctx,
-        .queued_ms = ctx->queued_ms,
-    };
-    if (method == RECOGNITION_METHOD_TINYCLS) {
-        fill_tinycls_pending(&job.meta.vision);
-    } else if (method == RECOGNITION_METHOD_FISH31) {
-        fill_fish31_pending(&job.meta.vision);
-    } else {
-        fill_yolo_pending(&job.meta.vision, method);
-    }
-    job.jpeg = alloc_psram_buffer(jpeg_size);
-    if (!job.jpeg) {
-        ESP_LOGE(TAG, "BOARD_IMAGE_VALIDATION trial=%s sample=%s method=%s unavailable: no jpeg buffer",
-                 trial, validation_sample_name(sample), recognition_method_name(method));
-        vSemaphoreDelete(ctx->done);
-        free(ctx);
-        return;
-    }
-    memcpy(job.jpeg, jpg_start, jpeg_size);
-
-    bool queued = false;
-    for (int attempt = 0; attempt < 10 && !queued; attempt++) {
-        queued = s_inference_queue &&
-                 xQueueSend(s_inference_queue, &job, pdMS_TO_TICKS(500)) == pdTRUE;
-    }
-    if (!queued) {
-        ESP_LOGE(TAG, "BOARD_IMAGE_VALIDATION trial=%s sample=%s method=%s unavailable: inference queue busy",
-                 trial, validation_sample_name(sample), recognition_method_name(method));
-        free(job.jpeg);
-        vSemaphoreDelete(ctx->done);
-        free(ctx);
-        return;
-    }
-
-    s_inference_jobs_queued++;
-    if (xSemaphoreTake(ctx->done, pdMS_TO_TICKS(45000)) != pdTRUE) {
-        ESP_LOGE(TAG, "BOARD_IMAGE_VALIDATION trial=%s timeout: sample=%s method=%s jpeg=%" PRIu32,
-                 trial, validation_sample_name(sample), recognition_method_name(method), jpeg_size);
-        return;
-    }
-
-    const vision_result_t vision = ctx->vision;
-    const uint32_t source_w = ctx->source_w;
-    const uint32_t source_h = ctx->source_h;
-    const int64_t queued_wait_ms = ctx->completed_ms > ctx->queued_ms ?
-                                   ctx->completed_ms - ctx->queued_ms : 0;
-    const bool latency_ok = vision.analysis_ms > 0 &&
-                            vision.analysis_ms < BOARD_IMAGE_VALIDATION_MAX_ANALYSIS_MS;
-    const char *top_label = vision.detection_count > 0 ? vision.detections[0].label :
-                            (vision.top_k_count > 0 ? vision.top_k[0].label : "none");
-    const uint32_t top_score = vision.detection_count > 0 ? vision.detections[0].score :
-                               (vision.top_k_count > 0 ? vision.top_k[0].score : 0);
-
-    ESP_LOGI(TAG,
-             "BOARD_IMAGE_VALIDATION trial=%s sample=%s method=%s latency_ok=%s model=%s model_bytes=%" PRIu32
-             " input=%" PRIu32 " source=%" PRIu32 "x%" PRIu32 " jpeg=%" PRIu32
-             " inference_ms=%" PRId64 " analysis_ms=%" PRId64 " queue_total_ms=%" PRId64
-             " detections=%" PRIu32 " top=%s top_score=%" PRIu32,
-             trial, validation_sample_name(sample), recognition_method_name(method),
-             latency_ok ? "true" : "false", model_name_for_method(method),
-             model_bytes_for_method(method), model_input_size_for_method(method),
-             source_w, source_h, jpeg_size, vision.inference_ms, vision.analysis_ms,
-             queued_wait_ms, vision.detection_count, top_label, top_score);
-
-    if (!latency_ok) {
-        ESP_LOGE(TAG, "BOARD_IMAGE_VALIDATION trial=%s method=%s latency requirement failed: analysis_ms=%" PRId64,
-                 trial, recognition_method_name(method), vision.analysis_ms);
-    }
-
-    vSemaphoreDelete(ctx->done);
-    free(ctx);
-}
-
-static void validation_selftest_task(void *arg)
-{
-    (void)arg;
-
-    vTaskDelay(pdMS_TO_TICKS(500));
-
-    typedef struct {
-        validation_sample_t sample;
-        recognition_method_t method;
-        uint32_t threshold;
-    } validation_selftest_case_t;
-
-    static const validation_selftest_case_t cases[] = {
-        {VALIDATION_SAMPLE_DEMO_01, RECOGNITION_METHOD_COCO, 50},
-        {VALIDATION_SAMPLE_DEMO_02, RECOGNITION_METHOD_COCO, 50},
-        {VALIDATION_SAMPLE_DEMO_03, RECOGNITION_METHOD_COCO, 50},
-        {VALIDATION_SAMPLE_DEMO_04, RECOGNITION_METHOD_COCO, 50},
-    };
-
-    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
-        run_board_image_validation_case(cases[i].sample, cases[i].method, cases[i].threshold, "warmup");
-        vTaskDelay(pdMS_TO_TICKS(100));
-        run_board_image_validation_case(cases[i].sample, cases[i].method, cases[i].threshold, "measure");
-        vTaskDelay(pdMS_TO_TICKS(250));
-    }
-
-    vTaskDelete(NULL);
-}
-
 static validation_sample_t parse_validation_sample(const char *text)
 {
     if (strcmp(text, "demo_01") == 0 || strcmp(text, "demo1") == 0) {
@@ -6179,7 +6770,7 @@ static esp_err_t validation_json_error(httpd_req_t *req, const char *status, con
 
 static esp_err_t validation_run_get_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     if (export_mode_reject(req, "validation run")) {
         return ESP_OK;
     }
@@ -6354,7 +6945,7 @@ static esp_err_t validation_run_get_handler(httpd_req_t *req)
 
 static esp_err_t validation_overlay_get_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     bool has_requested_id = false;
     uint32_t requested_id = 0;
     char query[64] = {0};
@@ -6391,7 +6982,7 @@ static esp_err_t validation_overlay_get_handler(httpd_req_t *req)
 
 static esp_err_t healthz_get_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     char json[192];
     snprintf(json, sizeof(json),
              "{\"ok\":true,\"mode\":\"%s\",\"tf_mounted\":%s,\"storage\":\"%s\"}",
@@ -6404,7 +6995,7 @@ static esp_err_t healthz_get_handler(httpd_req_t *req)
 
 static esp_err_t status_get_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_poll(req);
     frame_meta_t meta = {0};
     bool have_frame = copy_latest_meta(&meta);
     if (!have_frame) {
@@ -6427,6 +7018,14 @@ static esp_err_t status_get_handler(httpd_req_t *req)
         &s_last_network_activity_ms, __ATOMIC_ACQUIRE);
     int64_t network_idle_ms = last_network_activity_ms > 0 ?
                               now_ms - last_network_activity_ms : -1;
+    uint32_t web_clients = web_client_count(now_ms);
+    int64_t last_web_client_activity_ms = __atomic_load_n(
+        &s_last_web_client_activity_ms, __ATOMIC_ACQUIRE);
+    int64_t field_idle_anchor_ms = last_network_activity_ms;
+    if (last_web_client_activity_ms > field_idle_anchor_ms) {
+        field_idle_anchor_ms = last_web_client_activity_ms;
+    }
+    int64_t field_idle_ms = field_idle_anchor_ms > 0 ? now_ms - field_idle_anchor_ms : -1;
     int64_t network_boot_remaining_ms = s_network_boot_window_until_ms > now_ms ?
                                         s_network_boot_window_until_ms - now_ms : 0;
     power_state_t state = s_power_state;
@@ -6443,11 +7042,14 @@ static esp_err_t status_get_handler(httpd_req_t *req)
     const size_t top_k_json_cap = 512;
     const size_t dataset_labels_json_cap = 512;
     const size_t enrichment_json_cap = 768;
+    const size_t resegment_json_cap = 384;
     char *detections_json = (char *)alloc_psram_buffer(detections_json_cap);
     char *top_k_json = (char *)alloc_psram_buffer(top_k_json_cap);
     char *dataset_labels_json = (char *)alloc_psram_buffer(dataset_labels_json_cap);
     char *enrichment_json = (char *)alloc_psram_buffer(enrichment_json_cap);
-    if (!detections_json || !top_k_json || !dataset_labels_json || !enrichment_json) {
+    char *resegment_json = (char *)alloc_psram_buffer(resegment_json_cap);
+    if (!detections_json || !top_k_json || !dataset_labels_json || !enrichment_json || !resegment_json) {
+        free(resegment_json);
         free(enrichment_json);
         free(dataset_labels_json);
         free(top_k_json);
@@ -6460,17 +7062,29 @@ static esp_err_t status_get_handler(httpd_req_t *req)
     char eth_url[40] = {0};
     char mdns_url[64] = {0};
     char access_urls[256] = {0};
+    char router_ssid_json[96] = {0};
     const char *primary_ip = s_ip_addr;
     dataset_run_status_t dataset_status;
     recording_enrichment_status_t enrichment_status = {0};
+    recording_resegment_status_t resegment_status = {0};
     detections_to_json(detections_json, detections_json_cap, &meta.vision);
     top_k_to_json(top_k_json, top_k_json_cap, &meta.vision);
     dataset_status_copy(&dataset_status);
     recording_enrichment_get_status(&enrichment_status);
+    resegment_status_copy(&resegment_status);
     label_counts_to_json(dataset_labels_json, dataset_labels_json_cap, dataset_status.labels);
     bool tf_ready = storage_tf_ready();
     bool acceptance_ok = storage_acceptance_ok();
     uint64_t min_recording_free = recording_min_free_bytes();
+    int64_t field_idle_remaining_ms = -1;
+    if (s_field_auto_enable && s_field_idle_timeout_ms > 0 && field_idle_ms >= 0) {
+        field_idle_remaining_ms = web_clients > 0 ? (int64_t)s_field_idle_timeout_ms :
+                                  (int64_t)s_field_idle_timeout_ms - field_idle_ms;
+        if (field_idle_remaining_ms < 0) {
+            field_idle_remaining_ms = 0;
+        }
+    }
+    json_escape_string(router_ssid_json, sizeof(router_ssid_json), s_router_ssid);
     snprintf(ap_url, sizeof(ap_url), "http://%s/", s_ap_ip_addr);
     if (strcmp(s_sta_ip_addr, "0.0.0.0") != 0) {
         snprintf(sta_url, sizeof(sta_url), "http://%s/", s_sta_ip_addr);
@@ -6487,7 +7101,7 @@ static esp_err_t status_get_handler(httpd_req_t *req)
              mdns_url, ap_url, sta_url, eth_url);
     snprintf(enrichment_json, enrichment_json_cap,
              "{\"enabled\":%s,\"running\":%s,\"cancelled\":%s,"
-             "\"raw_name\":\"%s\",\"output_name\":\"%s\","
+             "\"raw_name\":\"%s\",\"output_name\":\"%s\",\"method\":\"%s\","
              "\"pass_stride\":%" PRIu32 ",\"completed_stride\":%" PRIu32
              ",\"frame_index\":%" PRIu32 ",\"frame_count\":%" PRIu32
              ",\"inferred_frames\":%" PRIu32 ",\"output_frames\":%" PRIu32
@@ -6497,11 +7111,25 @@ static esp_err_t status_get_handler(httpd_req_t *req)
              enrichment_status.running ? "true" : "false",
              enrichment_status.cancelled ? "true" : "false",
              enrichment_status.raw_name, enrichment_status.output_name,
+             enrichment_status.method,
              enrichment_status.pass_stride, enrichment_status.completed_stride,
              enrichment_status.frame_index, enrichment_status.frame_count,
              enrichment_status.inferred_frames, enrichment_status.output_frames,
              enrichment_status.inference_coverage_x1000,
              enrichment_status.passes_completed, enrichment_status.last_error);
+    snprintf(resegment_json, resegment_json_cap,
+             "{\"requested\":%s,\"running\":%s,\"cancelled\":%s,"
+             "\"target_ms\":%" PRIu32 ",\"input_segments\":%" PRIu32
+             ",\"processed_segments\":%" PRIu32 ",\"output_segments\":%" PRIu32
+             ",\"last_error\":\"%s\"}",
+             resegment_status.requested ? "true" : "false",
+             resegment_status.running ? "true" : "false",
+             resegment_status.cancelled ? "true" : "false",
+             resegment_status.target_ms,
+             resegment_status.input_segments,
+             resegment_status.processed_segments,
+             resegment_status.output_segments,
+             resegment_status.last_error);
 
     if (s_history_lock) {
         xSemaphoreTake(s_history_lock, portMAX_DELAY);
@@ -6519,10 +7147,12 @@ static esp_err_t status_get_handler(httpd_req_t *req)
              "\"app_mode\":\"%s\","
              "\"time_synced\":%s,\"time_source\":\"%s\",\"epoch_ms\":%" PRIu64 ","
              "\"network_mode\":\"%s\",\"recognition_method\":\"%s\",\"rescue_ap\":%s,"
-             "\"sta_ip\":\"%s\",\"ap_ip\":\"%s\",\"eth_ip\":\"%s\",\"ap_clients\":%" PRIu32 ","
+             "\"sta_ip\":\"%s\",\"ap_ip\":\"%s\",\"eth_ip\":\"%s\",\"ap_clients\":%" PRIu32
+             ",\"web_clients\":%" PRIu32 ",\"client_count\":%" PRIu32 ","
              "\"wifi_runtime_ready\":%s,\"wifi_started\":%s,\"wifi_init_failures\":%" PRIu32
              ",\"wifi_last_error\":\"%s\","
              "\"network_active\":%s,\"network_idle_ms\":%" PRId64 ","
+             "\"eth_active\":%s,"
              "\"network_boot_window_remaining_ms\":%" PRId64 ","
              "\"network_shutdown_for_idle\":%s,\"network_reopen_requires_reboot\":%s,"
              "\"hostname\":\"%s\",\"mdns_url\":\"%s\","
@@ -6532,8 +7162,13 @@ static esp_err_t status_get_handler(httpd_req_t *req)
               "\"usb_msc_enabled\":%s,\"usb_initialized\":%s,\"usb_host_connected\":%s,"
               "\"usb_export_requested\":%s,\"usb_storage_owner\":\"%s\",\"usb_writable\":%s,"
               "\"storage_quiescing\":%s,\"file_download_clients\":%" PRIu32
-              ",\"usb_last_error\":\"%s\",\"enrichment\":%s,"
-             "\"config\":{\"box_min_score\":%" PRIu32 ",\"stream_max_fps\":%" PRIu32 ","
+              ",\"usb_last_error\":\"%s\",\"enrichment\":%s,\"resegment\":%s,"
+             "\"config\":{\"router_ssid\":\"%s\",\"router_password_set\":%s,"
+             "\"recording_segment_ms\":%" PRIu32 ",\"recording_segment_max_ms\":%" PRIu32
+             ",\"field_idle_timeout_ms\":%" PRIu32
+             ",\"field_auto_enable\":%s,\"field_idle_remaining_ms\":%" PRId64
+             ",\"field_idle_paused\":%s,"
+             "\"box_min_score\":%" PRIu32 ",\"stream_max_fps\":%" PRIu32 ","
              "\"inference_interval_ms\":%" PRIu32 ",\"history_sample_interval_ms\":%" PRIu32 ","
              "\"jpeg_quality\":%" PRIu32 ","
              "\"yolo_input_size\":%" PRIu32 ",\"yolo_model_loaded\":%s,"
@@ -6603,10 +7238,12 @@ static esp_err_t status_get_handler(httpd_req_t *req)
              network_mode_name(s_network_mode), recognition_method_name(s_recognition_method),
              s_rescue_ap_active ? "true" : "false",
              s_sta_ip_addr, s_ap_ip_addr, s_eth_ip_addr, s_ap_clients,
+             web_clients, web_clients,
              s_wifi_runtime_ready ? "true" : "false",
              s_wifi_started ? "true" : "false",
              s_wifi_init_failures, s_wifi_last_error,
              s_network_active ? "true" : "false", network_idle_ms,
+             s_eth_started && network_idle_ms >= 0 && network_idle_ms < 10000 ? "true" : "false",
              network_boot_remaining_ms,
              s_network_shutdown_for_idle ? "true" : "false",
              s_network_shutdown_for_idle ? "true" : "false",
@@ -6626,7 +7263,12 @@ static esp_err_t status_get_handler(httpd_req_t *req)
                usb_status.writable ? "true" : "false",
                s_storage_quiescing ? "true" : "false",
                __atomic_load_n(&s_file_download_clients, __ATOMIC_ACQUIRE),
-               s_usb_last_error, enrichment_json,
+               s_usb_last_error, enrichment_json, resegment_json,
+              router_ssid_json, s_router_password[0] ? "true" : "false",
+              s_recording_segment_ms, (uint32_t)APP_RECORDING_SEGMENT_MAX_MS,
+              s_field_idle_timeout_ms,
+             s_field_auto_enable ? "true" : "false", field_idle_remaining_ms,
+             web_clients > 0 ? "true" : "false",
               s_box_min_score, s_stream_max_fps, (unsigned long)s_inference_interval_ms,
              s_history_sample_interval_ms, s_jpeg_quality,
              (unsigned long)active_yolo_input_size(), active_yolo_available() ? "true" : "false",
@@ -6702,6 +7344,7 @@ static esp_err_t status_get_handler(httpd_req_t *req)
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     esp_err_t ret = http_send_cstr_chunked(req, json);
     free(enrichment_json);
+    free(resegment_json);
     free(dataset_labels_json);
     free(top_k_json);
     free(detections_json);
@@ -6711,7 +7354,7 @@ static esp_err_t status_get_handler(httpd_req_t *req)
 
 static esp_err_t frame_get_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     if (export_mode_reject(req, "frame capture")) {
         return ESP_OK;
     }
@@ -6736,7 +7379,7 @@ static esp_err_t frame_get_handler(httpd_req_t *req)
 
 static esp_err_t vision_get_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     char query[64] = {0};
     char enabled[8] = {0};
 
@@ -6770,7 +7413,7 @@ static esp_err_t vision_get_handler(httpd_req_t *req)
 
 static esp_err_t recognition_get_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     char query[96] = {0};
     char method_text[16] = {0};
 
@@ -6786,7 +7429,7 @@ static esp_err_t recognition_get_handler(httpd_req_t *req)
                strcmp(method_text, "yolo26") == 0 ||
                strcmp(method_text, "yolo11") == 0) {
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                                   "legacy Coke/Sprite methods are not in the current main path; supported method: off, fish31, tinycls, coco");
+                                   "legacy experiment methods are not in the current main path; supported method: off, fish31, tinycls, coco");
     } else if (strcmp(method_text, "fish31") == 0 || strcmp(method_text, "fish") == 0) {
         if (!fish31_espdl_available()) {
             httpd_resp_set_status(req, "503 Service Unavailable");
@@ -6846,10 +7489,37 @@ static bool query_u32(const char *query, const char *key, uint32_t min_value,
 
 static esp_err_t config_get_handler(httpd_req_t *req)
 {
-    record_http_request();
-    char query[320] = {0};
-    char text[32] = {0};
+    record_http_request(req);
+    char query[1024] = {0};
+    char text[96] = {0};
     bool has_query = httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK;
+    size_t query_len = has_query ? strlen(query) : 0;
+    if (req->method == HTTP_POST && req->content_len > 0) {
+        if (query_len + (query_len ? 1U : 0U) + req->content_len >= sizeof(query)) {
+            return httpd_resp_send_err(req, HTTPD_413_CONTENT_TOO_LARGE,
+                                       "config request too large");
+        }
+        char *body = query + query_len;
+        if (query_len > 0) {
+            *body++ = '&';
+            query_len++;
+        }
+        size_t received = 0;
+        while (received < req->content_len) {
+            int ret = httpd_req_recv(req, body + received,
+                                     req->content_len - received);
+            if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+                continue;
+            }
+            if (ret <= 0) {
+                return ESP_FAIL;
+            }
+            received += (size_t)ret;
+        }
+        body[received] = '\0';
+        has_query = query[0] != '\0';
+    }
+    bool network_reconfigure = false;
 
     if (has_query && httpd_query_key_value(query, "method", text, sizeof(text)) == ESP_OK) {
         if (strcmp(text, "off") == 0) {
@@ -6860,7 +7530,7 @@ static esp_err_t config_get_handler(httpd_req_t *req)
                    strcmp(text, "yolo26") == 0 ||
                    strcmp(text, "yolo11") == 0) {
             return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                                       "legacy Coke/Sprite methods are not in the current main path; supported method: off, fish31, tinycls, coco");
+                                       "legacy experiment methods are not in the current main path; supported method: off, fish31, tinycls, coco");
         } else if (strcmp(text, "fish31") == 0 || strcmp(text, "fish") == 0) {
             if (!fish31_espdl_available()) {
                 httpd_resp_set_status(req, "503 Service Unavailable");
@@ -6912,7 +7582,8 @@ static esp_err_t config_get_handler(httpd_req_t *req)
         save_setting_u8("recording", s_recording_enabled ? 1 : 0);
     }
 
-    if (has_query && httpd_query_key_value(query, "netmode", text, sizeof(text)) == ESP_OK) {
+    if (has_query && (httpd_query_key_value(query, "netmode", text, sizeof(text)) == ESP_OK ||
+                      httpd_query_key_value(query, "network_mode", text, sizeof(text)) == ESP_OK)) {
         network_mode_t mode = s_network_mode;
         if (strcmp(text, "sta") == 0) {
             mode = NETWORK_MODE_STA;
@@ -6923,6 +7594,32 @@ static esp_err_t config_get_handler(httpd_req_t *req)
         }
         if (s_netmode_queue && mode != s_network_mode) {
             xQueueOverwrite(s_netmode_queue, &mode);
+        }
+    }
+
+    if (has_query && (httpd_query_key_value(query, "router_ssid", text, sizeof(text)) == ESP_OK ||
+                      httpd_query_key_value(query, "wifi_ssid", text, sizeof(text)) == ESP_OK)) {
+        if (strlen(text) > 32) {
+            return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                       "router_ssid must be 32 bytes or shorter");
+        }
+        if (strcmp(s_router_ssid, text) != 0) {
+            strlcpy(s_router_ssid, text, sizeof(s_router_ssid));
+            save_setting_str("router_ssid", s_router_ssid);
+            network_reconfigure = true;
+        }
+    }
+    if (has_query && (httpd_query_key_value(query, "router_password", text, sizeof(text)) == ESP_OK ||
+                      httpd_query_key_value(query, "wifi_password", text, sizeof(text)) == ESP_OK)) {
+        size_t pass_len = strlen(text);
+        if (pass_len > 64 || (pass_len > 0 && pass_len < 8)) {
+            return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                       "router_password must be empty or 8..64 bytes");
+        }
+        if (strcmp(s_router_password, text) != 0) {
+            strlcpy(s_router_password, text, sizeof(s_router_password));
+            save_setting_str("router_pass", s_router_password);
+            network_reconfigure = true;
         }
     }
 
@@ -6960,11 +7657,52 @@ static esp_err_t config_get_handler(httpd_req_t *req)
             set_camera_jpeg_quality(&s_camera, (int)s_jpeg_quality);
         }
     }
+    if (has_query && (query_u32(query, "recording_segment_ms",
+                                APP_RECORDING_SEGMENT_MIN_MS,
+                                APP_RECORDING_SEGMENT_MAX_MS, &value) ||
+                      query_u32(query, "segment_ms",
+                                APP_RECORDING_SEGMENT_MIN_MS,
+                                APP_RECORDING_SEGMENT_MAX_MS, &value))) {
+        uint32_t old_segment_ms = s_recording_segment_ms;
+        s_recording_segment_ms = value;
+        save_setting_u32("seg_ms", s_recording_segment_ms);
+        if (old_segment_ms != s_recording_segment_ms) {
+            resegment_status_request(s_recording_segment_ms);
+        }
+    }
+    if (has_query && (query_u32(query, "field_idle_timeout_ms",
+                                APP_FIELD_IDLE_TIMEOUT_MIN_MS,
+                                APP_FIELD_IDLE_TIMEOUT_MAX_MS, &value) ||
+                      query_u32(query, "idle_ms",
+                                APP_FIELD_IDLE_TIMEOUT_MIN_MS,
+                                APP_FIELD_IDLE_TIMEOUT_MAX_MS, &value))) {
+        s_field_idle_timeout_ms = value;
+        save_setting_u32("idle_ms", s_field_idle_timeout_ms);
+        open_network_access_window("field idle timeout changed");
+    }
+    if (has_query && httpd_query_key_value(query, "field_auto_enable", text, sizeof(text)) == ESP_OK) {
+        s_field_auto_enable = strcmp(text, "0") != 0 &&
+                              strcmp(text, "false") != 0 &&
+                              strcmp(text, "off") != 0;
+        save_setting_u8("field_auto", s_field_auto_enable ? 1 : 0);
+    }
 
-    char json[1200];
+    if (network_reconfigure && s_netmode_queue && network_mode_has_sta(s_network_mode)) {
+        network_mode_t mode = s_network_mode;
+        s_wifi_reconfigure_requested = true;
+        xQueueOverwrite(s_netmode_queue, &mode);
+    }
+
+    char router_ssid_json[96];
+    json_escape_string(router_ssid_json, sizeof(router_ssid_json), s_router_ssid);
+    char json[1800];
     snprintf(json, sizeof(json),
              "{\"ok\":true,\"recognition_method\":\"%s\",\"network_mode\":\"%s\","
              "\"rescue_ap\":%s,\"vision_enabled\":%s,\"history_enabled\":%s,\"recording_enabled\":%s,"
+             "\"router_ssid\":\"%s\",\"router_password_set\":%s,"
+             "\"recording_segment_ms\":%" PRIu32 ",\"recording_segment_max_ms\":%" PRIu32
+             ",\"field_idle_timeout_ms\":%" PRIu32
+             ",\"field_auto_enable\":%s,"
              "\"box_min_score\":%" PRIu32 ",\"stream_max_fps\":%" PRIu32 ","
              "\"inference_interval_ms\":%" PRIu32 ",\"history_sample_interval_ms\":%" PRIu32 ","
              "\"jpeg_quality\":%" PRIu32 ","
@@ -6977,6 +7715,10 @@ static esp_err_t config_get_handler(httpd_req_t *req)
              s_rescue_ap_active ? "true" : "false",
              s_vision_enabled ? "true" : "false", s_history_enabled ? "true" : "false",
              s_recording_enabled ? "true" : "false",
+             router_ssid_json, s_router_password[0] ? "true" : "false",
+             s_recording_segment_ms, (uint32_t)APP_RECORDING_SEGMENT_MAX_MS,
+             s_field_idle_timeout_ms,
+             s_field_auto_enable ? "true" : "false",
              s_box_min_score, s_stream_max_fps, (unsigned long)s_inference_interval_ms,
              s_history_sample_interval_ms, s_jpeg_quality,
              (unsigned long)active_yolo_input_size(), active_yolo_available() ? "true" : "false",
@@ -6996,7 +7738,7 @@ static esp_err_t config_get_handler(httpd_req_t *req)
 
 static esp_err_t history_get_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     char query[64] = {0};
     char limit_text[12] = {0};
     uint32_t limit = 20;
@@ -7114,6 +7856,792 @@ static void append_recent_jsonl_array(char *json, size_t cap, size_t *off,
     fclose(file);
 }
 
+typedef struct {
+    char kind[16];
+    char name[96];
+    char uri[128];
+    char meta_uri[128];
+    char method[16];
+    char model[48];
+    char labels[512];
+    int64_t start_ms;
+    int64_t end_ms;
+    uint64_t start_epoch_ms;
+    uint64_t end_epoch_ms;
+    uint64_t bytes;
+    int64_t duration_ms;
+    uint32_t frames;
+    uint32_t hit_frames;
+    uint32_t detection_total;
+} recording_index_entry_t;
+
+static uint64_t json_u64_field_or_zero(const char *line, const char *key)
+{
+    int64_t value = 0;
+    return json_get_int64_field(line, key, &value) && value > 0 ? (uint64_t)value : 0;
+}
+
+static bool json_copy_array_field(const char *line, const char *key, char *out, size_t out_size)
+{
+    if (!line || !key || !out || out_size == 0) {
+        return false;
+    }
+    char pattern[48];
+    snprintf(pattern, sizeof(pattern), "\"%s\":", key);
+    const char *p = strstr(line, pattern);
+    if (!p) {
+        return false;
+    }
+    p += strlen(pattern);
+    if (*p != '[') {
+        return false;
+    }
+    const char *start = p;
+    int depth = 0;
+    while (*p) {
+        if (*p == '[') {
+            depth++;
+        } else if (*p == ']') {
+            depth--;
+            if (depth == 0) {
+                p++;
+                break;
+            }
+        }
+        p++;
+    }
+    if (depth != 0) {
+        return false;
+    }
+    size_t n = (size_t)(p - start);
+    if (n >= out_size) {
+        n = out_size - 1;
+    }
+    memcpy(out, start, n);
+    out[n] = '\0';
+    return true;
+}
+
+static void parse_recording_index_line(const char *line, recording_index_entry_t *entry)
+{
+    memset(entry, 0, sizeof(*entry));
+    strlcpy(entry->labels, "[]", sizeof(entry->labels));
+    json_get_string_field(line, "kind", entry->kind, sizeof(entry->kind));
+    json_get_string_field(line, "name", entry->name, sizeof(entry->name));
+    if (!entry->name[0]) {
+        json_get_string_field(line, "segment", entry->name, sizeof(entry->name));
+    }
+    json_get_string_field(line, "uri", entry->uri, sizeof(entry->uri));
+    json_get_string_field(line, "meta_uri", entry->meta_uri, sizeof(entry->meta_uri));
+    json_get_string_field(line, "method", entry->method, sizeof(entry->method));
+    json_get_string_field(line, "model", entry->model, sizeof(entry->model));
+    json_get_int64_field(line, "start_ms", &entry->start_ms);
+    json_get_int64_field(line, "end_ms", &entry->end_ms);
+    entry->start_epoch_ms = json_u64_field_or_zero(line, "start_epoch_ms");
+    entry->end_epoch_ms = json_u64_field_or_zero(line, "end_epoch_ms");
+    entry->bytes = json_u64_field_or_zero(line, "bytes");
+    json_get_int64_field(line, "duration_ms", &entry->duration_ms);
+    json_get_u32_field(line, "frames", &entry->frames);
+    json_get_u32_field(line, "hit_frames", &entry->hit_frames);
+    json_get_u32_field(line, "detection_total", &entry->detection_total);
+    json_copy_array_field(line, "labels", entry->labels, sizeof(entry->labels));
+    if (is_annotated_recording_name(entry->name)) {
+        strlcpy(entry->kind, "annotated", sizeof(entry->kind));
+    } else if (strncmp(entry->name, "raw_", 4) == 0) {
+        strlcpy(entry->kind, "raw", sizeof(entry->kind));
+    } else if (!entry->kind[0]) {
+        strlcpy(entry->kind, "raw", sizeof(entry->kind));
+    }
+    if (!entry->uri[0] && entry->name[0]) {
+        snprintf(entry->uri, sizeof(entry->uri), RECORDING_URI_PREFIX "%s", entry->name);
+    }
+    if (!entry->meta_uri[0] && entry->name[0]) {
+        char meta_name[96];
+        meta_name_for_recording(entry->name, meta_name, sizeof(meta_name));
+        snprintf(entry->meta_uri, sizeof(entry->meta_uri), RECORDING_META_URI_PREFIX "%s", meta_name);
+    }
+    recognition_method_t method = recognition_method_from_text_hint(entry->method);
+    if (method == RECOGNITION_METHOD_OFF) {
+        method = recognition_method_from_text_hint(entry->model);
+    }
+    if (method == RECOGNITION_METHOD_OFF) {
+        method = recognition_method_from_text_hint(entry->name);
+    }
+    if (method == RECOGNITION_METHOD_OFF) {
+        method = RECOGNITION_METHOD_FISH31;
+    }
+    strlcpy(entry->method, recognition_method_name(method), sizeof(entry->method));
+    if (!entry->model[0]) {
+        strlcpy(entry->model, model_name_for_method(method), sizeof(entry->model));
+    }
+    if (entry->duration_ms <= 0 && entry->end_ms > entry->start_ms) {
+        entry->duration_ms = entry->end_ms - entry->start_ms;
+    }
+}
+
+static uint32_t load_recent_recording_entries(recording_index_entry_t *entries,
+                                              uint32_t max_entries)
+{
+    if (!entries || max_entries == 0) {
+        return 0;
+    }
+    FILE *file = fopen(RECORDING_INDEX_PATH, "r");
+    if (!file) {
+        return 0;
+    }
+    char *line = (char *)alloc_psram_buffer(JSONL_TAIL_LINE_BYTES);
+    if (!line) {
+        fclose(file);
+        return 0;
+    }
+    uint32_t total = 0;
+    while (fgets(line, JSONL_TAIL_LINE_BYTES, file)) {
+        size_t len = strlen(line);
+        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
+            line[--len] = '\0';
+        }
+        if (line[0] != '{') {
+            continue;
+        }
+        parse_recording_index_line(line, &entries[total % max_entries]);
+        total++;
+    }
+    free(line);
+    fclose(file);
+    uint32_t count = total < max_entries ? total : max_entries;
+    if (total > max_entries) {
+        recording_index_entry_t *tmp = (recording_index_entry_t *)calloc(count, sizeof(*tmp));
+        if (tmp) {
+            uint32_t start = total - count;
+            for (uint32_t i = 0; i < count; i++) {
+                tmp[i] = entries[(start + i) % max_entries];
+            }
+            memcpy(entries, tmp, (size_t)count * sizeof(*entries));
+            free(tmp);
+        }
+    }
+    return count;
+}
+
+static void append_recording_entry_json(char *json, size_t cap, size_t *off,
+                                        const recording_index_entry_t *entry)
+{
+    if (!json || !off || !entry || *off >= cap) {
+        return;
+    }
+    char name[128], uri[160], meta_uri[160], method[32], model[64];
+    json_escape_string(name, sizeof(name), entry->name);
+    json_escape_string(uri, sizeof(uri), entry->uri);
+    json_escape_string(meta_uri, sizeof(meta_uri), entry->meta_uri);
+    json_escape_string(method, sizeof(method), entry->method);
+    json_escape_string(model, sizeof(model), entry->model);
+    *off += snprintf(json + *off, cap - *off,
+                     "{\"kind\":\"%s\",\"name\":\"%s\",\"uri\":\"%s\",\"meta_uri\":\"%s\","
+                     "\"method\":\"%s\",\"model\":\"%s\",\"start_ms\":%" PRId64
+                     ",\"end_ms\":%" PRId64 ",\"start_epoch_ms\":%" PRIu64
+                     ",\"end_epoch_ms\":%" PRIu64 ",\"duration_ms\":%" PRId64
+                     ",\"frames\":%" PRIu32 ",\"bytes\":%" PRIu64
+                     ",\"hit_frames\":%" PRIu32 ",\"detection_total\":%" PRIu32
+                     ",\"labels\":%s}",
+                     entry->kind, name, uri, meta_uri, method, model,
+                     entry->start_ms, entry->end_ms,
+                     entry->start_epoch_ms, entry->end_epoch_ms, entry->duration_ms,
+                     entry->frames, entry->bytes, entry->hit_frames,
+                     entry->detection_total, entry->labels[0] ? entry->labels : "[]");
+}
+
+static void append_recording_groups_json(char *json, size_t cap, size_t *off, uint32_t limit)
+{
+    uint32_t max_entries = limit * 3U + 12U;
+    if (max_entries < 24U) {
+        max_entries = 24U;
+    } else if (max_entries > 180U) {
+        max_entries = 180U;
+    }
+    recording_index_entry_t *entries =
+        (recording_index_entry_t *)calloc(max_entries, sizeof(*entries));
+    bool *used = (bool *)calloc(max_entries, sizeof(bool));
+    if (!entries || !used) {
+        free(entries);
+        free(used);
+        *off += snprintf(json + *off, cap - *off, "[]");
+        return;
+    }
+    uint32_t count = load_recent_recording_entries(entries, max_entries);
+    *off += snprintf(json + *off, cap - *off, "[");
+    uint32_t groups = 0;
+    bool first = true;
+    for (int32_t i = (int32_t)count - 1; i >= 0 && groups < limit; i--) {
+        if (used[i] || strcmp(entries[i].kind, "raw") != 0) {
+            continue;
+        }
+        char expected[96] = {0};
+        char legacy_expected[96] = {0};
+        annotated_name_for_raw(entries[i].name, expected, sizeof(expected));
+        legacy_annotated_name_for_raw(entries[i].name, legacy_expected, sizeof(legacy_expected));
+        int32_t ann = -1;
+        for (uint32_t j = 0; j < count; j++) {
+            if (!used[j] && strcmp(entries[j].kind, "annotated") == 0 &&
+                ((expected[0] && strcmp(entries[j].name, expected) == 0) ||
+                 (legacy_expected[0] && strcmp(entries[j].name, legacy_expected) == 0))) {
+                ann = (int32_t)j;
+                break;
+            }
+        }
+        used[i] = true;
+        if (ann >= 0) {
+            used[ann] = true;
+        }
+        const recording_index_entry_t *raw = &entries[i];
+        const recording_index_entry_t *annotated = ann >= 0 ? &entries[ann] : NULL;
+        bool method_mismatch = annotated && strcmp(raw->method, annotated->method) != 0;
+        *off += snprintf(json + *off, cap - *off,
+                         "%s{\"time_ms\":%" PRIu64 ",\"method\":\"%s\",\"model\":\"%s\","
+                         "\"fill_state\":\"%s\",\"needs_rebuild\":%s,\"raw\":",
+                         first ? "" : ",",
+                         raw->start_epoch_ms ? raw->start_epoch_ms : (uint64_t)raw->start_ms,
+                         raw->method, raw->model,
+                         !annotated ? "missing" : (method_mismatch ? "rebuild" : "ready"),
+                         (!annotated || method_mismatch) ? "true" : "false");
+        append_recording_entry_json(json, cap, off, raw);
+        *off += snprintf(json + *off, cap - *off, ",\"annotated\":");
+        if (annotated) {
+            append_recording_entry_json(json, cap, off, annotated);
+        } else {
+            *off += snprintf(json + *off, cap - *off, "null");
+        }
+        *off += snprintf(json + *off, cap - *off, "}");
+        first = false;
+        groups++;
+    }
+    snprintf(json + *off, cap - *off, "]");
+    *off += strlen(json + *off);
+    free(used);
+    free(entries);
+}
+
+typedef struct {
+    avi_mjpeg_writer_t *raw_writer;
+    avi_mjpeg_writer_t *annotated_writer;
+    FILE *raw_meta;
+    FILE *annotated_meta;
+    char raw_name[96];
+    char annotated_name[96];
+    char raw_final_path[384];
+    char raw_part_path[384];
+    char raw_meta_path[384];
+    char annotated_final_path[384];
+    char annotated_part_path[384];
+    char annotated_meta_path[384];
+    recognition_method_t method;
+    uint32_t width;
+    uint32_t height;
+    uint32_t fps;
+    uint32_t frames;
+    uint64_t raw_bytes;
+    uint64_t annotated_bytes;
+    int64_t start_ms;
+    int64_t last_ms;
+    uint64_t start_epoch_ms;
+} resegment_output_t;
+
+static bool resegment_should_pause(void)
+{
+    if (s_storage_quiescing || s_usb_export_requested || s_usb_restore_requested ||
+        s_field_mode_requested || s_export_mode_requested ||
+        s_app_mode != APP_MODE_SERVER || !s_sd_mounted ||
+        s_power_state != POWER_STATE_STANDBY ||
+        s_stream_clients > 0 ||
+        __atomic_load_n(&s_file_download_clients, __ATOMIC_ACQUIRE) > 0 ||
+        inference_worker_busy() ||
+        recording_enrichment_has_request() ||
+        (s_history_queue && uxQueueMessagesWaiting(s_history_queue) > 0) ||
+        (s_recording_queue && uxQueueMessagesWaiting(s_recording_queue) > 0)) {
+        return true;
+    }
+    recording_enrichment_status_t enrichment = {0};
+    recording_enrichment_get_status(&enrichment);
+    if (enrichment.running) {
+        return true;
+    }
+    dataset_run_status_t dataset = {0};
+    dataset_status_copy(&dataset);
+    return dataset.queued || dataset.running;
+}
+
+static esp_err_t resegment_close_output(resegment_output_t *out,
+                                        char generated[][96],
+                                        uint32_t max_generated,
+                                        uint32_t *generated_count)
+{
+    if (!out || (!out->raw_writer && !out->annotated_writer)) {
+        return ESP_OK;
+    }
+    uint64_t duration_ms = out->last_ms > out->start_ms ?
+        (uint64_t)(out->last_ms - out->start_ms) : 0;
+    esp_err_t ret = ESP_OK;
+    if (out->annotated_writer) {
+        avi_mjpeg_writer_set_duration_ms(out->annotated_writer, duration_ms);
+        esp_err_t ann_ret = avi_mjpeg_writer_close(out->annotated_writer);
+        if (ann_ret != ESP_OK) {
+            ret = ann_ret;
+        }
+        out->annotated_writer = NULL;
+    }
+    if (out->raw_writer) {
+        avi_mjpeg_writer_set_duration_ms(out->raw_writer, duration_ms);
+        esp_err_t raw_ret = avi_mjpeg_writer_close(out->raw_writer);
+        if (raw_ret != ESP_OK && ret == ESP_OK) {
+            ret = raw_ret;
+        }
+        out->raw_writer = NULL;
+    }
+    if (out->annotated_meta) {
+        if (fflush(out->annotated_meta) != 0 || fsync(fileno(out->annotated_meta)) != 0) {
+            ret = ESP_FAIL;
+        }
+        if (fclose(out->annotated_meta) != 0 && ret == ESP_OK) {
+            ret = ESP_FAIL;
+        }
+        out->annotated_meta = NULL;
+    }
+    if (out->raw_meta) {
+        if (fflush(out->raw_meta) != 0 || fsync(fileno(out->raw_meta)) != 0) {
+            ret = ESP_FAIL;
+        }
+        if (fclose(out->raw_meta) != 0 && ret == ESP_OK) {
+            ret = ESP_FAIL;
+        }
+        out->raw_meta = NULL;
+    }
+    if (ret == ESP_OK && generated && generated_count && *generated_count < max_generated) {
+        strlcpy(generated[*generated_count], out->raw_name, 96);
+        (*generated_count)++;
+    }
+    memset(out, 0, sizeof(*out));
+    return ret;
+}
+
+static esp_err_t resegment_open_output(resegment_output_t *out,
+                                       recognition_method_t method,
+                                       uint32_t width,
+                                       uint32_t height,
+                                       uint32_t fps,
+                                       int64_t start_ms,
+                                       uint64_t start_epoch_ms,
+                                       uint32_t sequence)
+{
+    memset(out, 0, sizeof(*out));
+    out->method = method;
+    out->width = width;
+    out->height = height;
+    out->fps = fps ? fps : 1U;
+    out->start_ms = start_ms;
+    out->last_ms = start_ms;
+    out->start_epoch_ms = start_epoch_ms;
+
+    char slug[40];
+    recording_time_slug(start_epoch_ms, start_ms, slug, sizeof(slug));
+    for (uint32_t attempt = 0; attempt < 100; attempt++) {
+        char suffix[12] = {0};
+        if (attempt) {
+            snprintf(suffix, sizeof(suffix), "_r%02" PRIu32, attempt);
+        }
+        snprintf(out->raw_name, sizeof(out->raw_name),
+                 "raw_%s_%s_seg%03" PRIu32 "%s.avi",
+                 slug, recognition_method_name(method), sequence, suffix);
+        if (!annotated_name_for_raw(out->raw_name, out->annotated_name,
+                                    sizeof(out->annotated_name))) {
+            return ESP_FAIL;
+        }
+        snprintf(out->raw_final_path, sizeof(out->raw_final_path),
+                 "%s/%s", RECORDING_DIR, out->raw_name);
+        snprintf(out->annotated_final_path, sizeof(out->annotated_final_path),
+                 "%s/%s", RECORDING_DIR, out->annotated_name);
+        if (access(out->raw_final_path, F_OK) != 0 &&
+            access(out->annotated_final_path, F_OK) != 0) {
+            break;
+        }
+    }
+    snprintf(out->raw_part_path, sizeof(out->raw_part_path),
+             "%s/%s.part", RECORDING_DIR, out->raw_name);
+    snprintf(out->annotated_part_path, sizeof(out->annotated_part_path),
+             "%s/%s.part", RECORDING_DIR, out->annotated_name);
+    char raw_meta_name[96];
+    char annotated_meta_name[96];
+    meta_name_for_recording(out->raw_name, raw_meta_name, sizeof(raw_meta_name));
+    meta_name_for_recording(out->annotated_name, annotated_meta_name, sizeof(annotated_meta_name));
+    snprintf(out->raw_meta_path, sizeof(out->raw_meta_path),
+             "%s/%s", RECORDING_DIR, raw_meta_name);
+    snprintf(out->annotated_meta_path, sizeof(out->annotated_meta_path),
+             "%s/%s", RECORDING_DIR, annotated_meta_name);
+
+    esp_err_t ret = avi_mjpeg_writer_open(&out->raw_writer, out->raw_part_path,
+                                          out->raw_final_path, width, height, out->fps);
+    if (ret != ESP_OK) {
+        memset(out, 0, sizeof(*out));
+        return ret;
+    }
+    ret = avi_mjpeg_writer_open(&out->annotated_writer, out->annotated_part_path,
+                                out->annotated_final_path, width, height, out->fps);
+    if (ret != ESP_OK) {
+        avi_mjpeg_writer_abort(out->raw_writer);
+        unlink(out->raw_part_path);
+        memset(out, 0, sizeof(*out));
+        return ret;
+    }
+    out->raw_meta = fopen(out->raw_meta_path, "w");
+    out->annotated_meta = fopen(out->annotated_meta_path, "w");
+    if (!out->raw_meta || !out->annotated_meta) {
+        if (out->raw_meta) {
+            fclose(out->raw_meta);
+        }
+        if (out->annotated_meta) {
+            fclose(out->annotated_meta);
+        }
+        avi_mjpeg_writer_abort(out->annotated_writer);
+        avi_mjpeg_writer_abort(out->raw_writer);
+        unlink(out->annotated_part_path);
+        unlink(out->raw_part_path);
+        memset(out, 0, sizeof(*out));
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t resegment_write_frame(resegment_output_t *out,
+                                       const uint8_t *raw_jpeg,
+                                       size_t raw_jpeg_size,
+                                       const uint8_t *annotated_jpeg,
+                                       size_t annotated_jpeg_size,
+                                       int64_t frame_ms,
+                                       uint64_t frame_epoch_ms,
+                                       bool copied_annotation)
+{
+    if (!out || !out->raw_writer || !out->annotated_writer ||
+        !raw_jpeg || raw_jpeg_size == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    const uint8_t *ann_jpeg = annotated_jpeg && annotated_jpeg_size > 0 ?
+        annotated_jpeg : raw_jpeg;
+    size_t ann_size = annotated_jpeg && annotated_jpeg_size > 0 ?
+        annotated_jpeg_size : raw_jpeg_size;
+
+    esp_err_t ret = avi_mjpeg_writer_add_frame(out->raw_writer, raw_jpeg, raw_jpeg_size);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    ret = avi_mjpeg_writer_add_frame(out->annotated_writer, ann_jpeg, ann_size);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    out->frames++;
+    out->raw_bytes += raw_jpeg_size;
+    out->annotated_bytes += ann_size;
+    out->last_ms = frame_ms;
+    if (fprintf(out->raw_meta,
+                "{\"index_version\":%" PRIu32 ",\"segment\":\"%s\","
+                "\"segment_uri\":\"%s%s\",\"kind\":\"raw\","
+                "\"meta_uri\":\"%s%s\",\"storage_backend\":\"%s\","
+                "\"frame_index\":%" PRIu32 ",\"seq\":%" PRIu32
+                ",\"time_ms\":%" PRId64 ",\"epoch_ms\":%" PRIu64
+                ",\"jpeg_bytes\":%u,\"width\":%" PRIu32 ",\"height\":%" PRIu32
+                ",\"method\":\"%s\",\"model\":\"%s\",\"object_count\":0,"
+                "\"top_k\":[],\"box_min_score\":%" PRIu32 ",\"best_score\":0,"
+                "\"candidate_score\":0,\"raw_candidate_count\":0,"
+                "\"inference_ms\":0,\"analysis_ms\":0,"
+                "\"detection_count\":0,\"detections\":[],\"resegmented\":true}\n",
+                (uint32_t)APP_JSONL_INDEX_VERSION, out->raw_name,
+                RECORDING_URI_PREFIX, out->raw_name,
+                RECORDING_META_URI_PREFIX, strrchr(out->raw_meta_path, '/') ?
+                    strrchr(out->raw_meta_path, '/') + 1 : out->raw_meta_path,
+                s_storage_backend, out->frames, out->frames,
+                frame_ms, frame_epoch_ms, (unsigned)raw_jpeg_size,
+                out->width, out->height,
+                recognition_method_name(out->method), model_name_for_method(out->method),
+                s_box_min_score) < 0) {
+        return ESP_FAIL;
+    }
+    if (fprintf(out->annotated_meta,
+                "{\"index_version\":%" PRIu32 ",\"segment\":\"%s\","
+                "\"segment_uri\":\"%s%s\",\"kind\":\"annotated\","
+                "\"meta_uri\":\"%s%s\",\"storage_backend\":\"%s\","
+                "\"frame_index\":%" PRIu32 ",\"seq\":%" PRIu32
+                ",\"time_ms\":%" PRId64 ",\"epoch_ms\":%" PRIu64
+                ",\"jpeg_bytes\":%u,\"width\":%" PRIu32 ",\"height\":%" PRIu32
+                ",\"method\":\"%s\",\"model\":\"%s\",\"object_count\":0,"
+                "\"top_k\":[],\"box_min_score\":%" PRIu32 ",\"best_score\":0,"
+                "\"candidate_score\":0,\"raw_candidate_count\":0,"
+                "\"inference_ms\":0,\"analysis_ms\":0,"
+                "\"detection_count\":0,\"detections\":[],\"resegmented\":true,"
+                "\"result_source\":\"%s\",\"source_frame_index\":%" PRIu32 "}\n",
+                (uint32_t)APP_JSONL_INDEX_VERSION, out->annotated_name,
+                RECORDING_ANNOTATED_URI_PREFIX, out->annotated_name,
+                RECORDING_META_URI_PREFIX, strrchr(out->annotated_meta_path, '/') ?
+                    strrchr(out->annotated_meta_path, '/') + 1 : out->annotated_meta_path,
+                s_storage_backend, out->frames, out->frames,
+                frame_ms, frame_epoch_ms, (unsigned)ann_size,
+                out->width, out->height,
+                recognition_method_name(out->method), model_name_for_method(out->method),
+                s_box_min_score,
+                copied_annotation ? "copied-annotated" : "raw-fallback",
+                out->frames) < 0) {
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
+static void resegment_delete_generated(char generated[][96], uint32_t generated_count)
+{
+    uint64_t freed = 0;
+    for (uint32_t i = 0; i < generated_count; i++) {
+        bool failed = false;
+        delete_recording_files_by_name(generated[i], &freed, &failed);
+        char annotated_name[96] = {0};
+        if (annotated_name_for_raw(generated[i], annotated_name, sizeof(annotated_name))) {
+            delete_recording_files_by_name(annotated_name, &freed, &failed);
+        }
+        bool index_failed = false;
+        remove_recording_index_rows(generated[i], &index_failed);
+        if (annotated_name[0]) {
+            remove_recording_index_rows(annotated_name, &index_failed);
+        }
+    }
+}
+
+static esp_err_t resegment_recordings_to_target(uint32_t target_ms)
+{
+    enum { MAX_RESEG_INPUTS = 180, MAX_RESEG_OUTPUTS = 256 };
+    recording_index_entry_t *entries =
+        (recording_index_entry_t *)calloc(MAX_RESEG_INPUTS, sizeof(*entries));
+    char (*generated)[96] = (char (*)[96])calloc(MAX_RESEG_OUTPUTS, 96);
+    if (!entries || !generated) {
+        free(entries);
+        free(generated);
+        return ESP_ERR_NO_MEM;
+    }
+    uint32_t count = load_recent_recording_entries(entries, MAX_RESEG_INPUTS);
+    uint32_t raw_count = 0;
+    bool need_resegment = false;
+    for (uint32_t i = 0; i < count; i++) {
+        if (strcmp(entries[i].kind, "raw") != 0) {
+            continue;
+        }
+        raw_count++;
+        uint32_t duration = entries[i].duration_ms > 0 ? (uint32_t)entries[i].duration_ms : 0;
+        uint32_t delta = duration > target_ms ? duration - target_ms : target_ms - duration;
+        if (duration > 0 && delta > 2000U) {
+            need_resegment = true;
+        }
+    }
+    if (raw_count == 0 || !need_resegment) {
+        resegment_status_update(false, false, false, raw_count, raw_count, 0,
+                                raw_count == 0 ? "no raw recordings" : "already at target");
+        free(entries);
+        free(generated);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    resegment_status_update(true, true, false, raw_count, 0, 0, "running");
+    resegment_output_t out = {0};
+    uint32_t processed = 0;
+    uint32_t generated_count = 0;
+    esp_err_t ret = ESP_OK;
+    uint32_t sequence = 1;
+
+    for (uint32_t i = 0; i < count && ret == ESP_OK; i++) {
+        if (strcmp(entries[i].kind, "raw") != 0) {
+            continue;
+        }
+        if (resegment_should_pause()) {
+            ret = ESP_ERR_TIMEOUT;
+            break;
+        }
+        char path[384];
+        snprintf(path, sizeof(path), "%s/%s", RECORDING_DIR, entries[i].name);
+        avi_mjpeg_reader_t *reader = NULL;
+        avi_mjpeg_reader_t *annotated_reader = NULL;
+        avi_mjpeg_info_t info = {0};
+        ret = avi_mjpeg_reader_open(&reader, path, &info);
+        if (ret != ESP_OK) {
+            break;
+        }
+        avi_mjpeg_info_t annotated_info = {0};
+        char annotated_path[384] = {0};
+        char annotated_name[96] = {0};
+        if (annotated_name_for_raw(entries[i].name, annotated_name, sizeof(annotated_name))) {
+            snprintf(annotated_path, sizeof(annotated_path), "%s/%s",
+                     RECORDING_DIR, annotated_name);
+            if (avi_mjpeg_reader_open(&annotated_reader, annotated_path,
+                                      &annotated_info) == ESP_OK) {
+                if (annotated_info.width != info.width ||
+                    annotated_info.height != info.height) {
+                    avi_mjpeg_reader_close(annotated_reader);
+                    annotated_reader = NULL;
+                }
+            }
+        }
+        if (!annotated_reader &&
+            legacy_annotated_name_for_raw(entries[i].name, annotated_name,
+                                          sizeof(annotated_name))) {
+            snprintf(annotated_path, sizeof(annotated_path), "%s/%s",
+                     RECORDING_DIR, annotated_name);
+            if (avi_mjpeg_reader_open(&annotated_reader, annotated_path,
+                                      &annotated_info) == ESP_OK) {
+                if (annotated_info.width != info.width ||
+                    annotated_info.height != info.height) {
+                    avi_mjpeg_reader_close(annotated_reader);
+                    annotated_reader = NULL;
+                }
+            }
+        }
+        uint32_t fps = info.scale ? (info.rate + info.scale / 2U) / info.scale :
+                       CONFIG_APP_FIELD_RECORDING_MAX_FPS;
+        if (fps == 0) {
+            fps = 1;
+        }
+        recognition_method_t method = recognition_method_from_text_hint(entries[i].method);
+        if (method == RECOGNITION_METHOD_OFF) {
+            method = recognition_method_from_text_hint(entries[i].model);
+        }
+        if (method == RECOGNITION_METHOD_OFF) {
+            method = RECOGNITION_METHOD_FISH31;
+        }
+        while (ret == ESP_OK) {
+            if (resegment_should_pause()) {
+                ret = ESP_ERR_TIMEOUT;
+                break;
+            }
+            const uint8_t *jpeg = NULL;
+            size_t jpeg_size = 0;
+            uint32_t frame_index = 0;
+            ret = avi_mjpeg_reader_next(reader, &jpeg, &jpeg_size, &frame_index);
+            if (ret != ESP_OK) {
+                if (ret == ESP_ERR_NOT_FOUND || ret == ESP_ERR_INVALID_SIZE) {
+                    ret = ESP_OK;
+                }
+                break;
+            }
+            uint64_t offset_ms = info.frame_count > 1 ?
+                ((uint64_t)(frame_index - 1U) * info.duration_ms) /
+                    (info.frame_count - 1U) : 0;
+            int64_t frame_ms = entries[i].start_ms + (int64_t)offset_ms;
+            uint64_t frame_epoch_ms = entries[i].start_epoch_ms ?
+                entries[i].start_epoch_ms + offset_ms : 0;
+            bool open_new = !out.raw_writer ||
+                            out.width != info.width || out.height != info.height ||
+                            out.fps != fps || out.method != method ||
+                            (target_ms > 0 && frame_ms - out.start_ms >= (int64_t)target_ms);
+            if (open_new) {
+                ret = resegment_close_output(&out, generated, MAX_RESEG_OUTPUTS, &generated_count);
+                if (ret != ESP_OK) {
+                    break;
+                }
+                if (generated_count >= MAX_RESEG_OUTPUTS) {
+                    ret = ESP_ERR_NO_MEM;
+                    break;
+                }
+                ret = resegment_open_output(&out, method, info.width, info.height, fps,
+                                            frame_ms, frame_epoch_ms, sequence++);
+                if (ret != ESP_OK) {
+                    break;
+                }
+            }
+            const uint8_t *annotated_jpeg = NULL;
+            size_t annotated_size = 0;
+            bool copied_annotation = false;
+            if (annotated_reader) {
+                uint32_t annotated_frame_index = 0;
+                esp_err_t ann_ret = avi_mjpeg_reader_next(annotated_reader,
+                                                          &annotated_jpeg,
+                                                          &annotated_size,
+                                                          &annotated_frame_index);
+                if (ann_ret == ESP_OK && annotated_jpeg && annotated_size > 0) {
+                    copied_annotation = true;
+                } else {
+                    ESP_LOGW(TAG,
+                             "resegment annotation fallback: raw=%s frame=%" PRIu32
+                             " annotated=%s err=%s",
+                             entries[i].name, frame_index, annotated_name,
+                             esp_err_to_name(ann_ret));
+                    avi_mjpeg_reader_close(annotated_reader);
+                    annotated_reader = NULL;
+                    annotated_jpeg = NULL;
+                    annotated_size = 0;
+                }
+            }
+            ret = resegment_write_frame(&out, jpeg, jpeg_size,
+                                        annotated_jpeg, annotated_size,
+                                        frame_ms, frame_epoch_ms,
+                                        copied_annotation);
+        }
+        if (annotated_reader) {
+            avi_mjpeg_reader_close(annotated_reader);
+        }
+        avi_mjpeg_reader_close(reader);
+        processed++;
+        resegment_status_update(true, true, false, raw_count, processed,
+                                generated_count, "running");
+    }
+    if (ret == ESP_OK) {
+        ret = resegment_close_output(&out, generated, MAX_RESEG_OUTPUTS, &generated_count);
+    } else if (out.raw_writer || out.annotated_writer) {
+        if (out.annotated_writer) {
+            avi_mjpeg_writer_abort(out.annotated_writer);
+        }
+        if (out.raw_writer) {
+            avi_mjpeg_writer_abort(out.raw_writer);
+        }
+        if (out.annotated_meta) {
+            fclose(out.annotated_meta);
+        }
+        if (out.raw_meta) {
+            fclose(out.raw_meta);
+        }
+        unlink(out.annotated_part_path);
+        unlink(out.raw_part_path);
+        unlink(out.annotated_meta_path);
+        unlink(out.raw_meta_path);
+    }
+
+    if (ret == ESP_OK) {
+        uint64_t freed = 0;
+        for (uint32_t i = 0; i < count; i++) {
+            if (strcmp(entries[i].kind, "raw") != 0) {
+                continue;
+            }
+            bool failed = false;
+            delete_recording_files_by_name(entries[i].name, &freed, &failed);
+            bool index_failed = false;
+            remove_recording_index_rows(entries[i].name, &index_failed);
+            char annotated_name[96] = {0};
+            if (annotated_name_for_raw(entries[i].name, annotated_name, sizeof(annotated_name))) {
+                delete_recording_files_by_name(annotated_name, &freed, &failed);
+                remove_recording_index_rows(annotated_name, &index_failed);
+            }
+            char legacy_annotated_name[96] = {0};
+            if (legacy_annotated_name_for_raw(entries[i].name, legacy_annotated_name,
+                                              sizeof(legacy_annotated_name))) {
+                delete_recording_files_by_name(legacy_annotated_name, &freed, &failed);
+                remove_recording_index_rows(legacy_annotated_name, &index_failed);
+            }
+        }
+        reconcile_recording_indexes();
+        update_sd_info();
+        resegment_status_update(false, false, false, raw_count, processed,
+                                generated_count, "ok");
+    } else {
+        resegment_delete_generated(generated, generated_count);
+        resegment_status_update(false, false, ret == ESP_ERR_TIMEOUT, raw_count, processed,
+                                generated_count,
+                                ret == ESP_ERR_TIMEOUT ? "cancelled by foreground activity" :
+                                esp_err_to_name(ret));
+    }
+    free(entries);
+    free(generated);
+    return ret;
+}
+
 static void append_recent_jsonl_wrapped_array(char *json, size_t cap, size_t *off,
                                               const char *path, uint32_t limit,
                                               const char *type, bool *need_comma)
@@ -7169,7 +8697,7 @@ static void append_recent_jsonl_wrapped_array(char *json, size_t cap, size_t *of
 
 static esp_err_t timeline_get_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     char query[64] = {0};
     char limit_text[12] = {0};
     uint32_t limit = 50;
@@ -7231,9 +8759,41 @@ static esp_err_t timeline_get_handler(httpd_req_t *req)
     return ret;
 }
 
+static bool storage_usb_owned(void)
+{
+    return s_usb_storage_ready || s_app_mode == APP_MODE_USB_EXPORT;
+}
+
+static esp_err_t send_usb_storage_json(httpd_req_t *req)
+{
+    httpd_resp_set_status(req, "409 Conflict");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return http_send_cstr_chunked(
+        req,
+        "{\"ok\":false,\"sd_mounted\":false,\"usb_storage_owner\":\"usb\","
+        "\"error\":\"TF card is exported to the computer over USB; safely eject it before restoring TF to the device\"}");
+}
+
+static esp_err_t send_storage_unavailable_text(httpd_req_t *req)
+{
+    if (s_storage_quiescing) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "storage is switching to USB ownership");
+    }
+    if (storage_usb_owned()) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(
+            req,
+            "TF card is exported to the computer over USB; safely eject it before restoring TF to the device");
+    }
+    httpd_resp_set_status(req, "503 Service Unavailable");
+    return httpd_resp_sendstr(req, "TF card is not mounted");
+}
+
 static esp_err_t recordings_get_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_poll(req);
     char query[64] = {0};
     char limit_text[12] = {0};
     uint32_t limit = 20;
@@ -7244,6 +8804,9 @@ static esp_err_t recordings_get_handler(httpd_req_t *req)
         if (parsed > 0 && parsed <= 100) {
             limit = parsed;
         }
+    }
+    if (s_storage_quiescing || storage_usb_owned()) {
+        return send_usb_storage_json(req);
     }
 
     size_t cap = 1536 + (size_t)limit * JSONL_TAIL_LINE_BYTES * 2U;
@@ -7271,6 +8834,8 @@ static esp_err_t recordings_get_handler(httpd_req_t *req)
                     s_recording_current_uri, s_recording_current_frames,
                     (uint64_t)s_recording_current_bytes);
     append_recent_jsonl_array(json, cap, &off, RECORDING_INDEX_PATH, limit);
+    off += snprintf(json + off, cap - off, ",\"recording_groups\":");
+    append_recording_groups_json(json, cap, &off, limit);
     off += snprintf(json + off, cap - off, ",\"summaries\":");
     append_recent_jsonl_array(json, cap, &off, RECORDING_SUMMARY_PATH, limit);
     snprintf(json + off, cap - off, "}");
@@ -7282,9 +8847,108 @@ static esp_err_t recordings_get_handler(httpd_req_t *req)
     return ret;
 }
 
+static esp_err_t cleanup_recordings_post_handler(httpd_req_t *req)
+{
+    record_http_request(req);
+    if (s_storage_quiescing || storage_usb_owned()) {
+        return send_usb_storage_json(req);
+    }
+    if (s_app_mode == APP_MODE_FIELD) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "cannot cleanup while in field mode");
+    }
+    xSemaphoreTake(s_storage_lock, portMAX_DELAY);
+    uint64_t freed = 0;
+    uint32_t deleted = cleanup_recording_dir_all(&freed);
+    xSemaphoreGive(s_storage_lock);
+    update_sd_info();
+    char json[192];
+    snprintf(json, sizeof(json),
+             "{\"ok\":true,\"message\":\"recordings cleaned\",\"deleted_files\":%" PRIu32
+             ",\"freed_bytes\":%" PRIu64 "}",
+             deleted, freed);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return http_send_cstr_chunked(req, json);
+}
+
+static esp_err_t recordings_delete_handler(httpd_req_t *req)
+{
+    record_http_request(req);
+    char query[64] = {0};
+    if (!query_confirm_delete(req, query, sizeof(query))) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "confirm=DELETE required");
+    }
+    if (s_storage_quiescing || storage_usb_owned()) {
+        return send_usb_storage_json(req);
+    }
+    if (s_app_mode == APP_MODE_FIELD) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                   "cannot delete recordings while in field mode");
+    }
+    if (!s_sd_mounted) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "TF card is not mounted");
+    }
+
+    xSemaphoreTake(s_storage_lock, portMAX_DELAY);
+    uint64_t freed = 0;
+    uint32_t deleted = cleanup_recording_dir_all(&freed);
+    xSemaphoreGive(s_storage_lock);
+    s_recording_files_deleted += deleted;
+    update_sd_info();
+
+    char json[192];
+    snprintf(json, sizeof(json),
+             "{\"ok\":true,\"deleted_files\":%" PRIu32 ",\"freed_bytes\":%" PRIu64 "}",
+             deleted, freed);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return http_send_cstr_chunked(req, json);
+}
+
+static esp_err_t recording_enrich_handler(httpd_req_t *req)
+{
+    record_http_request(req);
+    char query[160] = {0};
+    char name[96] = {0};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+        httpd_query_key_value(query, "name", name, sizeof(name)) != ESP_OK ||
+        !is_safe_recording_name(name) ||
+        strncmp(name, "raw_", 4) != 0) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "raw recording name required");
+    }
+    if (s_storage_quiescing || storage_usb_owned()) {
+        return send_usb_storage_json(req);
+    }
+    if (!s_sd_mounted) {
+        return send_storage_unavailable_text(req);
+    }
+    char path[384];
+    snprintf(path, sizeof(path), "%s/%s", RECORDING_DIR, name);
+    struct stat st = {0};
+    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
+        return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "raw recording not found");
+    }
+    esp_err_t err = recording_enrichment_request(name);
+    if (err != ESP_OK) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, esp_err_to_name(err));
+    }
+    s_stream_clients = 0;
+    camera_cmd_t standby = CAMERA_CMD_STANDBY;
+    xQueueSend(s_camera_cmd_queue, &standby, pdMS_TO_TICKS(50));
+
+    char json[192];
+    snprintf(json, sizeof(json),
+             "{\"ok\":true,\"queued\":\"%s\",\"mode\":\"fill_frames\"}",
+             name);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return http_send_cstr_chunked(req, json);
+}
+
 static esp_err_t storage_files_get_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     char query[64] = {0};
     char limit_text[12] = {0};
     uint32_t limit = 200;
@@ -7294,6 +8958,9 @@ static esp_err_t storage_files_get_handler(httpd_req_t *req)
         if (parsed > 0 && parsed <= 1000) {
             limit = (uint32_t)parsed;
         }
+    }
+    if (s_storage_quiescing || storage_usb_owned()) {
+        return send_usb_storage_json(req);
     }
 
     size_t cap = 256U + (size_t)limit * 192U;
@@ -7367,9 +9034,8 @@ static esp_err_t http_socket_send_all(httpd_req_t *req, const char *buf, size_t 
 
 static esp_err_t send_file_response(httpd_req_t *req, const char *path, const char *type)
 {
-    if (s_storage_quiescing) {
-        httpd_resp_set_status(req, "503 Service Unavailable");
-        return httpd_resp_sendstr(req, "storage is switching to USB ownership");
+    if (s_storage_quiescing || storage_usb_owned()) {
+        return send_storage_unavailable_text(req);
     }
     struct stat st = {0};
     if (stat(path, &st) != 0 || st.st_size < 0) {
@@ -7491,20 +9157,18 @@ static esp_err_t send_file_response(httpd_req_t *req, const char *path, const ch
 
 static esp_err_t history_file_get_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     if (!s_sd_mounted) {
-        httpd_resp_set_status(req, "503 Service Unavailable");
-        return httpd_resp_sendstr(req, "TF card is not mounted");
+        return send_storage_unavailable_text(req);
     }
     return send_file_response(req, HISTORY_JSONL_PATH, "application/x-ndjson");
 }
 
 static esp_err_t snapshot_get_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     if (!s_sd_mounted) {
-        httpd_resp_set_status(req, "503 Service Unavailable");
-        return httpd_resp_sendstr(req, "TF card is not mounted");
+        return send_storage_unavailable_text(req);
     }
 
     const char *name = req->uri + strlen(SNAPSHOT_URI_PREFIX);
@@ -7520,8 +9184,7 @@ static esp_err_t snapshot_get_handler(httpd_req_t *req)
 static esp_err_t recording_async_handler(httpd_req_t *req)
 {
     if (!s_sd_mounted) {
-        httpd_resp_set_status(req, "503 Service Unavailable");
-        return httpd_resp_sendstr(req, "TF card is not mounted");
+        return send_storage_unavailable_text(req);
     }
 
     const char *name = req->uri + strlen(RECORDING_URI_PREFIX);
@@ -7541,10 +9204,9 @@ static esp_err_t recording_async_handler(httpd_req_t *req)
 
 static esp_err_t recording_get_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     if (!s_sd_mounted) {
-        httpd_resp_set_status(req, "503 Service Unavailable");
-        return httpd_resp_sendstr(req, "TF card is not mounted");
+        return send_storage_unavailable_text(req);
     }
     const char *name = req->uri + strlen(RECORDING_URI_PREFIX);
     if (!is_safe_recording_name(name)) {
@@ -7559,10 +9221,9 @@ static esp_err_t recording_get_handler(httpd_req_t *req)
 
 static esp_err_t recording_meta_get_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     if (!s_sd_mounted) {
-        httpd_resp_set_status(req, "503 Service Unavailable");
-        return httpd_resp_sendstr(req, "TF card is not mounted");
+        return send_storage_unavailable_text(req);
     }
 
     const char *name = req->uri + strlen(RECORDING_META_URI_PREFIX);
@@ -7651,6 +9312,23 @@ static int delete_recording_files_by_name(const char *name, uint64_t *freed_byte
     meta_name_for_recording(name, meta_name, sizeof(meta_name));
     snprintf(path, sizeof(path), "%s/%s", RECORDING_DIR, meta_name);
     int ret = delete_path_if_file(path, freed_bytes);
+    if (ret > 0) {
+        deleted += ret;
+    } else if (ret < 0 && failed) {
+        *failed = true;
+    }
+
+    /* 删除同名 .idx 附属文件 */
+    char idx_name[96];
+    strlcpy(idx_name, name, sizeof(idx_name));
+    size_t name_len = strlen(idx_name);
+    if (name_len > 4 && strcmp(idx_name + name_len - 4, ".avi") == 0) {
+        strcpy(idx_name + name_len - 4, ".idx");
+    } else {
+        strlcat(idx_name, ".idx", sizeof(idx_name));
+    }
+    snprintf(path, sizeof(path), "%s/%s", RECORDING_DIR, idx_name);
+    ret = delete_path_if_file(path, freed_bytes);
     if (ret > 0) {
         deleted += ret;
     } else if (ret < 0 && failed) {
@@ -7917,7 +9595,7 @@ static uint32_t delete_dir_whitelist(const char *dir_path, const char *suffix_a,
 
 static esp_err_t recording_delete_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     char query[320] = {0};
     char name[96] = {0};
     char paired_name[96] = {0};
@@ -7989,7 +9667,7 @@ static esp_err_t recording_delete_handler(httpd_req_t *req)
 
 static esp_err_t timeline_delete_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     char query[192] = {0};
     char from_text[24] = {0};
     char to_text[24] = {0};
@@ -8031,7 +9709,7 @@ static esp_err_t timeline_delete_handler(httpd_req_t *req)
 
 static esp_err_t storage_records_delete_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     char query[96] = {0};
     char scope[16] = {0};
     if (!query_confirm_delete(req, query, sizeof(query)) ||
@@ -8079,7 +9757,7 @@ static esp_err_t storage_records_delete_handler(httpd_req_t *req)
 
 static esp_err_t storage_format_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     char query[96] = {0};
     char confirm[16] = {0};
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
@@ -8162,7 +9840,7 @@ static esp_err_t storage_format_handler(httpd_req_t *req)
 
 static esp_err_t storage_remount_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     char query[128] = {0};
     char confirm[16] = {0};
     char hold_text[16] = {0};
@@ -8206,7 +9884,7 @@ static esp_err_t storage_remount_handler(httpd_req_t *req)
 
 static esp_err_t field_mode_start_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     char query[64] = {0};
     char confirm[16] = {0};
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
@@ -8220,11 +9898,6 @@ static esp_err_t field_mode_start_handler(httpd_req_t *req)
         httpd_resp_set_status(req, "409 Conflict");
         return httpd_resp_sendstr(req, "field mode already active or pending");
     }
-    if (s_stream_clients > 0 || s_inference_worker_busy ||
-        s_dataset_status.queued || s_dataset_status.running) {
-        httpd_resp_set_status(req, "409 Conflict");
-        return httpd_resp_sendstr(req, "stream or inference task is active");
-    }
     s_field_mode_requested = true;
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
@@ -8234,7 +9907,7 @@ static esp_err_t field_mode_start_handler(httpd_req_t *req)
 
 static esp_err_t export_mode_start_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     char query[64] = {0};
     char confirm[16] = {0};
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
@@ -8595,6 +10268,186 @@ static esp_err_t run_jpeg_on_inference_queue(uint8_t *jpeg, uint32_t jpeg_size,
     esp_err_t err = ctx.err;
     vSemaphoreDelete(ctx.done);
     return err;
+}
+
+static esp_err_t generate_annotated_jpeg_from_vision(
+    const uint8_t *jpeg,
+    uint32_t jpeg_size,
+    recognition_method_t method,
+    const vision_result_t *vision,
+    uint32_t source_w,
+    uint32_t source_h,
+    uint8_t **annotated_jpeg,
+    size_t *annotated_size)
+{
+    if (!jpeg || !jpeg_size || !vision || !annotated_jpeg || !annotated_size) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *annotated_jpeg = NULL;
+    *annotated_size = 0;
+
+    if (method == RECOGNITION_METHOD_COCO) {
+        coco_espdl_result_t coco = {0};
+        coco.source_w = source_w;
+        coco.source_h = source_h;
+        coco.raw_candidate_count = vision->raw_candidate_count;
+        coco.score = vision->object_score;
+        strlcpy(coco.label, vision->label, sizeof(coco.label));
+        uint32_t count = vision->detection_count > COCO_ESPDL_MAX_DETECTIONS ?
+                         COCO_ESPDL_MAX_DETECTIONS : vision->detection_count;
+        coco.detection_count = count;
+        coco.has_candidate = count > 0;
+        for (uint32_t i = 0; i < count; i++) {
+            coco.detections[i].class_id = vision->detections[i].class_id;
+            coco.detections[i].score = vision->detections[i].score;
+            coco.detections[i].x = (int32_t)vision->detections[i].x;
+            coco.detections[i].y = (int32_t)vision->detections[i].y;
+            coco.detections[i].w = (int32_t)vision->detections[i].w;
+            coco.detections[i].h = (int32_t)vision->detections[i].h;
+            strlcpy(coco.detections[i].label, vision->detections[i].label,
+                    sizeof(coco.detections[i].label));
+        }
+        return coco_espdl_annotate_jpeg(jpeg, jpeg_size, &coco, s_box_min_score, s_jpeg_quality,
+                                        annotated_jpeg, annotated_size);
+    }
+
+    char title[64];
+    char subtitle[96] = {0};
+    snprintf(title, sizeof(title), "%s %" PRIu32 "%%",
+             vision->label[0] ? vision->label : recognition_method_name(method),
+             vision->object_score);
+    size_t off = 0;
+    for (uint32_t i = 0; i < vision->top_k_count && i < 3 && off < sizeof(subtitle); i++) {
+        off += snprintf(subtitle + off, sizeof(subtitle) - off,
+                        "%s%s %" PRIu32 "%%",
+                        i ? " / " : "", vision->top_k[i].label, vision->top_k[i].score);
+    }
+    return coco_espdl_annotate_label_jpeg(jpeg, jpeg_size, title, subtitle,
+                                          s_jpeg_quality,
+                                          annotated_jpeg, annotated_size);
+}
+
+static esp_err_t enrichment_infer_annotate_cb(
+    const uint8_t *jpeg,
+    size_t jpeg_size,
+    const char *method_text,
+    uint32_t frame_index,
+    uint32_t min_score,
+    uint8_t jpeg_quality,
+    char *meta_json,
+    size_t meta_json_size,
+    uint8_t **annotated_jpeg,
+    size_t *annotated_jpeg_size,
+    void *arg)
+{
+    (void)frame_index;
+    (void)arg;
+    if (!jpeg || jpeg_size == 0 || jpeg_size > UINT32_MAX || !meta_json ||
+        meta_json_size == 0 || !annotated_jpeg || !annotated_jpeg_size) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *annotated_jpeg = NULL;
+    *annotated_jpeg_size = 0;
+    meta_json[0] = '\0';
+
+    recognition_method_t method = parse_validation_method(method_text);
+    if (method != RECOGNITION_METHOD_FISH31 &&
+        method != RECOGNITION_METHOD_TINYCLS &&
+        method != RECOGNITION_METHOD_COCO) {
+        method = RECOGNITION_METHOD_FISH31;
+    }
+    uint8_t *copy = alloc_psram_buffer((uint32_t)jpeg_size);
+    if (!copy) {
+        return ESP_ERR_NO_MEM;
+    }
+    memcpy(copy, jpeg, jpeg_size);
+
+    vision_result_t vision = {0};
+    uint32_t source_w = 0;
+    uint32_t source_h = 0;
+    esp_err_t ret = run_jpeg_on_inference_queue(copy, (uint32_t)jpeg_size,
+                                                method, &vision,
+                                                &source_w, &source_h);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "enrichment inference failed: method=%s frame=%" PRIu32 " err=%s",
+                 recognition_method_name(method), frame_index, esp_err_to_name(ret));
+        return ret;
+    }
+
+    char detections_json[1280];
+    char top_k_json[512];
+    char label[64];
+    char object[64];
+    char model[64];
+    detections_to_json(detections_json, sizeof(detections_json), &vision);
+    top_k_to_json(top_k_json, sizeof(top_k_json), &vision);
+    json_escape_string(label, sizeof(label), vision.label);
+    json_escape_string(object, sizeof(object), vision.object);
+    json_escape_string(model, sizeof(model), vision.model);
+    snprintf(meta_json, meta_json_size,
+             "\"model\":\"%s\",\"label\":\"%s\",\"object\":\"%s\","
+             "\"object_count\":%" PRIu32 ",\"top_k\":%s,"
+             "\"box_min_score\":%" PRIu32 ",\"best_score\":%" PRIu32
+             ",\"candidate_score\":%" PRIu32 ",\"raw_candidate_count\":%" PRIu32
+             ",\"inference_ms\":%" PRId64 ",\"analysis_ms\":%" PRId64
+             ",\"detection_count\":%" PRIu32 ",\"detections\":%s",
+             model, label, object,
+             vision.object_count, top_k_json,
+             min_score, vision.object_score,
+             vision.candidate_score, vision.raw_candidate_count,
+             vision.inference_ms, vision.analysis_ms,
+             vision.detection_count, detections_json);
+
+    if (method == RECOGNITION_METHOD_COCO) {
+        coco_espdl_result_t coco = {0};
+        coco.source_w = source_w;
+        coco.source_h = source_h;
+        coco.raw_candidate_count = vision.raw_candidate_count;
+        coco.score = vision.object_score;
+        strlcpy(coco.label, vision.label, sizeof(coco.label));
+        uint32_t count = vision.detection_count > COCO_ESPDL_MAX_DETECTIONS ?
+                         COCO_ESPDL_MAX_DETECTIONS : vision.detection_count;
+        coco.detection_count = count;
+        coco.has_candidate = count > 0;
+        for (uint32_t i = 0; i < count; i++) {
+            coco.detections[i].class_id = vision.detections[i].class_id;
+            coco.detections[i].score = vision.detections[i].score;
+            coco.detections[i].x = (int32_t)vision.detections[i].x;
+            coco.detections[i].y = (int32_t)vision.detections[i].y;
+            coco.detections[i].w = (int32_t)vision.detections[i].w;
+            coco.detections[i].h = (int32_t)vision.detections[i].h;
+            strlcpy(coco.detections[i].label, vision.detections[i].label,
+                    sizeof(coco.detections[i].label));
+        }
+        ret = coco_espdl_annotate_jpeg(jpeg, jpeg_size, &coco, min_score, jpeg_quality,
+                                       annotated_jpeg, annotated_jpeg_size);
+        if (ret != ESP_OK && ret != ESP_ERR_NOT_FOUND) {
+            ESP_LOGW(TAG, "enrichment COCO annotation fallback to raw frame: frame=%" PRIu32
+                     " err=%s", frame_index, esp_err_to_name(ret));
+        }
+        return ESP_OK;
+    }
+
+    char title[64];
+    char subtitle[96] = {0};
+    snprintf(title, sizeof(title), "%s %" PRIu32 "%%",
+             vision.label[0] ? vision.label : recognition_method_name(method),
+             vision.object_score);
+    size_t off = 0;
+    for (uint32_t i = 0; i < vision.top_k_count && i < 3 && off < sizeof(subtitle); i++) {
+        off += snprintf(subtitle + off, sizeof(subtitle) - off,
+                        "%s%s %" PRIu32 "%%",
+                        i ? " / " : "", vision.top_k[i].label, vision.top_k[i].score);
+    }
+    ret = coco_espdl_annotate_label_jpeg(jpeg, jpeg_size, title, subtitle,
+                                         jpeg_quality,
+                                         annotated_jpeg, annotated_jpeg_size);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "enrichment label annotation fallback to raw frame: frame=%" PRIu32
+                 " err=%s", frame_index, esp_err_to_name(ret));
+        return ESP_OK;
+    }
+    return ESP_OK;
 }
 
 static uint8_t *read_file_to_psram(const char *path, uint32_t *out_size)
@@ -9079,7 +10932,7 @@ static bool search_scan_recording_sidecars(search_ctx_t *ctx)
 
 static esp_err_t search_get_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     char query[384] = {0};
     char label[64] = {0};
     char type[16] = "all";
@@ -9212,7 +11065,7 @@ static esp_err_t search_get_handler(httpd_req_t *req)
 
 static esp_err_t recording_frame_svg_get_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     char query[160] = {0};
     char name[96] = {0};
     char frame_text[16] = {0};
@@ -9266,7 +11119,7 @@ static esp_err_t recording_frame_svg_get_handler(httpd_req_t *req)
 
 static esp_err_t recording_manifest_get_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     char query[160] = {0};
     char name[96] = {0};
     if (!s_sd_mounted ||
@@ -9312,7 +11165,7 @@ static esp_err_t recording_manifest_get_handler(httpd_req_t *req)
 
 static esp_err_t recording_annotated_get_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     if (!s_sd_mounted) {
         return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "storage not mounted");
     }
@@ -9375,7 +11228,7 @@ static esp_err_t recording_annotated_get_handler(httpd_req_t *req)
 
 static esp_err_t dataset_frame_svg_get_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     char query[224] = {0};
     char dataset[DATASET_NAME_MAX] = {0};
     char run_id[80] = {0};
@@ -9738,7 +11591,7 @@ static uint32_t count_dataset_frames(const char *dataset)
 
 static esp_err_t datasets_get_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     size_t cap = 2048;
     char *json = (char *)alloc_psram_buffer(cap);
     if (!json) {
@@ -9802,7 +11655,7 @@ static esp_err_t ensure_dataset_parent_dirs(const char *dataset, const char *rel
 
 static esp_err_t dataset_file_put_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     if (s_storage_quiescing) {
         httpd_resp_set_status(req, "503 Service Unavailable");
         return httpd_resp_sendstr(req, "storage is switching to USB ownership");
@@ -9866,7 +11719,7 @@ static esp_err_t dataset_file_put_handler(httpd_req_t *req)
 
 static esp_err_t dataset_run_start_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     if (export_mode_reject(req, "dataset run")) {
         return ESP_OK;
     }
@@ -9962,7 +11815,7 @@ static esp_err_t dataset_run_start_handler(httpd_req_t *req)
 
 static esp_err_t dataset_run_status_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     dataset_run_status_t status;
     dataset_status_copy(&status);
     char labels[512];
@@ -9999,7 +11852,7 @@ static esp_err_t dataset_run_status_handler(httpd_req_t *req)
 
 static esp_err_t dataset_run_results_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     char query[128] = {0};
     char run_id[80] = {0};
     char type[16] = {0};
@@ -10143,14 +11996,20 @@ static esp_err_t queue_async_request(httpd_req_t *req, async_req_handler_t handl
 
 static esp_err_t stream_get_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     if (export_mode_reject(req, "stream")) {
         return ESP_OK;
     }
     power_state_t state = s_power_state;
-    if (state == POWER_STATE_STANDBY || state == POWER_STATE_STOPPING) {
-        httpd_resp_set_status(req, "503 Service Unavailable");
-        return httpd_resp_sendstr(req, "camera is in standby");
+    if (state == POWER_STATE_STANDBY || state == POWER_STATE_STOPPING || state == POWER_STATE_ERROR) {
+        camera_cmd_t wake = CAMERA_CMD_WAKE;
+        s_wake_requests++;
+        xQueueReset(s_camera_cmd_queue);
+        if (xQueueSend(s_camera_cmd_queue, &wake, pdMS_TO_TICKS(20)) != pdTRUE) {
+            httpd_resp_set_status(req, "503 Service Unavailable");
+            return httpd_resp_sendstr(req, "camera wake queue full");
+        }
+        set_power_state(POWER_STATE_STARTING);
     }
 
     if (queue_async_request(req, stream_async_handler) != ESP_OK) {
@@ -10163,7 +12022,7 @@ static esp_err_t stream_get_handler(httpd_req_t *req)
 
 static esp_err_t power_get_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     char query[64] = {0};
     char cmd[24] = {0};
     camera_cmd_t camera_cmd;
@@ -10208,7 +12067,7 @@ static esp_err_t power_get_handler(httpd_req_t *req)
 
 static esp_err_t time_sync_post_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     char query[96] = {0};
     char epoch_text[32] = {0};
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
@@ -10246,7 +12105,7 @@ static esp_err_t time_sync_post_handler(httpd_req_t *req)
 
 static esp_err_t netmode_get_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
     char query[96] = {0};
     char mode_text[16] = {0};
     network_mode_t mode = s_network_mode;
@@ -10316,44 +12175,142 @@ static void history_task(void *arg)
     }
 }
 
+static bool recording_segment_should_close(const recording_segment_t *segment, int64_t now_ms)
+{
+    if (!segment || !segment->writer) {
+        return false;
+    }
+    uint32_t segment_ms = s_recording_segment_ms;
+    return s_app_mode != APP_MODE_FIELD || !s_sd_mounted || !s_recording_enabled ||
+           (segment_ms > 0 && now_ms - segment->start_ms >= (int64_t)segment_ms);
+}
+
+static void recording_close_pair(recording_segment_t *raw_segment,
+                                 recording_segment_t *annotated_segment)
+{
+    /*
+     * Close annotated first. If a reset/power event lands between the two closes,
+     * startup cleanup can ignore an annotated-only fragment; a raw-only fragment
+     * would otherwise show up as a customer-visible missing inference video.
+     */
+    recording_close_segment(annotated_segment);
+    recording_close_segment(raw_segment);
+}
+
 static void recording_task(void *arg)
 {
     (void)arg;
     static recording_segment_t raw_segment;
     static recording_segment_t annotated_segment;
+    static frame_meta_t last_inference_meta = {0};
+    static recognition_method_t last_inference_method = RECOGNITION_METHOD_OFF;
+    static bool have_last_inference = false;
 
     while (true) {
+        if (__atomic_exchange_n(&s_recording_reset_requested, false, __ATOMIC_ACQ_REL)) {
+            recording_close_pair(&raw_segment, &annotated_segment);
+            /* drain 旧 segment 残留的队列帧，防止新 segment 的 annotated 帧因队列满被丢弃 */
+            recording_item_t drain;
+            while (xQueueReceive(s_recording_queue, &drain, 0) == pdTRUE) {
+                if (drain.kind == RECORDING_KIND_ANNOTATED) {
+                    coco_espdl_free_jpeg(drain.jpeg);
+                } else {
+                    free(drain.jpeg);
+                }
+                if (drain.finalize_done) {
+                    xSemaphoreGive(drain.finalize_done);
+                }
+            }
+            cleanup_recording_temp_files();
+            memset(&last_inference_meta, 0, sizeof(last_inference_meta));
+            last_inference_method = RECOGNITION_METHOD_OFF;
+            have_last_inference = false;
+            s_segment_sequence = 0;
+            s_current_segment_base[0] = '\0';
+            ESP_LOGI(TAG, "recording_task: reset for new field session");
+        }
+
         recording_item_t item = {0};
         if (xQueueReceive(s_recording_queue, &item, pdMS_TO_TICKS(1000)) == pdTRUE) {
             if (item.finalize) {
-                recording_close_segment(&raw_segment);
-                recording_close_segment(&annotated_segment);
+                recording_close_pair(&raw_segment, &annotated_segment);
+                memset(&last_inference_meta, 0, sizeof(last_inference_meta));
+                last_inference_method = RECOGNITION_METHOD_OFF;
+                have_last_inference = false;
+                s_segment_sequence = 0;
+                s_current_segment_base[0] = '\0';
                 if (item.finalize_done) {
                     xSemaphoreGive(item.finalize_done);
                 }
                 continue;
             }
             if (s_app_mode == APP_MODE_FIELD && s_sd_mounted && s_recording_enabled) {
-                recording_segment_t *segment = item.kind == RECORDING_KIND_ANNOTATED ?
-                                               &annotated_segment : &raw_segment;
-                recording_write_item(segment, &item);
+                if (item.kind == RECORDING_KIND_ANNOTATED) {
+                    last_inference_meta = item.meta;
+                    last_inference_method = item.method;
+                    have_last_inference = true;
+                    if (item.jpeg) {
+                        coco_espdl_free_jpeg(item.jpeg);
+                    }
+                } else {
+                    int64_t item_ms = item.meta.timestamp_ms ?
+                        item.meta.timestamp_ms : esp_timer_get_time() / 1000;
+                    if (recording_segment_should_close(&raw_segment, item_ms) ||
+                        recording_segment_should_close(&annotated_segment, item_ms)) {
+                        recording_close_pair(&raw_segment, &annotated_segment);
+                    }
+                    recording_write_item(&raw_segment, &item);
+
+                    frame_meta_t ann_meta = item.meta;
+                    recognition_method_t ann_method = item.method;
+                    if (ann_method == RECOGNITION_METHOD_OFF) {
+                        ann_method = recognition_method_or_fallback(s_recognition_method);
+                    }
+                    if (have_last_inference && last_inference_method == ann_method) {
+                        ann_meta.vision = last_inference_meta.vision;
+                    }
+
+                    uint8_t *annotated_jpeg = NULL;
+                    size_t annotated_size = 0;
+                    esp_err_t ann_err = generate_annotated_jpeg_from_vision(
+                        item.jpeg, item.jpeg_size, ann_method, &ann_meta.vision,
+                        item.meta.width, item.meta.height,
+                        &annotated_jpeg, &annotated_size);
+                    recording_item_t ann_item = {
+                        .meta = ann_meta,
+                        .jpeg = annotated_jpeg ? annotated_jpeg : item.jpeg,
+                        .jpeg_size = annotated_jpeg ? (uint32_t)annotated_size : item.jpeg_size,
+                        .kind = RECORDING_KIND_ANNOTATED,
+                        .method = ann_method,
+                    };
+                    if (ann_err != ESP_OK || !ann_item.jpeg || ann_item.jpeg_size == 0) {
+                        ann_item.jpeg = item.jpeg;
+                        ann_item.jpeg_size = item.jpeg_size;
+                    }
+                    recording_write_item(&annotated_segment, &ann_item);
+                    if (annotated_jpeg) {
+                        coco_espdl_free_jpeg(annotated_jpeg);
+                    }
+                    if (raw_segment.writer && annotated_segment.writer &&
+                        raw_segment.frames != annotated_segment.frames) {
+                        ESP_LOGW(TAG,
+                                 "recording_task: frame count mismatch raw=%" PRIu32
+                                 " ann=%" PRIu32 " base=%s",
+                                 raw_segment.frames, annotated_segment.frames,
+                                 s_current_segment_base);
+                    }
+                }
             }
-            free(item.jpeg);
+            if (item.kind != RECORDING_KIND_ANNOTATED) {
+                free(item.jpeg);
+            }
             continue;
         }
 
         int64_t now_ms = esp_timer_get_time() / 1000;
-        recording_segment_t *segments[] = {&raw_segment, &annotated_segment};
-        for (size_t i = 0; i < sizeof(segments) / sizeof(segments[0]); i++) {
-            recording_segment_t *segment = segments[i];
-            if (segment->writer &&
-                (s_app_mode != APP_MODE_FIELD || !s_sd_mounted || !s_recording_enabled ||
-                (CONFIG_APP_RECORDING_SEGMENT_MS > 0 &&
-                 now_ms - segment->start_ms >= (int64_t)CONFIG_APP_RECORDING_SEGMENT_MS) ||
-                (CONFIG_APP_SUMMARY_INTERVAL_MS > 0 &&
-                 now_ms - segment->start_ms >= (int64_t)CONFIG_APP_SUMMARY_INTERVAL_MS))) {
-                recording_close_segment(segment);
-            }
+        if (recording_segment_should_close(&raw_segment, now_ms) ||
+            recording_segment_should_close(&annotated_segment, now_ms)) {
+            recording_close_pair(&raw_segment, &annotated_segment);
         }
     }
 }
@@ -10361,6 +12318,10 @@ static void recording_task(void *arg)
 static bool enrichment_should_cancel(void *arg)
 {
     (void)arg;
+    bool manual_request = recording_enrichment_has_request();
+    recording_enrichment_status_t enrichment = {0};
+    recording_enrichment_get_status(&enrichment);
+    bool enrichment_active = manual_request || enrichment.running;
     if (!CONFIG_APP_ENRICHMENT_ENABLE || s_storage_quiescing ||
         s_usb_export_requested || s_field_mode_requested || s_export_mode_requested ||
         s_app_mode != APP_MODE_SERVER ||
@@ -10368,10 +12329,13 @@ static bool enrichment_should_cancel(void *arg)
         !s_sd_mounted || s_power_state != POWER_STATE_STANDBY ||
         s_stream_clients > 0 ||
         __atomic_load_n(&s_file_download_clients, __ATOMIC_ACQUIRE) > 0 ||
-        inference_worker_busy() ||
-        (s_inference_queue && uxQueueMessagesWaiting(s_inference_queue) > 0) ||
         (s_history_queue && uxQueueMessagesWaiting(s_history_queue) > 0) ||
         (s_recording_queue && uxQueueMessagesWaiting(s_recording_queue) > 0)) {
+        return true;
+    }
+    if (!enrichment_active &&
+        (inference_worker_busy() ||
+         (s_inference_queue && uxQueueMessagesWaiting(s_inference_queue) > 0))) {
         return true;
     }
 
@@ -10380,11 +12344,7 @@ static bool enrichment_should_cancel(void *arg)
     if (dataset.queued || dataset.running) {
         return true;
     }
-    int64_t now_ms = esp_timer_get_time() / 1000;
-    int64_t last_activity_ms = __atomic_load_n(
-        &s_last_network_activity_ms, __ATOMIC_ACQUIRE);
-    return last_activity_ms <= 0 ||
-           now_ms - last_activity_ms < CONFIG_APP_ENRICHMENT_IDLE_MS;
+    return !enrichment_active;
 }
 
 static void enrichment_task(void *arg)
@@ -10406,6 +12366,16 @@ static void enrichment_task(void *arg)
                 s_box_min_score, s_jpeg_quality,
                 enrichment_should_cancel, NULL);
             if (ret == ESP_OK) {
+                recording_enrichment_status_t status = {0};
+                recording_enrichment_get_status(&status);
+                if (status.output_name[0]) {
+                    bool index_failed = false;
+                    remove_recording_index_rows(status.output_name, &index_failed);
+                    if (index_failed) {
+                        ESP_LOGW(TAG, "could not remove stale annotated index for %s",
+                                 status.output_name);
+                    }
+                }
                 reconcile_recording_indexes();
                 update_sd_info();
             }
@@ -10418,9 +12388,35 @@ static void enrichment_task(void *arg)
     }
 }
 
+static void resegment_task(void *arg)
+{
+    (void)arg;
+    while (true) {
+        recording_resegment_status_t status = {0};
+        resegment_status_copy(&status);
+        if (!status.requested || status.target_ms == 0) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+        if (resegment_should_pause()) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+        if (xSemaphoreTake(s_storage_lock, pdMS_TO_TICKS(1000)) != pdTRUE) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+        if (!resegment_should_pause()) {
+            resegment_recordings_to_target(status.target_ms);
+        }
+        xSemaphoreGive(s_storage_lock);
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
 static esp_err_t usb_mode_start_handler(httpd_req_t *req)
 {
-    record_http_request();
+    record_http_request(req);
 #if !CONFIG_APP_USB_MSC_ENABLE
     return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "USB MSC disabled");
 #else
@@ -10442,8 +12438,55 @@ static esp_err_t usb_mode_start_handler(httpd_req_t *req)
     return http_send_cstr_chunked(
         req,
         "{\"ok\":true,\"mode\":\"usb_export_pending\","
-        "\"note\":\"camera and network will stop; safe eject and reboot are required\"}");
+        "\"note\":\"camera and recording will pause; Web stays online; computer should enumerate P4_BUOY\"}");
 #endif
+}
+
+static esp_err_t usb_restore_handler(httpd_req_t *req)
+{
+    record_http_request(req);
+#if !CONFIG_APP_USB_MSC_ENABLE
+    return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "USB MSC disabled");
+#else
+    char query[64] = {0};
+    char confirm[16] = {0};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+        httpd_query_key_value(query, "confirm", confirm, sizeof(confirm)) != ESP_OK ||
+        strcmp(confirm, "RESTORE") != 0) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                   "confirm=RESTORE required");
+    }
+    if (s_app_mode != APP_MODE_USB_EXPORT || !s_usb_storage_ready) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "USB export is not active");
+    }
+    s_usb_restore_requested = true;
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return http_send_cstr_chunked(
+        req,
+        "{\"ok\":true,\"mode\":\"usb_restore_pending\","
+        "\"note\":\"TF will be detached from USB and remounted by the device; Web stays online; normal customer flow is safe-eject then unplug\"}");
+#endif
+}
+
+static esp_err_t system_reboot_handler(httpd_req_t *req)
+{
+    record_http_request(req);
+    char query[64] = {0};
+    char confirm[16] = {0};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+        httpd_query_key_value(query, "confirm", confirm, sizeof(confirm)) != ESP_OK ||
+        strcmp(confirm, "REBOOT") != 0) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                   "confirm=REBOOT required");
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    http_send_cstr_chunked(req, "{\"ok\":true,\"rebooting\":true}");
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+    return ESP_OK;
 }
 
 static esp_err_t storage_init_usb_sdmmc_card(void)
@@ -10465,11 +12508,20 @@ static esp_err_t storage_init_usb_sdmmc_card(void)
     host.max_freq_khz = CONFIG_APP_USB_MSC_SD_FREQ_KHZ;
     host.unaligned_multi_block_rw_max_chunk_size = 8;
     host.pwr_ctrl_handle = s_sd_pwr_ctrl;
+    bool host_owned_by_hosted = false;
+#if CONFIG_ESP_HOSTED_ENABLED && CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE
+    if (s_hosted_sdmmc_host_active) {
+        host.init = storage_sdmmc_host_init_already_done;
+        host.deinit = storage_sdmmc_host_deinit_keep_hosted;
+        host_owned_by_hosted = true;
+    }
+#endif
 
     bool host_initialized_here = false;
+    bool slot_initialized = false;
     ret = host.init();
     if (ret == ESP_OK) {
-        host_initialized_here = true;
+        host_initialized_here = !host_owned_by_hosted;
     } else if (ret == ESP_ERR_INVALID_STATE) {
         ESP_LOGW(TAG, "SDMMC host already initialized before USB handoff");
         ret = ESP_OK;
@@ -10487,6 +12539,7 @@ static esp_err_t storage_init_usb_sdmmc_card(void)
     slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
     ret = sdmmc_host_init_slot(host.slot, &slot_config);
     ESP_GOTO_ON_ERROR(ret, fail_host, TAG, "USB SDMMC slot init failed");
+    slot_initialized = true;
 
     s_usb_sd_card = calloc(1, sizeof(*s_usb_sd_card));
     ESP_GOTO_ON_FALSE(s_usb_sd_card, ESP_ERR_NO_MEM, fail_host, TAG,
@@ -10494,6 +12547,8 @@ static esp_err_t storage_init_usb_sdmmc_card(void)
     ret = sdmmc_card_init(&host, s_usb_sd_card);
     ESP_GOTO_ON_ERROR(ret, fail_card, TAG, "USB SDMMC card init failed");
 
+    s_usb_sdmmc_host_initialized = host_initialized_here;
+    s_usb_sdmmc_slot_initialized = true;
     ESP_LOGI(TAG, "USB TF ready: SDMMC 4-bit at %d kHz", CONFIG_APP_USB_MSC_SD_FREQ_KHZ);
     sdmmc_card_print_info(stdout, s_usb_sd_card);
     return ESP_OK;
@@ -10501,13 +12556,16 @@ static esp_err_t storage_init_usb_sdmmc_card(void)
 fail_card:
     free(s_usb_sd_card);
     s_usb_sd_card = NULL;
+    s_usb_sdmmc_host_initialized = false;
 fail_host:
-    if (host_initialized_here) {
+    if (slot_initialized) {
         if (host.flags & SDMMC_HOST_FLAG_DEINIT_ARG) {
             host.deinit_p(host.slot);
         } else {
             host.deinit();
         }
+    } else if (host_initialized_here) {
+        sdmmc_host_deinit();
     }
 fail_ldo:
     if (s_sd_pwr_ctrl) {
@@ -10515,6 +12573,49 @@ fail_ldo:
         s_sd_pwr_ctrl = NULL;
     }
     return ret;
+}
+
+static void storage_release_usb_sdmmc_card(void)
+{
+    if (s_usb_sd_card) {
+        free(s_usb_sd_card);
+        s_usb_sd_card = NULL;
+    }
+    if (s_usb_sdmmc_slot_initialized) {
+        sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+        host.slot = SDMMC_HOST_SLOT_0;
+        bool hosted_host_active = false;
+#if CONFIG_ESP_HOSTED_ENABLED && CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE
+        hosted_host_active = s_hosted_sdmmc_host_active;
+#endif
+        if (host.flags & SDMMC_HOST_FLAG_DEINIT_ARG) {
+            host.deinit_p(host.slot);
+        } else if (hosted_host_active) {
+            esp_err_t slot_ret = sdmmc_host_deinit_slot(host.slot);
+            if (slot_ret != ESP_OK && slot_ret != ESP_ERR_INVALID_STATE) {
+                ESP_LOGW(TAG, "USB SDMMC slot release failed: %s",
+                         esp_err_to_name(slot_ret));
+            }
+        } else {
+            host.deinit();
+        }
+        s_usb_sdmmc_slot_initialized = false;
+    } else if (s_usb_sdmmc_host_initialized) {
+        esp_err_t host_ret = sdmmc_host_deinit();
+        if (host_ret != ESP_OK && host_ret != ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "USB SDMMC host release failed: %s", esp_err_to_name(host_ret));
+        }
+    }
+    if (s_usb_sdmmc_host_initialized) {
+        s_usb_sdmmc_host_initialized = false;
+    }
+    if (s_sd_pwr_ctrl) {
+        esp_err_t ldo_ret = sd_pwr_ctrl_del_on_chip_ldo(s_sd_pwr_ctrl);
+        if (ldo_ret != ESP_OK) {
+            ESP_LOGW(TAG, "USB SD LDO release failed: %s", esp_err_to_name(ldo_ret));
+        }
+        s_sd_pwr_ctrl = NULL;
+    }
 }
 
 static esp_err_t recording_finalize_sync(TickType_t timeout)
@@ -10628,7 +12729,7 @@ static void start_webserver(void)
     }
     config.lru_purge_enable = true;
     config.backlog_conn = CONFIG_APP_MAX_STREAM_CLIENTS + 2;
-    config.max_uri_handlers = 72;
+    config.max_uri_handlers = 84;
     config.uri_match_fn = httpd_uri_match_wildcard;
 
     ESP_ERROR_CHECK(httpd_start(&s_server, &config));
@@ -10750,6 +12851,11 @@ static void start_webserver(void)
         .method = HTTP_GET,
         .handler = config_get_handler,
     };
+    const httpd_uri_t config_api_post = {
+        .uri = "/api/config",
+        .method = HTTP_POST,
+        .handler = config_get_handler,
+    };
     const httpd_uri_t history = {
         .uri = "/api/history",
         .method = HTTP_GET,
@@ -10775,6 +12881,16 @@ static void start_webserver(void)
         .method = HTTP_GET,
         .handler = recordings_get_handler,
     };
+    const httpd_uri_t recordings_delete = {
+        .uri = "/api/recordings",
+        .method = HTTP_DELETE,
+        .handler = recordings_delete_handler,
+    };
+    const httpd_uri_t cleanup_recordings = {
+        .uri = "/api/recordings/cleanup",
+        .method = HTTP_POST,
+        .handler = cleanup_recordings_post_handler,
+    };
     const httpd_uri_t recording_frame_svg = {
         .uri = RECORDING_FRAME_SVG_URI,
         .method = HTTP_GET,
@@ -10789,6 +12905,16 @@ static void start_webserver(void)
         .uri = "/api/recording",
         .method = HTTP_DELETE,
         .handler = recording_delete_handler,
+    };
+    const httpd_uri_t recording_enrich = {
+        .uri = "/api/recording/enrich",
+        .method = HTTP_POST,
+        .handler = recording_enrich_handler,
+    };
+    const httpd_uri_t recording_enrich_get = {
+        .uri = "/api/recording/enrich",
+        .method = HTTP_GET,
+        .handler = recording_enrich_handler,
     };
     const httpd_uri_t storage_records_delete = {
         .uri = "/api/storage/records",
@@ -10829,6 +12955,16 @@ static void start_webserver(void)
         .uri = "/api/mode/usb",
         .method = HTTP_GET,
         .handler = usb_mode_start_handler,
+    };
+    const httpd_uri_t usb_restore = {
+        .uri = "/api/mode/usb/restore",
+        .method = HTTP_POST,
+        .handler = usb_restore_handler,
+    };
+    const httpd_uri_t usb_restore_get = {
+        .uri = "/api/mode/usb/restore",
+        .method = HTTP_GET,
+        .handler = usb_restore_handler,
     };
     const httpd_uri_t datasets = {
         .uri = "/api/datasets",
@@ -10874,6 +13010,16 @@ static void start_webserver(void)
         .uri = "/api/time/sync",
         .method = HTTP_POST,
         .handler = time_sync_post_handler,
+    };
+    const httpd_uri_t system_reboot = {
+        .uri = "/api/system/reboot",
+        .method = HTTP_POST,
+        .handler = system_reboot_handler,
+    };
+    const httpd_uri_t system_reboot_get = {
+        .uri = "/api/system/reboot",
+        .method = HTTP_GET,
+        .handler = system_reboot_handler,
     };
     const httpd_uri_t netmode = {
         .uri = "/api/netmode",
@@ -10929,14 +13075,19 @@ static void start_webserver(void)
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &vision));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &recognition));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &config_api));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &config_api_post));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &history));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &timeline));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &timeline_delete));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &history_file));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &recordings));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &recordings_delete));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &cleanup_recordings));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &recording_frame_svg));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &recording_manifest));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &recording_delete));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &recording_enrich));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &recording_enrich_get));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &storage_records_delete));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &storage_files));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &storage_format));
@@ -10945,6 +13096,8 @@ static void start_webserver(void)
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &export_mode_start));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &usb_mode_start));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &usb_mode_start_get));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &usb_restore));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &usb_restore_get));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &datasets));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &dataset_file));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &dataset_run_start));
@@ -10954,6 +13107,8 @@ static void start_webserver(void)
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &dataset_frame_svg));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &power));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &time_sync));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &system_reboot));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &system_reboot_get));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &netmode));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &stream));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &snapshot));
@@ -11347,13 +13502,20 @@ static esp_err_t wifi_apply_mode(network_mode_t mode)
     s_ap_clients = 0;
     strlcpy(s_sta_ip_addr, "0.0.0.0", sizeof(s_sta_ip_addr));
 
-    wifi_config_t sta_config = {
-        .sta = {
-            .ssid = WIFI_SSID,
-            .password = WIFI_PASSWORD,
-            .threshold.authmode = WIFI_AUTH_WPA2_PSK,
-        },
-    };
+    bool have_router_ssid = s_router_ssid[0] != '\0';
+    if (network_mode_has_sta(mode) && !have_router_ssid) {
+        if (wifi_ap_supported()) {
+            ESP_LOGW(TAG, "router SSID is empty; using SoftAP until the Web page saves router settings");
+            mode = NETWORK_MODE_SOFTAP;
+        } else {
+            return ESP_ERR_INVALID_ARG;
+        }
+    }
+
+    wifi_config_t sta_config = {0};
+    strlcpy((char *)sta_config.sta.ssid, s_router_ssid, sizeof(sta_config.sta.ssid));
+    strlcpy((char *)sta_config.sta.password, s_router_password, sizeof(sta_config.sta.password));
+    sta_config.sta.threshold.authmode = s_router_password[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
 
     wifi_config_t ap_config = {
         .ap = {
@@ -11405,7 +13567,7 @@ static esp_err_t wifi_apply_mode(network_mode_t mode)
 
     if (mode == NETWORK_MODE_APSTA) {
         ESP_LOGI(TAG, "AP+STA started; AP HTTP service can open immediately while STA joins %s in background",
-                 WIFI_SSID);
+                 s_router_ssid);
     } else if (network_mode_has_sta(mode)) {
         EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
                                                WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
@@ -11413,7 +13575,7 @@ static esp_err_t wifi_apply_mode(network_mode_t mode)
                                                pdFALSE,
                                                pdMS_TO_TICKS(10000));
         if (bits & WIFI_CONNECTED_BIT) {
-            ESP_LOGI(TAG, "connected to %s", WIFI_SSID);
+            ESP_LOGI(TAG, "connected to %s", s_router_ssid);
         } else {
             ESP_LOGW(TAG, "STA not connected yet; mode=%s", network_mode_name(mode));
             if (mode == NETWORK_MODE_STA && wifi_ap_supported()) {
@@ -11576,6 +13738,7 @@ static void wifi_shutdown_for_storage_window(void)
     s_network_shutdown_for_idle = true;
     s_stream_clients = 0;
     s_ap_clients = 0;
+    clear_web_clients();
 
     if (s_wifi_started) {
         esp_err_t ret = esp_wifi_stop();
@@ -11595,6 +13758,7 @@ static void wifi_shutdown_for_storage_window(void)
 static void wifi_stop_for_export_mode(void)
 {
     s_ap_clients = 0;
+    clear_web_clients();
     if (s_wifi_started) {
         esp_err_t ret = esp_wifi_stop();
         ESP_LOGI(TAG, "Wi-Fi stop for export mode: %s", esp_err_to_name(ret));
@@ -11733,7 +13897,14 @@ static void enter_offline_tf_capture_mode(void)
 
     s_storage_quiescing = false;
     s_app_mode = APP_MODE_FIELD;
-    s_recognition_method = preferred_recognition_method();
+    s_recognition_method = recognition_method_or_fallback(s_recognition_method);
+    if (s_recognition_method == RECOGNITION_METHOD_OFF ||
+        s_recognition_method == RECOGNITION_METHOD_MLP ||
+        s_recognition_method == RECOGNITION_METHOD_YOLO11 ||
+        s_recognition_method == RECOGNITION_METHOD_YOLO26) {
+        s_recognition_method = fish31_espdl_available() ? RECOGNITION_METHOD_FISH31 :
+                               recognition_method_or_fallback(preferred_recognition_method());
+    }
     s_vision_enabled = true;
     s_history_enabled = false;
     s_recording_enabled = true;
@@ -11742,6 +13913,7 @@ static void enter_offline_tf_capture_mode(void)
     s_jpeg_quality = 70;
     s_last_inference_ms = 0;
     s_last_recording_frame_ms = 0;
+    s_recording_reset_requested = true;
 
     set_storage_service_state(STORAGE_SERVICE_HOSTED_DOWN,
                               "idle timeout; deinitializing ESP-Hosted transport");
@@ -11852,9 +14024,16 @@ static void usb_host_event_callback(bool connected, void *arg)
 {
     (void)arg;
     if (connected && CONFIG_APP_USB_MSC_AUTO_EXPORT &&
+        !s_usb_auto_export_suppressed &&
         s_app_mode != APP_MODE_USB_EXPORT && !s_storage_quiescing) {
         ESP_LOGI(TAG, "USB1 host detected; queueing writable TF export");
         s_usb_export_requested = true;
+    } else if (!connected && s_app_mode == APP_MODE_USB_EXPORT && s_usb_storage_ready) {
+        ESP_LOGI(TAG, "USB1 host detached; queueing TF restore to application");
+        s_usb_restore_requested = true;
+        s_usb_auto_export_suppressed = false;
+    } else if (!connected) {
+        s_usb_auto_export_suppressed = false;
     }
 }
 
@@ -11896,20 +14075,24 @@ static esp_err_t wait_for_usb_quiescence(uint32_t timeout_ms)
 static void enter_usb_export_mode(void)
 {
 #if CONFIG_APP_USB_MSC_ENABLE
-    ESP_LOGI(TAG, "entering writable USB TF export mode");
+    ESP_LOGI(TAG, "entering writable USB TF export mode with Web kept online");
     s_storage_quiescing = true;
+    s_usb_auto_export_suppressed = false;
     s_storage_mount_allowed = false;
+    s_usb_prev_vision_enabled = s_vision_enabled;
+    s_usb_prev_history_enabled = s_history_enabled;
+    s_usb_prev_recording_enabled = s_recording_enabled;
+    s_usb_prev_recognition_method = s_recognition_method;
+    s_usb_prev_power_state = s_power_state;
     s_vision_enabled = false;
     s_history_enabled = false;
+    s_recording_enabled = false;
     cancel_dataset_for_storage_handoff();
 
     camera_cmd_t standby = CAMERA_CMD_STANDBY;
     xQueueSend(s_camera_cmd_queue, &standby, pdMS_TO_TICKS(100));
 
-    /* Let a manual HTTP request finish before its transport disappears. */
     vTaskDelay(pdMS_TO_TICKS(500));
-    wifi_shutdown_for_storage_window();
-    eth_stop_runtime("USB mass storage");
 
     esp_err_t ret = wait_for_usb_quiescence(8000);
     if (ret == ESP_OK) {
@@ -11918,30 +14101,32 @@ static void enter_usb_export_mode(void)
     if (ret != ESP_OK) {
         snprintf(s_usb_last_error, sizeof(s_usb_last_error),
                  "quiesce failed: %s", esp_err_to_name(ret));
-        ESP_LOGE(TAG, "%s; TF remains with application until reboot", s_usb_last_error);
+        ESP_LOGE(TAG, "%s; TF remains with application", s_usb_last_error);
+        s_vision_enabled = s_usb_prev_vision_enabled;
+        s_history_enabled = s_usb_prev_history_enabled;
+        s_recording_enabled = s_usb_prev_recording_enabled;
+        s_recognition_method = s_usb_prev_recognition_method;
+        s_storage_mount_allowed = true;
+        s_storage_quiescing = false;
+        set_storage_service_state(STORAGE_SERVICE_ERROR,
+                                  "USB handoff failed before TF export: %s",
+                                  esp_err_to_name(ret));
+        if (s_usb_prev_power_state == POWER_STATE_RUNNING) {
+            camera_cmd_t wake = CAMERA_CMD_WAKE;
+            xQueueSend(s_camera_cmd_queue, &wake, pdMS_TO_TICKS(100));
+        }
         return;
     }
     coco_espdl_release_background();
+    cleanup_recording_temp_files();
 
-    s_recording_enabled = false;
     s_stream_clients = 0;
     s_last_recording_frame_ms = 0;
     s_app_mode = APP_MODE_USB_EXPORT;
-    s_network_active = false;
-    s_network_shutdown_for_idle = true;
+    s_network_active = true;
+    s_network_shutdown_for_idle = false;
 
     storage_unmount("USB mass-storage handoff");
-
-#if CONFIG_ESP_HOSTED_ENABLED
-    esp_err_t hosted_ret = (esp_err_t)esp_hosted_deinit();
-#if CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE
-    s_hosted_sdmmc_host_active = false;
-#endif
-    if (hosted_ret != ESP_OK) {
-        ESP_LOGW(TAG, "ESP-Hosted deinit for USB returned %s", esp_err_to_name(hosted_ret));
-    }
-    vTaskDelay(pdMS_TO_TICKS(300));
-#endif
 
     ret = storage_init_usb_sdmmc_card();
     if (ret == ESP_OK) {
@@ -11950,15 +14135,117 @@ static void enter_usb_export_mode(void)
     if (ret != ESP_OK) {
         snprintf(s_usb_last_error, sizeof(s_usb_last_error),
                  "TF attach failed: %s", esp_err_to_name(ret));
-        ESP_LOGE(TAG, "%s; reboot to restore application storage", s_usb_last_error);
+        ESP_LOGE(TAG, "%s; trying to restore application storage while Web stays online", s_usb_last_error);
+        storage_release_usb_sdmmc_card();
+        s_usb_storage_ready = false;
+        s_app_mode = APP_MODE_SERVER;
+        s_storage_mount_allowed = true;
+        esp_err_t remount_ret = storage_mount();
+        if (remount_ret != ESP_OK) {
+            snprintf(s_usb_last_error, sizeof(s_usb_last_error),
+                     "USB attach failed; TF restore failed: %s", esp_err_to_name(remount_ret));
+            set_storage_service_state(STORAGE_SERVICE_ERROR,
+                                      "USB attach failed; TF restore failed: %s",
+                                      esp_err_to_name(remount_ret));
+        } else {
+            update_sd_info();
+            strlcpy(s_usb_last_error, "USB attach failed; TF restored to application",
+                    sizeof(s_usb_last_error));
+            set_storage_service_state(STORAGE_SERVICE_IDLE,
+                                      "USB attach failed; TF restored to application");
+        }
+        s_vision_enabled = s_usb_prev_vision_enabled;
+        s_history_enabled = s_usb_prev_history_enabled;
+        s_recording_enabled = s_usb_prev_recording_enabled;
+        s_recognition_method = s_usb_prev_recognition_method;
+        s_storage_quiescing = false;
+        if (s_usb_prev_power_state == POWER_STATE_RUNNING && remount_ret == ESP_OK) {
+            camera_cmd_t wake = CAMERA_CMD_WAKE;
+            xQueueSend(s_camera_cmd_queue, &wake, pdMS_TO_TICKS(100));
+        }
         return;
     }
 
     s_usb_storage_ready = true;
     strlcpy(s_usb_last_error, "ok", sizeof(s_usb_last_error));
     set_storage_service_state(STORAGE_SERVICE_AVAILABLE,
-                              "USB host owns writable TF; safe eject then reboot");
-    ESP_LOGI(TAG, "USB writable TF ready; safe eject, wait 2 seconds, then reboot");
+                              "USB host owns writable TF; Web online; safe eject then unplug to restore automatically");
+    s_storage_quiescing = false;
+    mark_network_activity();
+    open_network_access_window("USB export active");
+    ESP_LOGI(TAG, "USB writable TF ready; Web remains online; safe eject then unplug to restore automatically");
+#endif
+}
+
+static void enter_usb_app_restore_mode(void)
+{
+#if CONFIG_APP_USB_MSC_ENABLE
+    ESP_LOGI(TAG, "restoring TF ownership from USB to application");
+    s_storage_quiescing = true;
+    s_stream_clients = 0;
+    s_vision_enabled = false;
+    s_history_enabled = false;
+    s_recording_enabled = false;
+    camera_cmd_t standby = CAMERA_CMD_STANDBY;
+    xQueueSend(s_camera_cmd_queue, &standby, pdMS_TO_TICKS(100));
+    vTaskDelay(pdMS_TO_TICKS(300));
+
+    esp_err_t ret = usb_msc_export_detach_storage();
+    if (ret != ESP_OK) {
+        snprintf(s_usb_last_error, sizeof(s_usb_last_error),
+                 "USB detach failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "%s", s_usb_last_error);
+        set_storage_service_state(STORAGE_SERVICE_ERROR,
+                                  "USB detach failed: %s", esp_err_to_name(ret));
+        s_storage_quiescing = false;
+        return;
+    }
+
+    storage_release_usb_sdmmc_card();
+    s_usb_storage_ready = false;
+    s_app_mode = APP_MODE_SERVER;
+    s_storage_mount_allowed = true;
+    usb_msc_export_status_t usb_status = {0};
+    usb_msc_export_get_status(&usb_status);
+    s_usb_auto_export_suppressed = usb_status.host_connected;
+    esp_err_t mount_ret = ESP_FAIL;
+    for (uint32_t attempt = 0; attempt < 5; attempt++) {
+        mount_ret = storage_mount();
+        if (mount_ret == ESP_OK) {
+            break;
+        }
+        ESP_LOGW(TAG, "TF remount after USB detach attempt %" PRIu32 " failed: %s",
+                 attempt + 1U, esp_err_to_name(mount_ret));
+        vTaskDelay(pdMS_TO_TICKS(300 + attempt * 250));
+    }
+    if (mount_ret != ESP_OK) {
+        snprintf(s_usb_last_error, sizeof(s_usb_last_error),
+                 "USB detached; TF remount failed after retries: %s; rebooting",
+                 esp_err_to_name(mount_ret));
+        set_storage_service_state(STORAGE_SERVICE_ERROR,
+                                  "USB detached; TF remount failed after retries: %s; rebooting",
+                                  esp_err_to_name(mount_ret));
+        s_storage_quiescing = false;
+        mark_network_activity();
+        vTaskDelay(pdMS_TO_TICKS(1200));
+        esp_restart();
+    } else {
+        update_sd_info();
+        strlcpy(s_usb_last_error, "restored to application", sizeof(s_usb_last_error));
+        set_storage_service_state(STORAGE_SERVICE_IDLE,
+                                  "USB detached; TF restored to application");
+        s_vision_enabled = s_usb_prev_vision_enabled;
+        s_history_enabled = s_usb_prev_history_enabled;
+        s_recording_enabled = s_usb_prev_recording_enabled;
+        s_recognition_method = s_usb_prev_recognition_method;
+        if (s_usb_prev_power_state == POWER_STATE_RUNNING) {
+            camera_cmd_t wake = CAMERA_CMD_WAKE;
+            xQueueSend(s_camera_cmd_queue, &wake, pdMS_TO_TICKS(100));
+        }
+    }
+    s_storage_quiescing = false;
+    mark_network_activity();
+    open_network_access_window("USB restore complete");
 #endif
 }
 
@@ -11966,7 +14253,31 @@ static void network_watchdog_tick(void)
 {
     if (s_usb_export_requested) {
         s_usb_export_requested = false;
+        if (s_app_mode != APP_MODE_USB_EXPORT) {
+            enter_usb_export_mode();
+        }
+        return;
+    }
+    if (s_usb_restore_requested) {
+        s_usb_restore_requested = false;
+        enter_usb_app_restore_mode();
+        return;
+    }
+#if CONFIG_APP_USB_MSC_ENABLE
+    usb_msc_export_status_t usb_status = {0};
+    usb_msc_export_get_status(&usb_status);
+    if (CONFIG_APP_USB_MSC_AUTO_EXPORT &&
+        usb_status.host_connected &&
+        !s_usb_storage_ready &&
+        !s_usb_auto_export_suppressed &&
+        s_app_mode != APP_MODE_USB_EXPORT &&
+        !s_storage_quiescing) {
+        ESP_LOGI(TAG, "USB1 host already connected; queueing writable TF export");
         enter_usb_export_mode();
+        return;
+    }
+#endif
+    if (s_app_mode == APP_MODE_USB_EXPORT || s_storage_quiescing) {
         return;
     }
     if (!s_network_active || s_network_shutdown_for_idle) {
@@ -11984,11 +14295,9 @@ static void network_watchdog_tick(void)
         enter_export_mode();
         return;
     }
-#if CONFIG_APP_ETH_ENABLE
-    if (s_eth_started) {
+    if (!s_field_auto_enable) {
         return;
     }
-#endif
 
     int64_t now_ms = esp_timer_get_time() / 1000;
     if (s_network_boot_window_until_ms > 0 && now_ms < s_network_boot_window_until_ms) {
@@ -11997,16 +14306,27 @@ static void network_watchdog_tick(void)
 
     int64_t last_activity_ms = __atomic_load_n(
         &s_last_network_activity_ms, __ATOMIC_ACQUIRE);
+    int64_t last_web_client_ms = __atomic_load_n(
+        &s_last_web_client_activity_ms, __ATOMIC_ACQUIRE);
+    if (last_web_client_ms > last_activity_ms) {
+        last_activity_ms = last_web_client_ms;
+    }
     int64_t idle_ms = last_activity_ms > 0 ? now_ms - last_activity_ms : now_ms;
-    if (s_ap_clients > 0 || s_stream_clients > 0 ||
-        idle_ms < CONFIG_APP_NETWORK_IDLE_TIMEOUT_MS) {
+    uint32_t web_clients = web_client_count(now_ms);
+    uint32_t file_download_clients = __atomic_load_n(&s_file_download_clients, __ATOMIC_ACQUIRE);
+    dataset_run_status_t dataset = {0};
+    dataset_status_copy(&dataset);
+    if (web_clients > 0 || s_stream_clients > 0 ||
+        file_download_clients > 0 || dataset.queued || dataset.running ||
+        inference_worker_busy() ||
+        idle_ms < (int64_t)s_field_idle_timeout_ms) {
         return;
     }
 
     ESP_LOGI(TAG,
-             "network idle shutdown: idle_ms=%" PRId64 ", ap_clients=%" PRIu32
-             ", stream_clients=%" PRIu32,
-             idle_ms, s_ap_clients, s_stream_clients);
+             "network idle shutdown: idle_ms=%" PRId64 ", web_clients=%" PRIu32
+             ", stream_clients=%" PRIu32 ", downloads=%" PRIu32,
+             idle_ms, web_clients, s_stream_clients, file_download_clients);
     enter_offline_tf_capture_mode();
 }
 
@@ -12027,7 +14347,9 @@ static void network_task(void *arg)
                          app_mode_name(s_app_mode));
                 continue;
             }
-            if (mode == s_network_mode) {
+            bool reconfigure = s_wifi_reconfigure_requested;
+            s_wifi_reconfigure_requested = false;
+            if (mode == s_network_mode && !reconfigure) {
                 continue;
             }
 
@@ -12063,6 +14385,7 @@ static void network_task(void *arg)
                 now_ms >= CONFIG_APP_STORAGE_TIMESHARE_BOOT_PROBE_MS &&
                 !s_sd_mounted &&
                 s_storage_service_mode == STORAGE_SERVICE_IDLE &&
+                web_client_count(now_ms) == 0 &&
                 s_ap_clients == 0 &&
                 s_stream_clients == 0 &&
                 s_storage_service_queue) {
@@ -12099,11 +14422,13 @@ void app_main(void)
     load_runtime_settings();
     int64_t boot_now_ms = esp_timer_get_time() / 1000;
     __atomic_store_n(&s_last_network_activity_ms, boot_now_ms, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_last_web_client_activity_ms, boot_now_ms, __ATOMIC_RELEASE);
     s_network_boot_window_until_ms = 0;
     strlcpy(s_ap_ip_addr, CONFIG_APP_AP_STATIC_IP, sizeof(s_ap_ip_addr));
     ESP_LOGI(TAG,
-             "Network access window=%d ms after HTTP starts, idle timeout=%d ms, fixed AP URL=http://%s/",
-             CONFIG_APP_NETWORK_BOOT_WINDOW_MS, CONFIG_APP_NETWORK_IDLE_TIMEOUT_MS, s_ap_ip_addr);
+             "Network access window<=%" PRIu32 " ms after HTTP starts, idle timeout=%" PRIu32
+             " ms, fixed AP URL=http://%s/",
+             network_access_window_ms(), s_field_idle_timeout_ms, s_ap_ip_addr);
     log_acceleration_status();
 
     s_frame_capacity = CONFIG_APP_FRAME_BUFFER_BYTES;
@@ -12151,7 +14476,7 @@ void app_main(void)
     s_history_queue = xQueueCreate(HISTORY_QUEUE_DEPTH, sizeof(history_item_t));
     ESP_ERROR_CHECK(s_history_queue ? ESP_OK : ESP_ERR_NO_MEM);
 
-    s_recording_queue = xQueueCreate(CONFIG_APP_RECORDING_QUEUE_DEPTH, sizeof(recording_item_t));
+    s_recording_queue = xQueueCreate(64, sizeof(recording_item_t));
     ESP_ERROR_CHECK(s_recording_queue ? ESP_OK : ESP_ERR_NO_MEM);
 
     s_recording_finalize_done = xSemaphoreCreateBinary();
@@ -12160,6 +14485,7 @@ void app_main(void)
 
     s_inference_queue = xQueueCreate(1, sizeof(inference_job_t));
     ESP_ERROR_CHECK(s_inference_queue ? ESP_OK : ESP_ERR_NO_MEM);
+    recording_enrichment_set_infer_callback(enrichment_infer_annotate_cb, NULL);
 
     s_dataset_run_queue = xQueueCreate(1, sizeof(dataset_run_request_t));
     ESP_ERROR_CHECK(s_dataset_run_queue ? ESP_OK : ESP_ERR_NO_MEM);
@@ -12189,6 +14515,10 @@ void app_main(void)
                                            NULL, 1, &s_enrichment_task_handle);
     ESP_ERROR_CHECK(enrichment_ok == pdTRUE ? ESP_OK : ESP_ERR_NO_MEM);
 #endif
+
+    BaseType_t resegment_ok = xTaskCreate(resegment_task, "recording_reseg",
+                                          8192, NULL, 1, &s_resegment_task_handle);
+    ESP_ERROR_CHECK(resegment_ok == pdTRUE ? ESP_OK : ESP_ERR_NO_MEM);
 
     BaseType_t inference_ok = xTaskCreate(inference_task, "inference_task",
                                           CONFIG_APP_INFERENCE_TASK_STACK_SIZE,
@@ -12275,15 +14605,12 @@ void app_main(void)
      * parallel with app_main and reset the C6/SDIO transport mid-handshake.
      */
     BaseType_t network_ok = xTaskCreate(network_task, "network_task",
-                                        4096, NULL, 5, &s_network_task_handle);
+                                        8192, NULL, 5, &s_network_task_handle);
     ESP_ERROR_CHECK(network_ok == pdTRUE ? ESP_OK : ESP_ERR_NO_MEM);
 
     /*
-     * The boot COCO self-test is deliberately last. It still warms and proves
-     * the model, but no longer competes with TF recovery and Hosted startup.
+     * Customer firmware keeps model validation on the /validate page instead
+     * of running a boot self-test. The self-test eagerly loads COCO and can
+     * starve the hardware JPEG encoder before the user opens live preview.
      */
-    BaseType_t selftest_ok = xTaskCreate(validation_selftest_task, "image_selftest",
-                                         4096, NULL, CONFIG_APP_INFERENCE_TASK_PRIORITY - 1,
-                                         &s_validation_selftest_task_handle);
-    ESP_ERROR_CHECK(selftest_ok == pdTRUE ? ESP_OK : ESP_ERR_NO_MEM);
 }

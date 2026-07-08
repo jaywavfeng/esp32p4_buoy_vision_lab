@@ -21,6 +21,7 @@ typedef struct {
 
 esp_err_t usb_msc_export_init(usb_msc_host_event_cb_t callback, void *callback_arg);
 esp_err_t usb_msc_export_attach_sdmmc(sdmmc_card_t *card);
+esp_err_t usb_msc_export_detach_storage(void);
 void usb_msc_export_get_status(usb_msc_export_status_t *status);
 
 #ifdef __cplusplus

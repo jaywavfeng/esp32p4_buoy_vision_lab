@@ -1,443 +1,161 @@
-# 模型部署教程：从别人训练好的模型到 ESP32-P4 板端运行
+# 模型部署说明（v3.0.0）
 
-这份文档给自己复现用。目标是看完之后能回答四个问题：
+本文说明当前固件实际开放和验收的模型链路。客户首页、FIELD 野外录像、手动补帧和 `/validate` 只开放三种模型：Fish31、TinyCNN、COCO。
 
-1. 别人训练好模型后应该给我什么？
-2. `.pth/.pt`、`.onnx`、`.espdl` 分别是什么？
-3. 当前工程里的模型是怎么被部署到板子上的？
-4. 如果我要换成新的分类模型，应该改哪里、怎么验证？
+## 1. 当前模型
 
-## 先理解三种模型文件
+| 方法 | 类型 | 板端模型 | 当前用途 |
+|---|---|---|---|
+| `fish31` | 分类 | `models/fish31_mbv3s_075_224_s8_p4.espdl` | 默认模型，FIELD 和手动补帧主链路 |
+| `tinycls` | 分类 | `models/tiny_cls_xl_deep_192_6cls_s8_p4.espdl` | 轻量 Marine 分类对照 |
+| `coco` | 检测 | `espressif/coco_detect` 组件内置 COCO YOLO11n 320 | 通用检测演示和对照 |
 
-### `.pth` / `.pt`
+板端最终运行 `.espdl` 或 ESP-DL 组件内置模型，不直接运行 `.pth`、`.pt` 或 `.onnx`。
 
-这是训练框架里的权重文件，常见于 PyTorch 或 Ultralytics。
+## 2. 文件交付要求
 
-用途：
-
-- 继续训练；
-- 在 PC 上评估；
-- 导出 ONNX。
-
-板端不能直接运行 `.pth/.pt`。
-
-### `.onnx`
-
-ONNX 是跨框架的中间格式。
-
-用途：
-
-- 让训练同学和部署同学交接；
-- 在 PC 上用 `onnxruntime` 验证；
-- 送进 ESP-DL/ESP-PPQ 量化工具。
-
-ESP32-P4 当前也不是直接运行 ONNX。ONNX 还需要继续量化和转换。
-
-### `.espdl`
-
-这是 ESP-DL 给 ESP32-P4 使用的模型格式。
-
-用途：
-
-- 嵌入固件；
-- 板端 `dl::Model` 加载；
-- 板端实际推理。
-
-本工程最终部署到板子上的模型就是 `.espdl`。
-
-## 当前工程已有模型
-
-| 方法 | 来源 | 当前部署方式 |
-|---|---|---|
-| `fish31` | Fish31 MobileNetV3-Small 0.75x 224x224 31-class | `models/fish31_mbv3s_075_224_s8_p4.espdl` 嵌入固件，当前默认 |
-| `tinycls` | TinyCNN-XL-Deep 192x192 6-class | `models/tiny_cls_xl_deep_192_6cls_s8_p4.espdl` 嵌入固件 |
-| `coco` | `espressif/coco_detect` 组件 | 通过 Kconfig 选择官方 COCO YOLO11n 320 INT8 模型 |
-| `yolo11` / `yolo26` / `mlp` | 历史 Coke/Sprite 实验路线 | 源码和复现资料保留；当前首页、手机验证和 `/api/recognition` 主路径不再启用 |
-
-当前默认配置：
+新增模型交接时，至少需要保留：
 
 ```text
-CONFIG_APP_DEFAULT_RECOGNITION_METHOD=6
-CONFIG_APP_FISH31_INPUT_SIZE=224
-CONFIG_APP_FISH31_MODEL_FILE="../models/fish31_mbv3s_075_224_s8_p4.espdl"
-CONFIG_APP_TINY_CLS_INPUT_SIZE=192
-CONFIG_APP_TINY_CLS_MODEL_FILE="../models/tiny_cls_xl_deep_192_6cls_s8_p4.espdl"
-```
-
-也就是默认使用 `fish31` / `fish31-mbv3s075-224-p4`。当前主路径运行时可通过 API 改：
-
-```text
-http://<board-ip>/api/recognition?method=fish31
-http://<board-ip>/api/recognition?method=tinycls
-http://<board-ip>/api/recognition?method=coco
-http://<board-ip>/api/recognition?method=off
-```
-
-注意：API 会写 NVS，重启后可能保留上一次选择。如果怀疑状态不对，直接调用上面的 API 切回 `fish31`。
-
-## 当前 COCO 模型是怎么部署的
-
-COCO 模型不是放在 `models/` 目录里的本地文件，而是来自组件：
-
-```yaml
-# main/idf_component.yml
-espressif/coco_detect:
-  version: "0.3.2"
-```
-
-模型选择在 `sdkconfig.defaults`：
-
-```text
-CONFIG_FLASH_COCO_DETECT_YOLO11N_320_S8_V3=y
-CONFIG_COCO_DETECT_YOLO11N_320_S8_V3=y
-CONFIG_DEFAULT_COCO_DETECT_MODEL=3
-CONFIG_COCO_DETECT_MODEL_IN_FLASH_RODATA=y
-CONFIG_COCO_DETECT_MODEL_LOCATION=0
-```
-
-代码入口：
-
-```text
-main/coco_espdl_bridge.cpp
-main/coco_espdl_bridge.h
-```
-
-关键代码逻辑：
-
-```cpp
-extern const uint8_t coco_detect_model_start[] asm("_binary_coco_detect_espdl_start");
-extern const uint8_t coco_detect_model_end[] asm("_binary_coco_detect_espdl_end");
-```
-
-这两个符号指向固件里的 COCO `.espdl` 模型二进制。桥接代码用它们计算模型大小，并创建 ESP-DL 模型对象。
-
-运行路径大致是：
-
-```text
-JPEG 输入
-  -> ESP-DL JPEG decode
-  -> resize / preprocess 到 320x320
-  -> coco_detect / ESP-DL 推理
-  -> YOLO 后处理、NMS、坐标映射
-  -> vision_result_t
-  -> /api/status、/validate、历史记录、录像 sidecar
-```
-
-验证结果在：
-
-```text
-reports/coco_video/latest_board_coco_verify_summary.json
-```
-
-当前实测：
-
-```text
-model=coco-yolo11n-320-s8-v3-p4
-model_bytes=2860704
-inference_ms=596-649
-analysis_ms=651-702
-avg_analysis_ms=666
-```
-
-## 本地 YOLO 模型是怎么部署的
-
-本地 `.espdl` 文件在 `models/`：
-
-```text
-models/yolo11_coke_sprite_416_s8_p4.espdl
-models/yolo26_coke_sprite_raw_heads_416_allint8_p4.espdl
-```
-
-它们在 `main/CMakeLists.txt` 中被嵌入固件：
-
-```cmake
-set(YOLO26_MODEL_FILE "${CMAKE_CURRENT_LIST_DIR}/../models/yolo26_coke_sprite_raw_heads_416_allint8_p4.espdl")
-target_add_aligned_binary_data(${COMPONENT_LIB} "${YOLO26_MODEL_FILE}" BINARY)
-
-set(YOLO11_MODEL_FILE "${CMAKE_CURRENT_LIST_DIR}/../models/yolo11_coke_sprite_416_s8_p4.espdl")
-target_add_aligned_binary_data(${COMPONENT_LIB} "${YOLO11_MODEL_FILE}" BINARY)
-```
-
-桥接代码再用链接符号拿到模型地址：
-
-```cpp
-// main/yolo11_espdl_bridge.cpp
-extern const uint8_t yolo11_model_start[] asm("_binary_yolo11_coke_sprite_416_s8_p4_espdl_start");
-extern const uint8_t yolo11_model_end[] asm("_binary_yolo11_coke_sprite_416_s8_p4_espdl_end");
-
-// main/yolo26_espdl_bridge.cpp
-extern const uint8_t yolo26_model_start[] asm("_binary_yolo26_coke_sprite_raw_heads_416_allint8_p4_espdl_start");
-extern const uint8_t yolo26_model_end[] asm("_binary_yolo26_coke_sprite_raw_heads_416_allint8_p4_espdl_end");
-```
-
-如果你改了 `.espdl` 文件名，符号名也会变，bridge 里的 `asm("_binary_...")` 必须一起改。为了少踩坑，可以先保持文件名不变，直接替换文件内容。
-
-## 当前 YOLO 训练和量化复现
-
-创建 Python 环境：
-
-```powershell
-cd <project-directory>
-python -m venv .venv_yolo
-.\.venv_yolo\Scripts\python.exe -m pip install --upgrade pip
-.\.venv_yolo\Scripts\python.exe -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
-.\.venv_yolo\Scripts\python.exe -m pip install ultralytics onnx==1.17.0 onnxruntime onnxscript opencv-python pillow esp-ppq
-```
-
-YOLO11n：
-
-```powershell
-.\.venv_yolo\Scripts\python.exe -u tools\train_yolo11_coke_sprite.py --epochs 40 --imgsz 416 --batch 8 --device auto --name gpu_yolo11n_416
-.\.venv_yolo\Scripts\python.exe -u tools\quantize_yolo11_espdl.py --onnx models\yolo11_coke_sprite_416.onnx --output models\yolo11_coke_sprite_416_s8_p4.espdl --input-size 416 --calib-limit 96
-```
-
-YOLO26n：
-
-```powershell
-.\.venv_yolo\Scripts\python.exe -u tools\train_yolo26_coke_sprite.py --model yolo26n.pt --epochs 40 --imgsz 416 --batch 8 --device 0 --name gpu_yolo26n_416
-.\.venv_yolo\Scripts\python.exe -u tools\export_yolo26_raw_heads.py --weights runs\detect\runs\yolo26_coke_sprite\gpu_yolo26n_416\weights\best.pt --output models\yolo26_coke_sprite_raw_heads_416.onnx --imgsz 416
-.\.venv_yolo\Scripts\python.exe -u tools\quantize_yolo26_official_pipeline.py --onnx models\yolo26_coke_sprite_raw_heads_416.onnx --output models\yolo26_coke_sprite_raw_heads_416_allint8_p4.espdl --input-size 416 --calib-limit 96
-```
-
-重新构建和烧录：
-
-```powershell
-.\build_tmp.ps1
-.\flash_p4.ps1 -Port COM3
-```
-
-验证：
-
-```text
-http://<board-ip>/api/recognition?method=yolo11
-http://<board-ip>/api/status
-http://<board-ip>/validate
-```
-
-## 如果禹杰给了分类模型，我该怎么部署
-
-假设他给你：
-
-```text
-ship_cls.onnx
+model.espdl 或 model.onnx
 classes.json
 preprocess.json
 calib_images/
-val_images/
+validation_images/
 ```
 
-第一步：先 PC 验证 ONNX。
+即使对方已经交付 `.espdl`，也应保留 `classes.json` 和 `preprocess.json`。label 顺序、RGB/BGR、resize/crop、mean/std 任一项不一致，都会导致板端结果异常。
 
-```powershell
-.\.venv_yolo\Scripts\python.exe - <<'PY'
-import onnx
-m = onnx.load("models/ship_cls.onnx")
-onnx.checker.check_model(m)
-print("onnx ok")
-for i in m.graph.input:
-    print("input", i.name)
-for o in m.graph.output:
-    print("output", o.name)
-PY
-```
+## 3. 构建嵌入入口
 
-第二步：用 ESP-DL/ESP-PPQ 量化成 `.espdl`。
-
-当前仓库还没有通用分类量化脚本，建议新增：
-
-```text
-tools/quantize_classifier_espdl.py
-```
-
-脚本要做这些事：
-
-1. 读取 `ship_cls.onnx`；
-2. 读取 `calib_images/`；
-3. 按 `preprocess.json` 做 resize、RGB/BGR、mean/std；
-4. 调用 ESP-PPQ/ESP-DL 量化；
-5. 输出 `models/ship_cls_s8_p4.espdl`；
-6. 同时输出 `.json/.info` 报告，方便排查量化结果。
-
-第三步：在 `main/CMakeLists.txt` 嵌入模型。
-
-示例：
+本地分类模型在 `main/CMakeLists.txt` 中嵌入：
 
 ```cmake
-set(SHIP_CLS_MODEL_FILE "${CMAKE_CURRENT_LIST_DIR}/../models/ship_cls_s8_p4.espdl")
-target_add_aligned_binary_data(${COMPONENT_LIB} "${SHIP_CLS_MODEL_FILE}" BINARY)
+set(TINY_CLS_MODEL_FILE "${CONFIG_APP_TINY_CLS_MODEL_FILE}")
+target_add_aligned_binary_data(${COMPONENT_LIB} "${TINY_CLS_MODEL_EMBED_FILE}" BINARY)
+
+set(FISH31_MODEL_FILE "${CONFIG_APP_FISH31_MODEL_FILE}")
+target_add_aligned_binary_data(${COMPONENT_LIB} "${FISH31_MODEL_EMBED_FILE}" BINARY)
 ```
 
-第四步：新增 bridge 文件。
-
-建议新增：
+默认路径来自 `main/Kconfig.projbuild` 和 `sdkconfig.defaults`：
 
 ```text
-main/classifier_espdl_bridge.h
-main/classifier_espdl_bridge.cpp
+CONFIG_APP_DEFAULT_RECOGNITION_METHOD=6
+CONFIG_APP_FISH31_MODEL_FILE="../models/fish31_mbv3s_075_224_s8_p4.espdl"
+CONFIG_APP_TINY_CLS_MODEL_FILE="../models/tiny_cls_xl_deep_192_6cls_s8_p4.espdl"
+CONFIG_FLASH_COCO_DETECT_YOLO11N_320_S8_V3=y
 ```
 
-bridge 要提供类似这些函数：
+COCO 模型由 `espressif/coco_detect` 组件提供，不在 `models/` 目录保留本地副本。
 
-```cpp
-bool classifier_espdl_available(void);
-uint32_t classifier_espdl_model_bytes(void);
-esp_err_t classifier_espdl_classify_jpeg(const uint8_t *jpg_data,
-                                         uint32_t jpg_len,
-                                         classifier_result_t *out);
-```
+## 4. 运行时选择
 
-内部流程：
-
-```text
-JPEG decode
-  -> resize/crop 到模型输入尺寸
-  -> RGB/BGR 转换
-  -> mean/std 归一化或 INT8 输入处理
-  -> dl::Model forward
-  -> 读取 logits
-  -> softmax
-  -> top1/topk label + score
-```
-
-第五步：把 bridge 加进构建。
-
-在 `main/CMakeLists.txt` 的 `SRCS` 增加：
-
-```cmake
-"classifier_espdl_bridge.cpp"
-```
-
-第六步：在 `main/camera_web_main.c` 接入新方法。
-
-需要改的典型位置：
-
-```text
-recognition_method_t enum                  增加 RECOGNITION_METHOD_CLS
-recognition_method_name()                  返回 "cls"
-parse_recognition_method()                 支持 method=cls
-active_model_bytes()/model_bytes_for_method()
-model_name_for_method()
-model_input_size_for_method()
-recognition_method_available()
-inference_task 或 classify_* 分发逻辑
-/api/status 的 model_info 和 vision 字段
-/api/recognition?method=cls
-```
-
-分类模型不需要检测框，所以 `vision_result_t` 可以这样填：
-
-```text
-label=分类结果
-object=分类结果
-object_score=top1 分数
-candidate_score=top1 分数
-detection_count=0
-object_x/y/w/h=0
-model=模型名
-model_bytes=.espdl 字节数
-inference_ms=模型推理时间
-analysis_ms=完整分析时间
-```
-
-第七步：构建、烧录、验证。
+客户页面「模型切换」会保存到 NVS。也可以通过 API 验证：
 
 ```powershell
-.\build_tmp.ps1
-.\flash_p4.ps1 -Port COM3
+curl.exe --noproxy "*" "http://169.254.100.2/api/config?method=fish31"
+curl.exe --noproxy "*" "http://169.254.100.2/api/config?method=tinycls"
+curl.exe --noproxy "*" "http://169.254.100.2/api/config?method=coco"
+curl.exe --noproxy "*" "http://169.254.100.2/api/status"
 ```
 
-板端验证：
+状态里重点检查：
 
 ```text
-http://<board-ip>/api/recognition?method=cls
-http://<board-ip>/api/status
-http://<board-ip>/validate
-```
-
-重点看：
-
-```text
+recognition_method
 model_info.name
 model_info.bytes
 vision.label
-vision.object_score
+vision.top_k
 vision.inference_ms
 vision.analysis_ms
 ```
 
-目标是：
+FIELD 野外录像和手动补帧都使用当前保存模型。分类模型在推理视频左上角写 Top-1/Top-K，COCO 绘制检测框。
+
+## 5. 新增分类模型的最小接入方式
+
+建议从 `fish31_espdl_bridge.cpp` 或 `tiny_cls_espdl_bridge.cpp` 复制新 bridge，不要把模型逻辑直接堆在 `camera_web_main.c`。
+
+典型文件：
 
 ```text
-vision.analysis_ms <= 200
+main/new_cls_espdl_bridge.h
+main/new_cls_espdl_bridge.cpp
+models/new_cls_s8_p4.espdl
 ```
 
-## 从代码角度理解当前推理链路
+bridge 对外至少提供：
 
-主程序在 `main/camera_web_main.c`。
+```cpp
+bool new_cls_espdl_available(void);
+uint32_t new_cls_espdl_model_bytes(void);
+esp_err_t new_cls_espdl_classify_frame(const uint8_t *data,
+                                       uint32_t data_size,
+                                       uint32_t width,
+                                       uint32_t height,
+                                       uint32_t pixel_format,
+                                       new_cls_espdl_result_t *out);
+esp_err_t new_cls_espdl_classify_validation_jpeg(const uint8_t *jpg_data,
+                                                 uint32_t jpg_len,
+                                                 new_cls_espdl_result_t *out);
+```
 
-### 摄像头任务
-
-`camera_task` 做：
+主流程需要同步更新：
 
 ```text
-打开 /dev/video*
-采集 V4L2 frame
-编码 JPEG
-发布最新 JPEG 到 PSRAM 缓存
-按 inference_interval_ms 抽帧送入 inference_task
-按 recording_max_fps 抽帧送入 recording_task
+recognition_method_t enum
+recognition_method_name()
+configured_default_recognition_method()
+active_model_bytes()
+model_input_size_for_method()
+model_class_count_for_method()
+model_name_for_method()
+recognition_method_available()
+analyze_frame()
+classify_validation_*()
+/api/config method parsing
+Web model selector
+/validate METHOD_DEMOS
 ```
 
-### 推理任务
-
-`inference_task` 做：
+分类结果写入 `vision_result_t` 时遵循当前约定：
 
 ```text
-从长度为 1 的队列取 inference_job_t
-按 job.method 选择模型
-调用 classify_coco_jpeg / classify_yolo11_jpeg / classify_yolo26_jpeg / MLP
-把结果写回 latest vision
-必要时写历史记录
+label/object = Top-1 label
+object_score/candidate_score = Top-1 score
+top_k = Top-K array
+detection_count = 0
+object_x/y/w/h = 0
+model = model name
+inference_ms = model inference time
+analysis_ms = full analysis time
 ```
 
-队列长度是 1。这样模型慢的时候不会排队堆几十秒，新的帧会被丢弃，图传仍然继续。
+## 6. 板端实测摘要
 
-### HTTP 输出
+| 方法 | p95 analysis | latest FPS | 说明 |
+|---|---:|---:|---|
+| `fish31` | 176 ms | 4.91 | 默认分类链路 |
+| `tinycls` | 102 ms | 8.61 | 轻量分类对照 |
+| `coco` | 1424 ms | 0.69 | 检测对照，速度明显更低 |
 
-HTTP server 输出：
+完整记录见 [model_benchmark_results_cn.md](model_benchmark_results_cn.md)。
 
-```text
-/stream       只发送最新 JPEG，不等待推理
-/api/status   返回当前模型、最新识别、存储、网络、FPS
-/validate     把内置图片送入同一个推理队列做验证
-```
+## 7. 验收清单
 
-所以换模型时，核心不是改网页，而是把新的分类结果正确填入统一的 `vision_result_t`。
+1. `idf.py build` 或 `.\build_tmp.ps1` 通过。
+2. 烧录后 `/api/status.model_info.name` 为预期模型。
+3. Web 保存 Fish31/TinyCNN/COCO 后，重启仍保持。
+4. `/validate` 图片和短视频可运行，无乱码、无卡死。
+5. FIELD 采集后 raw/annotated 成对出现。
+6. 推理视频标注模型正确，分类标签在左上角更新。
+7. 点击「补帧」后该条记录按当前模型重建 annotated，进度到满帧。
 
-## 常见坑
+## 8. 常见问题
 
-1. 直接把 `.pth` 放进 `models/` 没用，板子不能跑。
-2. 直接把 `.onnx` 放进 `models/` 也没用，必须先转 `.espdl`。
-3. 改 `.espdl` 文件名后，bridge 里的 `_binary_..._start/end` 符号也要改。
-4. 没有校准集就做 INT8，板端精度不可相信。
-5. PC 上快不代表板端快，最终只认 `/api/status` 的 `analysis_ms`。
-6. 分类模型没有框，网页 overlay 不能继续按检测框逻辑理解结果。
-7. 输入预处理必须和训练一致，RGB/BGR、mean/std、resize/crop 错一个都会导致结果乱。
-
-## 最小复现检查表
-
-拿到新模型后按这个顺序做：
-
-```text
-1. 确认有 ONNX、classes、preprocess、calib_images、val_images
-2. onnx.checker 检查 ONNX
-3. onnxruntime 跑一张图，确认输出 logits 正常
-4. 量化生成 .espdl
-5. CMake 嵌入 .espdl
-6. bridge 用 _binary_xxx_start/end 加载模型
-7. camera_web_main.c 增加 method
-8. build/flash
-9. /api/recognition?method=cls
-10. /api/status 看 label/score/inference_ms/analysis_ms
-11. 用真实图片重复验证精度
-```
+- 直接把 `.pth` 或 `.onnx` 放进 `models/` 不会让固件自动加载；当前固件只嵌入配置好的 `.espdl` 或组件模型。
+- 修改 `.espdl` 文件名后，CMake 嵌入路径和 bridge 中 `_binary_..._start/end` 符号要同步。
+- PC 速度不能替代板端速度，最终只认可 `/api/status` 的 `analysis_ms` 和 `inference_fps_x100`。
+- 分类模型没有检测框，Web overlay 和推理视频必须按 Top-1/Top-K 展示。

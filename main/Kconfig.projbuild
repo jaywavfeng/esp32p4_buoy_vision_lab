@@ -147,7 +147,7 @@ menu "Wi-Fi Camera Web Control"
         help
             Fish31 is the default board classifier. TinyCNN is the 6-class
             marine classifier, and COCO is the ESP-DL board-side detection
-            comparison route. Legacy Coke/Sprite routes are hidden unless
+            comparison route. Historical experiment routes are hidden unless
             APP_ENABLE_LEGACY_COKE_SPRITE is enabled.
 
     config APP_TINY_CLS_MODEL_FILE
@@ -179,20 +179,21 @@ menu "Wi-Fi Camera Web Control"
             Square Fish31 input size. Must match the embedded ESP-DL model.
 
     config APP_ENABLE_LEGACY_COKE_SPRITE
-        bool "Enable legacy Coke/Sprite model assets and routes"
+        bool "Enable legacy experiment model routes"
         default n
         help
-            When disabled, Coke/Sprite YOLO11/YOLO26 model assets are not
-            compiled into the firmware and the main API/UI path recommends only
-            fish31, tinycls, coco, and off. Source files are kept for historical
-            reproduction.
+            Keep this disabled for the v3.0.0 customer firmware. When disabled,
+            legacy experiment assets are not compiled into the firmware and the
+            API/UI path exposes only fish31, tinycls, coco, and off. The source
+            files are retained for historical reproduction, but the old model
+            assets are not shipped in this release.
 
     config APP_YOLO26_BOARD_ENABLE
         bool "Enable board-side YOLO26 ESP-DL inference"
         depends on APP_ENABLE_LEGACY_COKE_SPRITE
         default n
         help
-            Enable the self-trained Coke/Sprite YOLO26n model embedded from models/.
+            Enable the historical YOLO26n experiment model embedded from models/.
             The firmware still depends on the espressif/yolo26 component for the postprocessor,
             but the graph loaded at runtime is models/yolo26_coke_sprite_raw_heads_416_allint8_p4.espdl.
 
@@ -344,7 +345,7 @@ menu "Wi-Fi Camera Web Control"
         default 96
         range 50 100
         help
-            Minimum candidate score, in percent, required before the Coke/Sprite recognizer draws a box
+            Minimum candidate score, in percent, required before the legacy recognizer draws a box
             and records a positive object result. Increase it to reduce false boxes; decrease it to
             recover more weak detections.
 
@@ -392,7 +393,7 @@ menu "Wi-Fi Camera Web Control"
     config APP_RECORDING_SEGMENT_MS
         int "Recording segment length in milliseconds"
         default 60000
-        range 5000 600000
+        range 5000 14400000
 
     config APP_RECORDING_MAX_FPS
         int "Maximum TF recording FPS"

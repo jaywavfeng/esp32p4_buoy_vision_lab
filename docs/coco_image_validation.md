@@ -1,159 +1,81 @@
-# ESP32-P4 COCO Image Validation Path
+# COCO 模型验证说明
 
-This project now has a flash-only image validation path for the period when the TF card is unavailable.
+本文记录当前 `v3.0.0` 固件中 COCO 对照模型的验证路径。COCO 不是默认模型，客户默认使用 Fish31；COCO 通过 Web「模型切换」或 `/api/config?method=coco` 选择后用于演示、实时预览、FIELD 录像和手动补帧。
 
-## Selected Model
+## 模型信息
 
-- Backend: Espressif `espressif/coco_detect` 0.3.2.
-- Model: `coco_detect_yolo11n_320_s8_v3.espdl`.
-- Target: ESP32-P4.
-- Input: `320 x 320 x 3`.
-- Classes: COCO 80 classes.
-- Model bytes on board: `2,860,704`.
-- Official P4 accuracy from the component README: COCO val2017 `mAP50-95 = 0.275`.
-- Official P4 latency from the component README: preprocess `5.6 ms`, model `600.0 ms`, postprocess `5.8 ms`.
+| 项目 | 内容 |
+|---|---|
+| Backend | Espressif `espressif/coco_detect` |
+| Model | `coco_detect_yolo11n_320_s8_v3.espdl` |
+| Target | ESP32-P4 |
+| Input | `320 x 320 x 3` |
+| Classes | COCO 80 classes |
+| Board model bytes | `2,860,704` |
 
-This is the first deployed model in this project that meets the requirement of at least one predicted frame per second on ESP32-P4. The older self-trained Coke/Sprite YOLO11/YOLO26 models are still kept for comparison, but their measured board-side latency is about `14-16 s` per frame.
+该模型作为通用检测对照保留。当前客户首页只开放 `fish31`、`tinycls`、`coco` 三种模型。
 
-## Board-Side Measurement
+## 板端单图验证
 
-Measured on the ESP32-P4 board through serial self-test after embedding the COCO val2017 `demo_01..demo_04` images.
-The self-test runs each image once as `warmup` and once as `measure`; the acceptance metric is `analysis_ms`, which includes JPEG decode, ESP-DL preprocessing, model inference, and postprocessing.
+固件嵌入 4 张 COCO val2017 验证图，路径为：
+
+```text
+test_assets/video_frames_320/images/demo_01.jpg
+test_assets/video_frames_320/images/demo_02.jpg
+test_assets/video_frames_320/images/demo_03.jpg
+test_assets/video_frames_320/images/demo_04.jpg
+```
+
+历史板端测量摘要：
 
 ```text
 CPU:                360 MHz
 L2 cache:           256 KB, 128-byte line
 Model:              coco-yolo11n-320-s8-v3-p4
-Model bytes:        2,860,704
 Input:              320 x 320
-demo_01 measure:   inference 645 ms, analysis 697 ms, detections 8, top person 78%
-demo_02 measure:   inference 597 ms, analysis 650 ms, detections 8, top person 82%
-demo_03 measure:   inference 612 ms, analysis 666 ms, detections 8, top chair 78%
-demo_04 measure:   inference 605 ms, analysis 660 ms, detections 7, top person 82%
+demo_01 measure:   inference 645 ms, analysis 697 ms, detections 8
+demo_02 measure:   inference 597 ms, analysis 650 ms, detections 8
+demo_03 measure:   inference 612 ms, analysis 666 ms, detections 8
+demo_04 measure:   inference 605 ms, analysis 660 ms, detections 7
 Measure average:   inference 614.75 ms, analysis 668.25 ms
-Latency target:    PASS, all measure analysis_ms < 1000
 ```
 
-Evidence:
+`analysis_ms` 包含 JPEG decode、ESP-DL preprocess、model inference 和 postprocess，是板端验收的主要指标。
 
-- Serial log: `reports/coco_video/board_coco_validation.log`
-- Parsed summary: `reports/coco_video/board_coco_validation_summary.json`
+## `/validate` 演示
 
-`queue_total_ms` is larger during boot because it also includes queue wait and scheduling time, so the acceptance metric for steady single-frame prediction is `analysis_ms`.
-
-The 512 KB L2 cache experiment did not boot on this board because the system could not reserve the 32 KB internal DMA pool. Keep `256 KB / 128 B` as the current fast and stable cache setting. The board revision used here also failed at 400 MHz, so CPU frequency is kept at 360 MHz.
-
-## PC Video Validation
-
-The PC-side video preview uses a public Intel IoT DevKit sample video and the local `yolo11n.pt` model at the same `320` input size used by the board model family.
-
-Command:
-
-```powershell
-.\.venv_yolo\Scripts\python.exe tools\run_coco_video_validation.py --video data\coco_video\person-bicycle-car-detection.mp4 --weights yolo11n.pt --imgsz 320 --conf 0.25 --frame-stride 1 --top-k 4 --board-width 512
-```
-
-Artifacts:
-
-- Input video: `data/coco_video/person-bicycle-car-detection.mp4`
-- Annotated video: `reports/coco_video/person_bicycle_car_yolo11n_320_annotated.mp4`
-- Report: `reports/coco_video/prediction_summary.json`
-- Selected reference frames: `reports/coco_video/selected_frames/video_01.jpg` through `video_04.jpg`
-
-Latest PC run:
+验证页入口：
 
 ```text
-Source:           768 x 432, 647 frames, 12 FPS
-Processed frames: 647
-PC inference:     avg 62.969 ms, min 47.310 ms, max 379.771 ms
-Classes observed: person, car, bus, cell phone, plus some small-object false positives
+http://169.254.100.2/validate
 ```
 
-The video output is for visual preview of the end-to-end "input video, output annotated video" requirement. Board validation images are prepared from COCO val2017 instead of this video, because COCO still images provide denser and cleaner multi-object scenes.
-
-## Firmware Video Demo
-
-The phone validation page now uses a separate real-video sequence named
-`coco_video_demo`. It embeds 16 consecutive frames from Intel's
-`store-aisle-detection.mp4`, covering source frames 2400 through 3300 at a
-60-frame interval. The images are 448 pixels wide, JPEG quality 78, and total
-about 475 KB.
-
-The board runs every frame through the same COCO inference queue used by the
-camera. `/api/dataset/run/status` publishes the latest completed overlay while
-the run is active. After all frames finish, the browser preloads the SVG
-overlays and replays them at 1 FPS. Source and CC BY 4.0 attribution are stored
-in `test_assets/coco_video_demo/SOURCE.md`.
-
-## COCO Classic Board Samples
-
-The current board-embedded demo images are selected from COCO val2017, not from the old Coke/Sprite or soda-bottle data.
-
-Command:
-
-```powershell
-.\.venv_yolo\Scripts\python.exe tools\prepare_coco_classic_samples.py --weights yolo11n.pt --imgsz 320 --conf 0.25 --candidate-count 48 --top-k 4 --board-width 512
-```
-
-Artifacts:
-
-- Selection report: `reports/coco_video/coco_classic_samples.json`
-- PC annotated contact sheet: `reports/coco_video/coco_classic_contact_sheet.jpg`
-- Full reference images: `test_assets/coco_classic/images/coco_01.jpg` through `coco_04.jpg`
-- PC annotated references: `test_assets/coco_classic/images/coco_01_pc_annotated.jpg` through `coco_04_pc_annotated.jpg`
-- Firmware embed paths: `test_assets/video_frames_320/images/demo_01.jpg` through `demo_04.jpg`
-
-Selected COCO val2017 images:
+相关接口：
 
 ```text
-demo_01: 000000018380.jpg, COCO annotations 38 objects / 9 classes, PC detected 24 objects / 5 classes
-demo_02: 000000189475.jpg, COCO annotations 32 objects / 10 classes, PC detected 20 objects / 5 classes
-demo_03: 000000416104.jpg, COCO annotations 30 objects / 6 classes, PC detected 19 objects / 5 classes
-demo_04: 000000275198.jpg, COCO annotations 26 objects / 8 classes, PC detected 15 objects / 5 classes
+/api/validate/run?method=coco&sample=demo_01&box_min_score=50
+/api/validate/overlay.svg?id=<id>
+/api/dataset/run/start?dataset=coco_video_demo&limit=16&stride=1
+/api/dataset/frame.svg?run_id=<run>&dataset=coco_video_demo&index=<n>
 ```
 
-## Firmware Behavior
+COCO 演示短视频使用 `test_assets/coco_video_demo/frames/` 中 16 帧 JPEG。浏览器会逐帧请求板端推理 overlay，用于确认检测框绘制和视频演示链路正常。
 
-- Default recognition method is `coco`.
-- Boot standby is disabled, so the camera starts after boot.
-- TF card storage and history are disabled in defaults while the card is broken.
-- Inference interval default is `0 ms`, so the firmware submits a new inference job whenever the depth-1 async queue can accept one.
-- The queue is non-blocking. If inference is busy, camera capture and streaming continue and the frame is dropped instead of queued behind old frames.
-- COCO inference uses ESP-DL multi-core runtime on ESP32-P4.
+## FIELD 和补帧行为
 
-## Validation Images
+当当前模型保存为 `coco` 时：
 
-The firmware embeds these current validation images in flash:
+- FIELD 中 raw/annotated 仍保持相同帧数和时长。
+- annotated 每帧使用当前 raw 图像叠加最近一次 COCO 检测结果。
+- 手动补帧会 stride=1 重建 annotated AVI，COCO 继续绘制检测框。
+- Web 录像记录会标注该条推理视频使用的模型。
 
-- `test_assets/video_frames_320/images/demo_01.jpg` from COCO val2017 `000000018380.jpg`
-- `test_assets/video_frames_320/images/demo_02.jpg` from COCO val2017 `000000189475.jpg`
-- `test_assets/video_frames_320/images/demo_03.jpg` from COCO val2017 `000000416104.jpg`
-- `test_assets/video_frames_320/images/demo_04.jpg` from COCO val2017 `000000275198.jpg`
+COCO 推理速度明显低于 Fish31/TinyCNN，因此标签或检测框的更新频率会低于 raw 采集帧率，这是预期行为；视频帧数不会因此减少。
 
-Use `method=coco&sample=demo_01..demo_04` for the current COCO board validation path. TinyCNN uses the separate `test_assets/tinycls_marine_demo` assets selected by board-side Top-1 checks.
+## 验收点
 
-## HTTP Entry Points
-
-These routes are available once ESP-Hosted Wi-Fi is working:
-
-- `/validate`: phone-friendly validation UI.
-- `/api/validate/run?method=coco&sample=demo_01&box_min_score=50`: run board-side inference.
-- `/api/validate/overlay.svg?id=<id>`: return the embedded JPEG with detected boxes.
-- `/api/dataset/run/start?dataset=coco_video_demo&limit=16&stride=1`: start the embedded video run.
-- `/api/dataset/frame.svg?run_id=<run>&dataset=coco_video_demo&index=<n>`: return one annotated video frame.
-- `/api/status`: includes `model_info`, `coco_available`, model size, input size, detections, and measured `vision.inference_ms`.
-
-The June 12, 2026 COM3 board test completed over the real ESP-Hosted/C6 Wi-Fi
-link. Both 16-frame runs finished with `16/16` successful frames and only
-`person` detections. The measured maximum `analysis_ms` values were 584 ms and
-588 ms, and all 16 overlay routes returned valid annotated SVG images.
-
-## TF Card Product Path
-
-The replacement TF card path now keeps the same inference task and detection result structure, and adds storage around it:
-
-1. Live camera JPEG frames are sampled into `/sdcard/esp32p4/recordings/*.mjpg`.
-2. Positive detections are written to `history.jsonl` and optional JPEG snapshots.
-3. Each MJPEG segment writes one `recordings.jsonl` entry and one `summaries.jsonl` periodic recognition summary.
-4. The embedded `coco_video_demo` provides a storage-independent 16-frame phone demonstration.
-5. Longer COCO video data can still be prepared with `tools/prepare_coco_tf_dataset.py` and copied to `/sdcard/esp32p4/datasets/coco_video`.
+1. Web 保存 `method=coco` 后 `/api/status.recognition_method` 为 `coco`。
+2. `/validate` 四张 COCO 图片可生成 overlay。
+3. 16 帧 `coco_video_demo` 能完成运行，状态不报错。
+4. FIELD 采集后 raw/annotated 成对出现，annotated 有检测框。
+5. 手动补帧完成后进度到满帧，annotated 可下载播放。

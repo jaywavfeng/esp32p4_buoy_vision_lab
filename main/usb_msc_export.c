@@ -3,7 +3,6 @@
 #include <string.h>
 
 #include "esp_log.h"
-#include "esp_heap_caps.h"
 #include "esp_mac.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -14,10 +13,11 @@
 
 static const char *TAG = "usb_msc_export";
 
+#define USB_MSC_DETACH_BARRIER_MS 250U
+
 static usb_msc_host_event_cb_t s_host_callback;
 static void *s_host_callback_arg;
 static tinyusb_msc_storage_handle_t s_storage;
-static void *s_dma_reserve;
 static bool s_forced_reconnect;
 static char s_usb_serial[32] = "P4BUOY";
 static const char *s_usb_string_desc[6];
@@ -27,7 +27,11 @@ static usb_msc_export_status_t s_status = {
     .last_error = "not initialized",
 };
 
-#define USB_MSC_DMA_RESERVE_BYTES (CONFIG_TINYUSB_MSC_BUFSIZE + 1024)
+static bool usb_bus_active(void)
+{
+    return s_status.host_connected ||
+           (tud_inited() && (tud_connected() || tud_mounted()));
+}
 
 static void set_error(const char *message, esp_err_t err)
 {
@@ -36,26 +40,6 @@ static void set_error(const char *message, esp_err_t err)
     } else {
         snprintf(s_status.last_error, sizeof(s_status.last_error), "%s: %s",
                  message ? message : "error", esp_err_to_name(err));
-    }
-}
-
-static void reserve_dma_block(void)
-{
-    if (s_dma_reserve) {
-        return;
-    }
-    s_dma_reserve = heap_caps_malloc(USB_MSC_DMA_RESERVE_BYTES, MALLOC_CAP_DMA);
-    if (!s_dma_reserve) {
-        ESP_LOGW(TAG, "USB MSC DMA reserve allocation failed (%u bytes)",
-                 (unsigned)USB_MSC_DMA_RESERVE_BYTES);
-    }
-}
-
-static void release_dma_reserve(void)
-{
-    if (s_dma_reserve) {
-        heap_caps_free(s_dma_reserve);
-        s_dma_reserve = NULL;
     }
 }
 
@@ -75,7 +59,7 @@ static void tinyusb_event_callback(tinyusb_event_t *event, void *arg)
     } else if (event->id == TINYUSB_EVENT_DETACHED) {
         connected = false;
         notify = true;
-        ESP_LOGI(TAG, "USB1 host detached; queueing TF restore to application");
+        ESP_LOGI(TAG, "USB1 host configuration inactive; physical cable state is not implied");
     }
     s_status.host_connected = connected;
 
@@ -155,7 +139,6 @@ esp_err_t usb_msc_export_init(usb_msc_host_event_cb_t callback, void *callback_a
     }
 
     s_status.initialized = true;
-    reserve_dma_block();
     set_error("waiting for USB1 host", ESP_OK);
     ESP_LOGI(TAG, "USB HS MSC ready with no media; product=%s", CONFIG_APP_USB_MSC_PRODUCT_NAME);
     return ESP_OK;
@@ -169,8 +152,6 @@ esp_err_t usb_msc_export_attach_sdmmc(sdmmc_card_t *card)
     if (s_storage) {
         return ESP_OK;
     }
-    release_dma_reserve();
-
     tinyusb_msc_storage_config_t storage_config = {
         .medium.card = card,
         .fat_fs = {
@@ -187,7 +168,6 @@ esp_err_t usb_msc_export_attach_sdmmc(sdmmc_card_t *card)
     };
     esp_err_t ret = tinyusb_msc_new_storage_sdmmc(&storage_config, &s_storage);
     if (ret != ESP_OK) {
-        reserve_dma_block();
         set_error("attach TF failed", ret);
         return ret;
     }
@@ -195,7 +175,7 @@ esp_err_t usb_msc_export_attach_sdmmc(sdmmc_card_t *card)
     s_status.storage_ready = true;
     set_error("USB host owns writable TF", ESP_OK);
     force_host_reenumeration_if_needed();
-    ESP_LOGI(TAG, "Writable TF card exposed on USB1; safe eject then unplug to restore automatically");
+    ESP_LOGI(TAG, "Writable TF card exposed on USB1; safe eject, unplug, then request Web restore");
     return ESP_OK;
 }
 
@@ -210,16 +190,55 @@ esp_err_t usb_msc_export_detach_storage(void)
         return ESP_OK;
     }
 
+    /*
+     * esp_tinyusb removes the LUN and frees its storage object immediately.
+     * READ10/WRITE10 callbacks obtain that object before taking its per-storage
+     * mutex, so deleting a LUN while the host is configured can race into a
+     * use-after-free. The caller requires an explicit user restore request;
+     * reject any still-active USB configuration, then disable the device
+     * pull-up and leave a short barrier so no new transfer can start while the
+     * LUN is removed. TINYUSB_EVENT_DETACHED alone is deliberately not treated
+     * as proof of a physical cable/VBUS edge.
+     */
+    if (usb_bus_active()) {
+        set_error("USB host is still connected; safely eject and unplug first",
+                  ESP_ERR_INVALID_STATE);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    s_forced_reconnect = true;
+    if (tud_inited()) {
+        if (!tud_disconnect()) {
+            s_forced_reconnect = false;
+            set_error("USB soft disconnect failed", ESP_FAIL);
+            return ESP_FAIL;
+        }
+        vTaskDelay(pdMS_TO_TICKS(USB_MSC_DETACH_BARRIER_MS));
+        if (tud_connected() || tud_mounted()) {
+            (void)tud_connect();
+            s_forced_reconnect = false;
+            set_error("USB bus did not quiesce before TF detach", ESP_ERR_TIMEOUT);
+            return ESP_ERR_TIMEOUT;
+        }
+    }
+
     esp_err_t ret = tinyusb_msc_delete_storage(s_storage);
     if (ret != ESP_OK) {
+        if (tud_inited()) {
+            (void)tud_connect();
+        }
+        s_forced_reconnect = false;
         set_error("detach TF failed", ret);
         return ret;
     }
 
     s_storage = NULL;
     s_status.storage_ready = false;
-    reserve_dma_block();
     set_error("USB storage detached", ESP_OK);
+    if (tud_inited()) {
+        (void)tud_connect();
+    }
+    s_forced_reconnect = false;
     ESP_LOGI(TAG, "Writable TF card detached from USB MSC storage");
     return ESP_OK;
 }
@@ -228,5 +247,6 @@ void usb_msc_export_get_status(usb_msc_export_status_t *status)
 {
     if (status) {
         *status = s_status;
+        status->host_connected = usb_bus_active();
     }
 }

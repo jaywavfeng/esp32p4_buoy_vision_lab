@@ -217,7 +217,61 @@ static esp_cam_sensor_xclk_handle_t s_xclk_handle;
 #endif /* defined(EXAMPLE_MIPI_CSI_XCLK_PIN) && EXAMPLE_MIPI_CSI_XCLK_PIN > 0 */
 
 static bool s_is_init = false;
+static bool s_video_core_initialized = false;
 static const char *TAG = "example_init_video";
+
+static bool example_video_external_resources_present(void)
+{
+    bool present = false;
+#if defined(EXAMPLE_MIPI_CSI_XCLK_PIN) && EXAMPLE_MIPI_CSI_XCLK_PIN > 0
+    present = present || s_xclk_handle != NULL;
+#endif
+#if CONFIG_EXAMPLE_SCCB_I2C_INIT_BY_APP
+    present = present || s_i2cbus_handle != NULL;
+#endif
+    return present;
+}
+
+static esp_err_t example_video_cleanup_external_resources(void)
+{
+    esp_err_t first_error = ESP_OK;
+
+#if defined(EXAMPLE_MIPI_CSI_XCLK_PIN) && EXAMPLE_MIPI_CSI_XCLK_PIN > 0
+    if (s_xclk_handle) {
+        esp_err_t ret = esp_cam_sensor_xclk_stop(s_xclk_handle);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "failed to stop xclk during cleanup: %s",
+                     esp_err_to_name(ret));
+        }
+        ret = esp_cam_sensor_xclk_free(s_xclk_handle);
+        if (ret == ESP_OK) {
+            s_xclk_handle = NULL;
+        } else {
+            first_error = ret;
+            ESP_LOGE(TAG, "failed to free xclk during cleanup: %s",
+                     esp_err_to_name(ret));
+        }
+    }
+#endif
+
+#if CONFIG_EXAMPLE_SCCB_I2C_INIT_BY_APP
+    if (s_i2cbus_handle) {
+        esp_err_t ret = i2c_del_master_bus(s_i2cbus_handle);
+        if (ret == ESP_OK) {
+            s_i2cbus_handle = NULL;
+        } else {
+            if (first_error == ESP_OK) {
+                first_error = ret;
+            }
+            ESP_LOGE(TAG, "failed to delete i2c bus during cleanup: %s",
+                     esp_err_to_name(ret));
+        }
+    }
+#endif
+
+    return example_video_external_resources_present() ?
+           (first_error != ESP_OK ? first_error : ESP_FAIL) : ESP_OK;
+}
 
 /**
  * @brief Initialize the video system
@@ -228,8 +282,16 @@ esp_err_t example_video_init(void)
 {
     esp_err_t ret;
 
-    if (s_is_init) {
+    if (s_is_init && s_video_core_initialized) {
         return ESP_OK;
+    }
+    if (s_video_core_initialized || example_video_external_resources_present()) {
+        ret = example_video_deinit();
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "cannot initialize video while prior cleanup is pending: %s",
+                     esp_err_to_name(ret));
+            return ret;
+        }
     }
 
     const esp_video_init_config_t *cam_config_ptr = &s_cam_config;
@@ -331,23 +393,35 @@ esp_err_t example_video_init(void)
 
     ESP_GOTO_ON_ERROR(esp_video_init(cam_config_ptr), failed_2, TAG, "failed to initialize video");
 
+    s_video_core_initialized = true;
     s_is_init = true;
 
     return ESP_OK;
 
 
 failed_2:
-#if EXAMPLE_MIPI_CSI_XCLK_PIN > 0
-    esp_cam_sensor_xclk_stop(s_xclk_handle);
+    {
+        esp_err_t cleanup_ret = esp_video_deinit();
+        s_video_core_initialized = cleanup_ret != ESP_OK;
+        if (cleanup_ret != ESP_OK) {
+            ESP_LOGE(TAG, "video init rollback remains pending: %s",
+                     esp_err_to_name(cleanup_ret));
+            s_is_init = false;
+            return ret;
+        }
+    }
+#if defined(EXAMPLE_MIPI_CSI_XCLK_PIN) && EXAMPLE_MIPI_CSI_XCLK_PIN > 0
 failed_1:
-    esp_cam_sensor_xclk_free(s_xclk_handle);
-    s_xclk_handle = NULL;
 failed_0:
 #endif
-#if CONFIG_EXAMPLE_SCCB_I2C_INIT_BY_APP
-    i2c_del_master_bus(s_i2cbus_handle);
-    s_i2cbus_handle = NULL;
-#endif
+    s_is_init = false;
+    {
+        esp_err_t cleanup_ret = example_video_cleanup_external_resources();
+        if (cleanup_ret != ESP_OK) {
+            ESP_LOGE(TAG, "video init external rollback remains pending: %s",
+                     esp_err_to_name(cleanup_ret));
+        }
+    }
     return ret;
 }
 
@@ -358,26 +432,23 @@ failed_0:
  */
 esp_err_t example_video_deinit(void)
 {
-    esp_err_t ret = ESP_OK;
-
-    if (!s_is_init) {
+    if (!s_is_init && !s_video_core_initialized &&
+        !example_video_external_resources_present()) {
         return ESP_OK;
     }
 
-    ESP_RETURN_ON_ERROR(esp_video_deinit(), TAG, "failed to deinitialize video");
-
-#if EXAMPLE_MIPI_CSI_XCLK_PIN > 0
-    ESP_RETURN_ON_ERROR(esp_cam_sensor_xclk_stop(s_xclk_handle), TAG, "failed to stop xclk");
-    ESP_RETURN_ON_ERROR(esp_cam_sensor_xclk_free(s_xclk_handle), TAG, "failed to free xclk");
-    s_xclk_handle = NULL;
-#endif
-
-#if CONFIG_EXAMPLE_SCCB_I2C_INIT_BY_APP
-    ESP_RETURN_ON_ERROR(i2c_del_master_bus(s_i2cbus_handle), TAG, "failed to delete i2c bus");
-    s_i2cbus_handle = NULL;
-#endif
+    if (s_video_core_initialized) {
+        esp_err_t ret = esp_video_deinit();
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "failed to deinitialize video: %s", esp_err_to_name(ret));
+            /* The driver may still own the sensor clock and SCCB bus. Keep
+             * those wrapper resources until core teardown succeeds so a
+             * later deinit attempt remains safe and idempotent. */
+            return ret;
+        }
+        s_video_core_initialized = false;
+    }
 
     s_is_init = false;
-
-    return ret;
+    return example_video_cleanup_external_resources();
 }

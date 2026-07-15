@@ -1,6 +1,6 @@
 # ESP32-P4 板端视觉工程技术说明
 
-本文记录 `v3.0.0` 固件的实现现状，面向开发维护和交接验收。客户操作说明见 [customer_manual.md](customer_manual.md) 和 Word 用户手册。
+本文记录 `v3.0.1` 固件的实现现状，面向开发维护和交接验收。客户操作说明见 [customer_manual.md](customer_manual.md) 和 Word 用户手册。
 
 ## 1. 总体链路
 
@@ -77,7 +77,7 @@ CONFIG_APP_ENRICHMENT_ENABLE=y
 
 ### SERVER
 
-默认模式。Web、API、AP/STA、Ethernet 和 mDNS 可用，用于配置、预览、下载和维护。实时图传通过 `/api/power?cmd=wake` 唤醒相机，再从 `/stream` 输出 MJPEG。
+默认模式。Web、API、AP/STA、Ethernet 和 mDNS 可用，用于配置、预览、下载和维护。实时图传通过 `POST /api/power?cmd=wake` 唤醒相机，再从 `/stream` 输出 MJPEG。
 
 ### FIELD
 
@@ -104,7 +104,6 @@ POST /api/mode/field?confirm=FIELD
 入口：USB HS 主机枚举自动触发，或维护 API：
 
 ```text
-GET /api/mode/usb?confirm=USB
 POST /api/mode/usb?confirm=USB
 ```
 
@@ -125,7 +124,8 @@ detect USB host
 
 - USB 模式下板端不得访问 `/sdcard`。
 - `/api/status` 继续上报 `usb_host_connected`、`usb_storage_owner`、`storage_quiescing`、`usb_last_error`。
-- 安全弹出并物理拔线后，detach 事件触发 TF 自动重新挂载。
+- TinyUSB `DETACHED` 或 USB 配置失活不代表数据线已物理拔出，不会触发 TF 自动重新挂载。
+- 安全弹出并物理拔线后，TF 继续保持隔离；用户须从 Web 点击「USB 恢复存储」，或调用 `POST /api/mode/usb/restore?confirm=RESTORE`，成功完成挂载和写读验证后才交还应用。
 - 不再设置“抑制下次自动导出”；下一次物理插入仍会自动导出。
 
 ## 5. API 摘要
@@ -133,15 +133,14 @@ detect USB host
 ```text
 GET  /api/status
 GET  /api/config
-POST /api/config
-GET  /api/config?recording_segment_ms=<ms>&method=<fish31|tinycls|coco>
+POST /api/config  (application/x-www-form-urlencoded 请求体)
 GET  /api/recordings?limit=20
 DELETE /api/recordings?confirm=DELETE
 POST /api/recording/enrich?name=<raw-name>
 POST /api/mode/field?confirm=FIELD
-GET|POST /api/mode/usb?confirm=USB
-GET|POST /api/mode/usb/restore?confirm=RESTORE
-GET  /api/power?cmd=wake|standby
+POST /api/mode/usb?confirm=USB
+POST /api/mode/usb/restore?confirm=RESTORE
+POST /api/power?cmd=wake|standby
 GET  /stream
 GET  /validate
 ```
@@ -177,23 +176,24 @@ coco    -> COCO YOLO11n 320 INT8
 ## 8. 构建和烧录
 
 ```powershell
-.\build_tmp.ps1
-.\flash_p4.ps1 -Port COM3
+.\build_tmp.ps1 -Profile rev1 -Clean
+.\build_rev31.ps1 -Clean
+.\flash_p4.ps1 -Profile rev31 -Port COM6 -SkipBuild
 ```
 
-大镜像写入较慢；直接 esptool 写入时建议给命令 3-5 分钟超时。
+`flash_p4.ps1` 会使用所选 profile 的构建目录，只写 bootloader、partition table 和应用镜像，不执行 `erase-flash`，不会主动清空 NVS 或 TF。大镜像写入较慢；直接 esptool 写入时建议给命令 3-5 分钟超时。
 
 ## 9. 验收清单
 
 1. 构建通过，应用分区剩余空间充足。
 2. 烧录后 `/api/status`、`/api/config` 可访问。
 3. 录像片段时长可设置到 `14400000 ms`，重启后保留。
-4. `/api/power?cmd=wake` 后 `power_mode=running`，`/stream` 有 MJPEG 输出。
+4. `POST /api/power?cmd=wake` 后 `power_mode=running`，`/stream` 有 MJPEG 输出。
 5. `DELETE /api/recordings?confirm=DELETE` 清空录像目录和索引。
 6. FIELD 生成 raw/annotated 成对片段，帧数和时长一致。
 7. 手动补帧进度到满帧，输出 annotated 可播放。
 8. USB 插入后 Windows 识别 `P4_BUOY`，Web 保持在线，`usb_storage_owner=usb`。
-9. 安全弹出并拔线后 TF 自动恢复，下一次插入仍自动导出。
+9. 安全弹出并拔线后 TF 保持隔离；Web 显式恢复成功后应用重新持有 TF，下一次插入仍自动导出。
 10. 文档和 Word 手册不包含面向客户的烧录要求。
 
 ## 10. 2026-07-08 板端实测摘要
@@ -201,10 +201,10 @@ coco    -> COCO YOLO11n 320 INT8
 - `.\build_tmp.ps1` 通过，应用镜像大小 `0x96f210`，最小 app 分区剩余约 33%。
 - COM3 直接 esptool 写入 `bootloader.bin`、`partition-table.bin`、`esp32p4_buoy_vision_lab.bin` 并 hash verified。
 - `/api/status` 返回 `recording_segment_max_ms=14400000`，首页 UTF-8 中文、模型切换、客户端计数和 14400 秒上限显示正常；有线 Web 访问时 `client_count=1` 且自动采集倒计时暂停。
-- `/stream` 可从 standby 自动唤醒摄像头，12 秒抓取约 2.58 MB MJPEG 数据，随后 `/api/power?cmd=standby` 可回待机。
+- `/stream` 可从 standby 自动唤醒摄像头，12 秒抓取约 2.58 MB MJPEG 数据，随后 `POST /api/power?cmd=standby` 可回待机。
 - `DELETE /api/recordings?confirm=DELETE` 删除 7 个录像相关文件，释放约 9.6 MB，`recording_groups` 清空。
 - 模型保存 API 已验证 `tinycls -> fish31` 可切换，最终交付配置恢复为 Fish31 和 60 秒片段。
 - 5 秒片段 FIELD 生成 2 条客户记录，raw/annotated 帧数分别为 24/24、23/23，`recording_groups` 全部 `ready`，raw 与 annotated 均可通过 Web 下载。
 - 手动补帧 `POST /api/recording/enrich?name=raw_001...avi` 完成 24/24 帧，`inference_coverage_x1000=1000`，annotated 仍在同一条记录内下载。
 - 片段时长从 5 秒恢复到 60 秒后，历史整理完成 `input=2, output=1`，合并后记录 raw/annotated 为 47/47 帧。
-- USB 自动导出已实测：Windows 枚举 `USB\VID_303A&PID_4002\P4E8F60AE0A565`，出现 `E: P4_BUOY` FAT32 卷；Web 保持在线，`app_mode=usb_export`、`usb_storage_owner=usb`；已从 `P4_BUOY:\esp32p4\recordings\` 成功读取和复制 AVI。安全弹出/拔线恢复流程按客户随插随拔口径收敛，Web 恢复接口已验证可把 TF 挂回应用侧作为兜底。
+- USB 自动导出已实测：Windows 枚举 `USB\VID_303A&PID_4002\P4E8F60AE0A565`，出现 `E: P4_BUOY` FAT32 卷；Web 保持在线，`app_mode=usb_export`、`usb_storage_owner=usb`；已从 `P4_BUOY:\esp32p4\recordings\` 成功读取和复制 AVI。该记录只证明当时的导出和读取链路；当前“安全弹出、物理拔线、保持隔离、Web 显式恢复”流程仍须随修复固件重新验收。

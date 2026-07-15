@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -108,10 +109,39 @@ static esp_err_t write_exact(FILE *file, const void *data, size_t size)
     if (written == size) {
         return ESP_OK;
     }
+    int saved_errno = errno ? errno : EIO;
+    long position = ftell(file);
     ESP_LOGE(TAG,
              "short write: requested=%u written=%u errno=%d ferror=%d position=%ld",
-             (unsigned)size, (unsigned)written, errno, ferror(file), ftell(file));
+             (unsigned)size, (unsigned)written, saved_errno, ferror(file), position);
+    errno = saved_errno;
     return ESP_FAIL;
+}
+
+static esp_err_t close_file_checked(FILE *file, const char *context,
+                                    esp_err_t ret, int *error_number)
+{
+    int saved_errno = error_number ? *error_number : 0;
+    errno = 0;
+    if (fclose(file) != 0) {
+        int close_errno = errno ? errno : EIO;
+        ESP_LOGE(TAG, "%s fclose failed: errno=%d",
+                 context ? context : "AVI file", close_errno);
+        if (ret == ESP_OK) {
+            ret = ESP_FAIL;
+            saved_errno = close_errno;
+        } else if (saved_errno == 0) {
+            /* Preserve the primary esp_err_t (for example malformed AVI), but
+             * still expose a later media close failure through errno so the
+             * storage health layer can latch it. */
+            saved_errno = close_errno;
+        }
+    }
+    if (error_number) {
+        *error_number = saved_errno;
+    }
+    errno = ret == ESP_OK ? 0 : saved_errno;
+    return ret;
 }
 
 static esp_err_t sync_file(avi_mjpeg_writer_t *writer, const char *reason)
@@ -121,15 +151,19 @@ static esp_err_t sync_file(avi_mjpeg_writer_t *writer, const char *reason)
     }
     errno = 0;
     if (fflush(writer->file) != 0) {
+        int saved_errno = errno ? errno : EIO;
         ESP_LOGE(TAG, "%s fflush failed for %s at frame %" PRIu32 ": errno=%d",
-                 reason, writer->part_path, writer->index_count, errno);
+                 reason, writer->part_path, writer->index_count, saved_errno);
+        errno = saved_errno;
         return ESP_FAIL;
     }
     int fd = fileno(writer->file);
     errno = 0;
     if (fd < 0 || fsync(fd) != 0) {
+        int saved_errno = errno ? errno : (fd < 0 ? EBADF : EIO);
         ESP_LOGE(TAG, "%s fsync failed for %s at frame %" PRIu32 ": fd=%d errno=%d",
-                 reason, writer->part_path, writer->index_count, fd, errno);
+                 reason, writer->part_path, writer->index_count, fd, saved_errno);
+        errno = saved_errno;
         return ESP_FAIL;
     }
     return ESP_OK;
@@ -139,7 +173,9 @@ static esp_err_t patch_u32(FILE *file, long offset, uint32_t value)
 {
     uint8_t bytes[4];
     put_u32(bytes, value);
+    errno = 0;
     if (fseek(file, offset, SEEK_SET) != 0) {
+        errno = errno ? errno : EIO;
         return ESP_FAIL;
     }
     return write_exact(file, bytes, sizeof(bytes));
@@ -217,8 +253,14 @@ static esp_err_t finish_file(avi_mjpeg_writer_t *writer)
         return ESP_ERR_INVALID_STATE;
     }
 
+    errno = 0;
     long idx_offset = ftell(writer->file);
-    if (idx_offset < 0 || (uint64_t)idx_offset > (uint64_t)UINT32_MAX - 8U) {
+    if (idx_offset < 0) {
+        errno = errno ? errno : EIO;
+        return ESP_FAIL;
+    }
+    if ((uint64_t)idx_offset > (uint64_t)UINT32_MAX - 8U) {
+        errno = 0;
         return ESP_ERR_INVALID_SIZE;
     }
 
@@ -236,8 +278,14 @@ static esp_err_t finish_file(avi_mjpeg_writer_t *writer)
         ESP_RETURN_ON_ERROR(write_exact(writer->file, entry, sizeof(entry)), TAG, "write idx entry");
     }
 
+    errno = 0;
     long end = ftell(writer->file);
-    if (end < 0 || (uint64_t)end > (uint64_t)UINT32_MAX - 8U) {
+    if (end < 0) {
+        errno = errno ? errno : EIO;
+        return ESP_FAIL;
+    }
+    if ((uint64_t)end > (uint64_t)UINT32_MAX - 8U) {
+        errno = 0;
         return ESP_ERR_INVALID_SIZE;
     }
     uint32_t scale = 1U;
@@ -278,6 +326,60 @@ static void free_writer(avi_mjpeg_writer_t *writer)
     free(writer);
 }
 
+static esp_err_t path_exists_checked(const char *path, bool *exists)
+{
+    if (!path || !exists) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    struct stat st = {0};
+    errno = 0;
+    if (stat(path, &st) == 0) {
+        *exists = true;
+        errno = 0;
+        return ESP_OK;
+    }
+
+    int stat_errno = errno ? errno : EIO;
+    if (stat_errno == ENOENT) {
+        *exists = false;
+        errno = 0;
+        return ESP_OK;
+    }
+
+    ESP_LOGE(TAG, "stat %s failed: errno=%d", path, stat_errno);
+    errno = stat_errno;
+    return ESP_FAIL;
+}
+
+static esp_err_t publish_file_without_overwrite(const char *part_path,
+                                                const char *final_path)
+{
+    bool final_exists = false;
+    esp_err_t ret = path_exists_checked(final_path, &final_exists);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    if (final_exists) {
+        ESP_LOGE(TAG,
+                 "refusing to replace existing AVI %s; completed part remains at %s",
+                 final_path, part_path);
+        errno = EEXIST;
+        return ESP_FAIL;
+    }
+
+    errno = 0;
+    if (rename(part_path, final_path) != 0) {
+        int rename_errno = errno ? errno : EIO;
+        ESP_LOGE(TAG, "publish AVI %s -> %s failed: errno=%d",
+                 part_path, final_path, rename_errno);
+        errno = rename_errno;
+        return ESP_FAIL;
+    }
+    errno = 0;
+    return ESP_OK;
+}
+
 esp_err_t avi_mjpeg_writer_open(avi_mjpeg_writer_t **out,
                                 const char *part_path,
                                 const char *final_path,
@@ -306,23 +408,33 @@ esp_err_t avi_mjpeg_writer_open(avi_mjpeg_writer_t **out,
 
     writer->file = fopen(part_path, "wb+");
     if (!writer->file) {
+        int saved_errno = errno;
         free_writer(writer);
+        errno = saved_errno;
         return ESP_FAIL;
     }
     esp_err_t ret = write_header(writer->file, width, height, fps);
     if (ret != ESP_OK) {
-        fclose(writer->file);
+        int saved_errno = errno;
+        if (fclose(writer->file) != 0 && saved_errno == 0) {
+            saved_errno = errno;
+        }
         writer->file = NULL;
         unlink(part_path);
         free_writer(writer);
+        errno = saved_errno;
         return ret;
     }
     ret = sync_file(writer, "header");
     if (ret != ESP_OK) {
-        fclose(writer->file);
+        int saved_errno = errno;
+        if (fclose(writer->file) != 0 && saved_errno == 0) {
+            saved_errno = errno;
+        }
         writer->file = NULL;
         unlink(part_path);
         free_writer(writer);
+        errno = saved_errno;
         return ret;
     }
     *out = writer;
@@ -338,9 +450,15 @@ esp_err_t avi_mjpeg_writer_add_frame(avi_mjpeg_writer_t *writer,
     }
     ESP_RETURN_ON_ERROR(ensure_index_capacity(writer), TAG, "grow index");
 
+    errno = 0;
     long chunk_offset = ftell(writer->file);
+    if (chunk_offset < 0) {
+        errno = errno ? errno : EIO;
+        return ESP_FAIL;
+    }
     if (chunk_offset < (long)AVI_HEADER_BYTES ||
         (uint64_t)chunk_offset + (uint64_t)jpeg_size + 9U > UINT32_MAX) {
+        errno = 0;
         return ESP_ERR_INVALID_SIZE;
     }
     uint8_t chunk[8];
@@ -378,23 +496,27 @@ esp_err_t avi_mjpeg_writer_close(avi_mjpeg_writer_t *writer)
     if (!writer) {
         return ESP_ERR_INVALID_ARG;
     }
+    errno = 0;
     esp_err_t ret = finish_file(writer);
+    int saved_errno = ret == ESP_OK ? 0 : errno;
     if (writer->file) {
-        if (fclose(writer->file) != 0 && ret == ESP_OK) {
-            ESP_LOGE(TAG, "fclose failed for %s: errno=%d", writer->part_path, errno);
-            ret = ESP_FAIL;
-        }
+        ret = close_file_checked(writer->file, writer->part_path,
+                                 ret, &saved_errno);
         writer->file = NULL;
     }
     if (ret == ESP_OK) {
-        unlink(writer->final_path);
-        if (rename(writer->part_path, writer->final_path) != 0) {
-            ESP_LOGE(TAG, "rename %s -> %s failed: errno=%d",
-                     writer->part_path, writer->final_path, errno);
-            ret = ESP_FAIL;
+        ret = publish_file_without_overwrite(writer->part_path,
+                                             writer->final_path);
+        if (ret != ESP_OK) {
+            saved_errno = errno ? errno : EIO;
         }
     }
     free_writer(writer);
+    if (ret != ESP_OK) {
+        errno = saved_errno;
+    } else {
+        errno = 0;
+    }
     return ret;
 }
 
@@ -403,12 +525,28 @@ void avi_mjpeg_writer_abort(avi_mjpeg_writer_t *writer)
     if (!writer) {
         return;
     }
+    int incoming_errno = errno;
+    int abort_errno = 0;
     if (writer->file) {
-        fflush(writer->file);
-        fclose(writer->file);
+        errno = 0;
+        if (fflush(writer->file) != 0) {
+            abort_errno = errno ? errno : EIO;
+            ESP_LOGE(TAG, "abort fflush failed for %s: errno=%d",
+                     writer->part_path, abort_errno);
+        }
+        errno = 0;
+        if (fclose(writer->file) != 0) {
+            int close_errno = errno ? errno : EIO;
+            ESP_LOGE(TAG, "abort fclose failed for %s: errno=%d",
+                     writer->part_path, close_errno);
+            if (abort_errno == 0) {
+                abort_errno = close_errno;
+            }
+        }
         writer->file = NULL;
     }
     free_writer(writer);
+    errno = incoming_errno ? incoming_errno : abort_errno;
 }
 
 esp_err_t avi_mjpeg_recover_part(const char *part_path, const char *final_path)
@@ -416,29 +554,69 @@ esp_err_t avi_mjpeg_recover_part(const char *part_path, const char *final_path)
     if (!part_path || !final_path) {
         return ESP_ERR_INVALID_ARG;
     }
+    errno = 0;
     FILE *file = fopen(part_path, "rb+");
     if (!file) {
-        return ESP_ERR_NOT_FOUND;
+        int open_errno = errno ? errno : EIO;
+        errno = open_errno;
+        return open_errno == ENOENT ? ESP_ERR_NOT_FOUND : ESP_FAIL;
     }
 
     uint8_t header[AVI_HEADER_BYTES] = {0};
+    errno = 0;
     size_t header_bytes = fread(header, 1, sizeof(header), file);
-    if (header_bytes != sizeof(header) ||
-        memcmp(header, "RIFF", 4) != 0 ||
-        memcmp(header + 8, "AVI ", 4) != 0 ||
-        memcmp(header + AVI_MOVI_FOURCC_OFFSET, "movi", 4) != 0) {
+    int header_errno = 0;
+    esp_err_t header_ret = ESP_OK;
+    if (header_bytes != sizeof(header)) {
+        if (ferror(file)) {
+            header_errno = errno ? errno : EIO;
+            header_ret = ESP_FAIL;
+        } else {
+            header_ret = ESP_ERR_INVALID_RESPONSE;
+        }
+    } else if (memcmp(header, "RIFF", 4) != 0 ||
+               memcmp(header + 8, "AVI ", 4) != 0 ||
+               memcmp(header + AVI_MOVI_FOURCC_OFFSET, "movi", 4) != 0) {
+        header_ret = ESP_ERR_INVALID_RESPONSE;
+    }
+    if (header_ret != ESP_OK) {
         ESP_LOGW(TAG,
                  "invalid AVI part %s: header_bytes=%u head=%02x%02x%02x%02x",
                  part_path, (unsigned)header_bytes,
                  header[0], header[1], header[2], header[3]);
-        fclose(file);
-        return ESP_ERR_INVALID_RESPONSE;
+        header_ret = close_file_checked(file, part_path, header_ret,
+                                        &header_errno);
+        errno = header_errno;
+        return header_ret;
     }
+
+    int part_fd = fileno(file);
+    struct stat part_stat = {0};
+    errno = 0;
+    if (part_fd < 0 || fstat(part_fd, &part_stat) != 0) {
+        int stat_errno = errno ? errno : (part_fd < 0 ? EBADF : EIO);
+        esp_err_t stat_ret = close_file_checked(file, part_path, ESP_FAIL,
+                                                &stat_errno);
+        errno = stat_errno;
+        return stat_ret;
+    }
+    if (part_stat.st_size < 0) {
+        int close_errno = 0;
+        esp_err_t size_ret = close_file_checked(file, part_path,
+                                                ESP_ERR_INVALID_SIZE,
+                                                &close_errno);
+        errno = close_errno;
+        return size_ret;
+    }
+    uint64_t original_size = (uint64_t)part_stat.st_size;
 
     avi_mjpeg_writer_t *writer = calloc(1, sizeof(*writer));
     if (!writer) {
-        fclose(file);
-        return ESP_ERR_NO_MEM;
+        int close_errno = 0;
+        esp_err_t ret = close_file_checked(file, part_path, ESP_ERR_NO_MEM,
+                                           &close_errno);
+        errno = close_errno;
+        return ret;
     }
     writer->file = file;
     writer->part_path = strdup(part_path);
@@ -446,29 +624,90 @@ esp_err_t avi_mjpeg_recover_part(const char *part_path, const char *final_path)
     writer->width = get_u32(header + 64);
     writer->height = get_u32(header + 68);
     writer->fps = get_u32(header + 132);
-    if (!writer->part_path || !writer->final_path || !writer->fps) {
+    if (!writer->part_path || !writer->final_path) {
+        errno = 0;
+        avi_mjpeg_writer_abort(writer);
+        if (errno == 0) {
+            errno = ENOMEM;
+        }
+        return ESP_ERR_NO_MEM;
+    }
+    if (!writer->fps) {
+        errno = 0;
         avi_mjpeg_writer_abort(writer);
         return ESP_ERR_INVALID_RESPONSE;
     }
 
-    long valid_end = AVI_HEADER_BYTES;
+    uint64_t valid_end = AVI_HEADER_BYTES;
+    esp_err_t scan_ret = ESP_OK;
+    int scan_errno = 0;
     while (true) {
         uint8_t chunk[8];
-        if (fseek(file, valid_end, SEEK_SET) != 0 || fread(chunk, 1, sizeof(chunk), file) != sizeof(chunk)) {
+        if (valid_end > original_size ||
+            original_size - valid_end < sizeof(chunk)) {
+            break;
+        }
+        if (valid_end > (uint64_t)LONG_MAX) {
+            scan_ret = ESP_ERR_INVALID_SIZE;
+            break;
+        }
+        errno = 0;
+        if (fseek(file, (long)valid_end, SEEK_SET) != 0) {
+            scan_errno = errno ? errno : EIO;
+            scan_ret = ESP_FAIL;
+            break;
+        }
+        errno = 0;
+        size_t chunk_bytes = fread(chunk, 1, sizeof(chunk), file);
+        if (chunk_bytes != sizeof(chunk)) {
+            if (ferror(file)) {
+                scan_errno = errno ? errno : EIO;
+                scan_ret = ESP_FAIL;
+            }
             break;
         }
         if (memcmp(chunk, "00dc", 4) != 0) {
             break;
         }
         uint32_t size = get_u32(chunk + 4);
-        if (!size || size > 2U * 1024U * 1024U || ensure_index_capacity(writer) != ESP_OK) {
+        if (!size || size > 2U * 1024U * 1024U) {
             break;
         }
-        long next = valid_end + 8L + (long)size + (long)(size & 1U);
-        if (fseek(file, next - 1L, SEEK_SET) != 0 || fgetc(file) == EOF) {
+        esp_err_t capacity_ret = ensure_index_capacity(writer);
+        if (capacity_ret != ESP_OK) {
+            scan_ret = capacity_ret;
+            scan_errno = capacity_ret == ESP_ERR_NO_MEM ? ENOMEM : EIO;
             break;
         }
-        writer->index[writer->index_count].offset = (uint32_t)valid_end - AVI_MOVI_FOURCC_OFFSET;
+        uint64_t frame_bytes = 8U + (uint64_t)size + (uint64_t)(size & 1U);
+        if (valid_end > UINT64_MAX - frame_bytes) {
+            scan_ret = ESP_ERR_INVALID_SIZE;
+            break;
+        }
+        uint64_t next = valid_end + frame_bytes;
+        if (next > original_size) {
+            break;
+        }
+        if (next > UINT32_MAX || next > (uint64_t)LONG_MAX) {
+            scan_ret = ESP_ERR_INVALID_SIZE;
+            break;
+        }
+        errno = 0;
+        if (fseek(file, (long)(next - 1U), SEEK_SET) != 0) {
+            scan_errno = errno ? errno : EIO;
+            scan_ret = ESP_FAIL;
+            break;
+        }
+        errno = 0;
+        if (fgetc(file) == EOF) {
+            if (ferror(file)) {
+                scan_errno = errno ? errno : EIO;
+                scan_ret = ESP_FAIL;
+            }
+            break;
+        }
+        writer->index[writer->index_count].offset =
+            (uint32_t)valid_end - AVI_MOVI_FOURCC_OFFSET;
         writer->index[writer->index_count].size = size;
         writer->index_count++;
         writer->jpeg_bytes += size;
@@ -478,9 +717,34 @@ esp_err_t avi_mjpeg_recover_part(const char *part_path, const char *final_path)
         valid_end = next;
     }
 
-    if (writer->index_count == 0 || ftruncate(fileno(file), valid_end) != 0 ||
-        fseek(file, valid_end, SEEK_SET) != 0) {
+    if (scan_ret != ESP_OK) {
+        errno = scan_errno;
         avi_mjpeg_writer_abort(writer);
+        if (scan_errno != 0) {
+            errno = scan_errno;
+        }
+        return scan_ret;
+    }
+
+    if (writer->index_count == 0) {
+        errno = 0;
+        avi_mjpeg_writer_abort(writer);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    errno = 0;
+    if (ftruncate(part_fd, (long)valid_end) != 0) {
+        int truncate_errno = errno ? errno : EIO;
+        errno = truncate_errno;
+        avi_mjpeg_writer_abort(writer);
+        errno = truncate_errno;
+        return ESP_FAIL;
+    }
+    errno = 0;
+    if (fseek(file, (long)valid_end, SEEK_SET) != 0) {
+        int seek_errno = errno ? errno : EIO;
+        errno = seek_errno;
+        avi_mjpeg_writer_abort(writer);
+        errno = seek_errno;
         return ESP_FAIL;
     }
 
@@ -495,22 +759,40 @@ esp_err_t avi_mjpeg_probe(const char *path, avi_mjpeg_info_t *info)
         return ESP_ERR_INVALID_ARG;
     }
 
+    errno = 0;
     FILE *file = fopen(path, "rb");
     if (!file) {
-        return ESP_ERR_NOT_FOUND;
+        int open_errno = errno ? errno : EIO;
+        errno = open_errno;
+        return open_errno == ENOENT ? ESP_ERR_NOT_FOUND : ESP_FAIL;
     }
     uint8_t header[AVI_HEADER_BYTES] = {0};
+    errno = 0;
     size_t header_bytes = fread(header, 1, sizeof(header), file);
-    fclose(file);
-    if (header_bytes != sizeof(header) ||
-        memcmp(header, "RIFF", 4) != 0 ||
-        memcmp(header + 8, "AVI ", 4) != 0 ||
-        memcmp(header + AVI_MOVI_FOURCC_OFFSET, "movi", 4) != 0) {
-        return ESP_ERR_INVALID_RESPONSE;
+    int saved_errno = 0;
+    esp_err_t ret = ESP_OK;
+    if (header_bytes != sizeof(header)) {
+        if (ferror(file)) {
+            saved_errno = errno ? errno : EIO;
+            ret = ESP_FAIL;
+        } else {
+            ret = ESP_ERR_INVALID_RESPONSE;
+        }
+    } else if (memcmp(header, "RIFF", 4) != 0 ||
+               memcmp(header + 8, "AVI ", 4) != 0 ||
+               memcmp(header + AVI_MOVI_FOURCC_OFFSET, "movi", 4) != 0) {
+        ret = ESP_ERR_INVALID_RESPONSE;
+    }
+    ret = close_file_checked(file, path, ret, &saved_errno);
+    if (ret != ESP_OK) {
+        errno = saved_errno;
+        return ret;
     }
 
     struct stat st = {0};
+    errno = 0;
     if (stat(path, &st) != 0) {
+        errno = errno ? errno : EIO;
         return ESP_FAIL;
     }
     memset(info, 0, sizeof(*info));
@@ -542,21 +824,48 @@ esp_err_t avi_mjpeg_retime_file(const char *path, uint64_t duration_ms)
     uint32_t usec_per_frame = 1000000U;
     duration_timebase(info.frame_count, duration_ms, 1U, &scale, &rate, &usec_per_frame);
 
+    errno = 0;
     FILE *file = fopen(path, "rb+");
     if (!file) {
+        errno = errno ? errno : EIO;
         return ESP_FAIL;
     }
+    errno = 0;
     esp_err_t ret = patch_u32(file, 32, usec_per_frame);
+    int saved_errno = ret == ESP_OK ? 0 : (errno ? errno : EIO);
     if (ret == ESP_OK) {
+        errno = 0;
         ret = patch_u32(file, 128, scale);
+        if (ret != ESP_OK) {
+            saved_errno = errno ? errno : EIO;
+        }
     }
     if (ret == ESP_OK) {
+        errno = 0;
         ret = patch_u32(file, 132, rate);
+        if (ret != ESP_OK) {
+            saved_errno = errno ? errno : EIO;
+        }
     }
-    if (ret == ESP_OK && (fflush(file) != 0 || fsync(fileno(file)) != 0)) {
-        ret = ESP_FAIL;
+    if (ret == ESP_OK) {
+        errno = 0;
+        if (fflush(file) != 0) {
+            saved_errno = errno ? errno : EIO;
+            ret = ESP_FAIL;
+        }
     }
-    fclose(file);
+    if (ret == ESP_OK) {
+        errno = 0;
+        int fd = fileno(file);
+        if (fd < 0 || fsync(fd) != 0) {
+            saved_errno = errno ? errno : (fd < 0 ? EBADF : EIO);
+            ret = ESP_FAIL;
+        }
+    }
+    ret = close_file_checked(file, path, ret, &saved_errno);
+    if (ret != ESP_OK) {
+        errno = saved_errno;
+    }
     return ret;
 }
 
@@ -572,18 +881,28 @@ esp_err_t avi_mjpeg_reader_open(avi_mjpeg_reader_t **out,
     avi_mjpeg_info_t probed = {0};
     ESP_RETURN_ON_ERROR(avi_mjpeg_probe(path, &probed), TAG, "probe AVI reader input");
 
+    errno = 0;
     FILE *file = fopen(path, "rb");
-    if (!file || fseek(file, AVI_HEADER_BYTES, SEEK_SET) != 0) {
-        if (file) {
-            fclose(file);
-        }
+    if (!file) {
+        errno = errno ? errno : EIO;
         return ESP_FAIL;
+    }
+    errno = 0;
+    if (fseek(file, AVI_HEADER_BYTES, SEEK_SET) != 0) {
+        int saved_errno = errno ? errno : EIO;
+        esp_err_t ret = close_file_checked(file, path, ESP_FAIL,
+                                           &saved_errno);
+        errno = saved_errno;
+        return ret;
     }
 
     avi_mjpeg_reader_t *reader = calloc(1, sizeof(*reader));
     if (!reader) {
-        fclose(file);
-        return ESP_ERR_NO_MEM;
+        int close_errno = 0;
+        esp_err_t ret = close_file_checked(file, path, ESP_ERR_NO_MEM,
+                                           &close_errno);
+        errno = close_errno;
+        return ret;
     }
     reader->file = file;
     reader->frame_count = probed.frame_count;
@@ -609,8 +928,17 @@ esp_err_t avi_mjpeg_reader_next(avi_mjpeg_reader_t *reader,
     }
 
     uint8_t chunk[8];
-    if (fread(chunk, 1, sizeof(chunk), reader->file) != sizeof(chunk) ||
-        memcmp(chunk, "00dc", 4) != 0) {
+    errno = 0;
+    if (fread(chunk, 1, sizeof(chunk), reader->file) != sizeof(chunk)) {
+        if (ferror(reader->file)) {
+            errno = errno ? errno : EIO;
+            return ESP_FAIL;
+        }
+        errno = 0;
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    if (memcmp(chunk, "00dc", 4) != 0) {
+        errno = 0;
         return ESP_ERR_INVALID_RESPONSE;
     }
     uint32_t size = get_u32(chunk + 4);
@@ -625,11 +953,25 @@ esp_err_t avi_mjpeg_reader_next(avi_mjpeg_reader_t *reader,
         reader->frame = grown;
         reader->frame_capacity = size;
     }
+    errno = 0;
     if (fread(reader->frame, 1, size, reader->file) != size) {
+        if (ferror(reader->file)) {
+            errno = errno ? errno : EIO;
+            return ESP_FAIL;
+        }
+        errno = 0;
         return ESP_ERR_INVALID_RESPONSE;
     }
-    if ((size & 1U) != 0U && fgetc(reader->file) == EOF) {
-        return ESP_ERR_INVALID_RESPONSE;
+    if ((size & 1U) != 0U) {
+        errno = 0;
+        if (fgetc(reader->file) == EOF) {
+            if (ferror(reader->file)) {
+                errno = errno ? errno : EIO;
+                return ESP_FAIL;
+            }
+            errno = 0;
+            return ESP_ERR_INVALID_RESPONSE;
+        }
     }
 
     reader->frame_index++;
@@ -646,9 +988,16 @@ void avi_mjpeg_reader_close(avi_mjpeg_reader_t *reader)
     if (!reader) {
         return;
     }
+    int incoming_errno = errno;
+    int close_errno = 0;
     if (reader->file) {
-        fclose(reader->file);
+        errno = 0;
+        if (fclose(reader->file) != 0) {
+            close_errno = errno ? errno : EIO;
+            ESP_LOGE(TAG, "reader fclose failed: errno=%d", close_errno);
+        }
     }
     free(reader->frame);
     free(reader);
+    errno = incoming_errno ? incoming_errno : close_errno;
 }

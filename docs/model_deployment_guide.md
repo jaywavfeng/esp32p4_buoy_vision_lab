@@ -1,4 +1,4 @@
-# 模型部署说明（v3.0.0）
+# 模型部署说明（v3.0.1）
 
 本文说明当前固件实际开放和验收的模型链路。客户首页、FIELD 野外录像、手动补帧和 `/validate` 只开放三种模型：Fish31、TinyCNN、COCO。
 
@@ -54,9 +54,9 @@ COCO 模型由 `espressif/coco_detect` 组件提供，不在 `models/` 目录保
 客户页面「模型切换」会保存到 NVS。也可以通过 API 验证：
 
 ```powershell
-curl.exe --noproxy "*" "http://169.254.100.2/api/config?method=fish31"
-curl.exe --noproxy "*" "http://169.254.100.2/api/config?method=tinycls"
-curl.exe --noproxy "*" "http://169.254.100.2/api/config?method=coco"
+curl.exe --noproxy "*" -X POST -H "Content-Type: application/x-www-form-urlencoded" --data "method=fish31" "http://169.254.100.2/api/config"
+curl.exe --noproxy "*" -X POST -H "Content-Type: application/x-www-form-urlencoded" --data "method=tinycls" "http://169.254.100.2/api/config"
+curl.exe --noproxy "*" -X POST -H "Content-Type: application/x-www-form-urlencoded" --data "method=coco" "http://169.254.100.2/api/config"
 curl.exe --noproxy "*" "http://169.254.100.2/api/status"
 ```
 

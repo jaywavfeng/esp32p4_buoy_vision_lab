@@ -3,6 +3,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,6 +17,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
+#include "json_validator.h"
 
 static const char *TAG = "recording_enrichment";
 
@@ -42,6 +44,38 @@ static void *s_infer_arg;
 static char s_requested_raw_name[96];
 
 static bool has_suffix(const char *text, const char *suffix);
+
+static bool json_number_terminated(const char *text)
+{
+    if (!text) {
+        return false;
+    }
+    while (*text == ' ' || *text == '\t' || *text == '\r' || *text == '\n') {
+        text++;
+    }
+    return *text == '\0' || *text == ',' || *text == '}' || *text == ']';
+}
+
+static bool parse_i64_token(const char *text, bool require_json_terminator,
+                            int64_t *out, const char **end_out)
+{
+    if (!text || !out || text[0] == '+' ||
+        (text[0] != '-' && (text[0] < '0' || text[0] > '9'))) {
+        return false;
+    }
+    errno = 0;
+    char *end = NULL;
+    long long value = strtoll(text, &end, 10);
+    if (end == text || errno == ERANGE ||
+        (require_json_terminator && !json_number_terminated(end))) {
+        return false;
+    }
+    *out = (int64_t)value;
+    if (end_out) {
+        *end_out = end;
+    }
+    return true;
+}
 
 static void status_set_error(const char *message)
 {
@@ -165,8 +199,17 @@ static bool has_suffix(const char *text, const char *suffix)
 
 static int64_t time_from_name(const char *name)
 {
+    if (!name) {
+        return 0;
+    }
     const char *mark = strstr(name, "_t");
-    return mark ? atoll(mark + 2) : 0;
+    int64_t value = 0;
+    const char *end = NULL;
+    if (!mark || !parse_i64_token(mark + 2, false, &value, &end) || value <= 0 ||
+        (*end != '\0' && *end != '_' && *end != '.')) {
+        return 0;
+    }
+    return value;
 }
 
 static int64_t sort_time_from_name(const char *name)
@@ -196,11 +239,14 @@ static int64_t sort_time_from_name(const char *name)
         p[12] >= '0' && p[12] <= '9' &&
         p[13] >= '0' && p[13] <= '9' &&
         p[14] >= '0' && p[14] <= '9') {
-        char compact[15];
-        memcpy(compact, p, 8);
-        memcpy(compact + 8, p + 9, 6);
-        compact[14] = '\0';
-        return atoll(compact);
+        int64_t compact = 0;
+        for (size_t i = 0; i < 15; i++) {
+            if (i == 8) {
+                continue;
+            }
+            compact = compact * 10 + (int64_t)(p[i] - '0');
+        }
+        return compact;
     }
     return time_from_name(name);
 }
@@ -232,16 +278,24 @@ static bool json_get_string_field(const char *line, const char *key, char *out, 
 
 static int64_t json_i64_from_line(const char *line, const char *key)
 {
+    if (!line || !key) {
+        return -1;
+    }
     char needle[48];
-    snprintf(needle, sizeof(needle), "\"%s\":", key);
+    int written = snprintf(needle, sizeof(needle), "\"%s\":", key);
+    if (written < 0 || (size_t)written >= sizeof(needle)) {
+        return -1;
+    }
     const char *value = strstr(line, needle);
-    return value ? atoll(value + strlen(needle)) : -1;
+    int64_t parsed = -1;
+    return value && parse_i64_token(value + strlen(needle), true, &parsed, NULL) ?
+           parsed : -1;
 }
 
 static uint32_t json_u32_from_line(const char *line, const char *key)
 {
     int64_t value = json_i64_from_line(line, key);
-    return value > 0 ? (uint32_t)value : 0;
+    return value > 0 && value <= UINT32_MAX ? (uint32_t)value : 0;
 }
 
 static void meta_name_for_avi(const char *avi_name, char *meta_name, size_t meta_name_size)
@@ -313,7 +367,7 @@ static void read_candidate_sidecar(enrichment_candidate_t *candidate)
         return;
     }
     char line[2048] = {0};
-    if (fgets(line, sizeof(line), file)) {
+    if (fgets(line, sizeof(line), file) && json_validate_object(line, strlen(line))) {
         char text[64] = {0};
         if (json_get_string_field(line, "method", text, sizeof(text))) {
             method_from_text(text, candidate->method, sizeof(candidate->method));
@@ -359,7 +413,7 @@ static uint32_t read_completed_stride(const enrichment_candidate_t *candidate)
     char line[2048] = {0};
     bool have_line = fgets(line, sizeof(line), file) != NULL;
     fclose(file);
-    if (!have_line) {
+    if (!have_line || !json_validate_object(line, strlen(line))) {
         return 0;
     }
     char annotated_method[16] = {0};

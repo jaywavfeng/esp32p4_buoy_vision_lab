@@ -1,6 +1,8 @@
 set(APP_SRCS
     "camera_web_main.c"
     "avi_mjpeg_writer.c"
+    "json_writer.c"
+    "json_validator.c"
     "recording_enrichment.c"
     "usb_msc_export.c"
     "tiny_cls_espdl_bridge.cpp"

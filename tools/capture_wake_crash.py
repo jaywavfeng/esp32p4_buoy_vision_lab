@@ -3,7 +3,7 @@
 """触发 Wake 并抓取固定时间窗口串口日志。
 
 这是调试工具，不参与固件构建。它解决了 PowerShell 一行脚本难以写循环的问题：
-先打开串口，再通过 HTTP 请求触发 `/api/power?cmd=wake`，随后按固定秒数抓取日志。
+先打开串口，再通过 HTTP POST 请求触发 `/api/power?cmd=wake`，随后按固定秒数抓取日志。
 """
 
 from __future__ import annotations
@@ -15,8 +15,13 @@ import time
 import serial
 
 
-def http_get(host: str, path: str, timeout: float = 5.0) -> bytes:
-    request = f"GET {path} HTTP/1.0\r\nHost: {host}\r\n\r\n".encode()
+def http_request(host: str, path: str, method: str, timeout: float = 5.0) -> bytes:
+    request = (
+        f"{method} {path} HTTP/1.0\r\n"
+        f"Host: {host}\r\n"
+        "Content-Length: 0\r\n"
+        "Connection: close\r\n\r\n"
+    ).encode()
     with socket.create_connection((host, 80), timeout=timeout) as sock:
         sock.settimeout(timeout)
         sock.sendall(request)
@@ -24,6 +29,14 @@ def http_get(host: str, path: str, timeout: float = 5.0) -> bytes:
             return sock.recv(4096)
         except TimeoutError:
             return b""
+
+
+def http_get(host: str, path: str, timeout: float = 5.0) -> bytes:
+    return http_request(host, path, "GET", timeout)
+
+
+def http_post(host: str, path: str, timeout: float = 5.0) -> bytes:
+    return http_request(host, path, "POST", timeout)
 
 
 def wait_http_ready(host: str, seconds: float = 20.0) -> None:
@@ -52,7 +65,7 @@ def main() -> None:
     try:
         time.sleep(0.2)
         wait_http_ready(args.host)
-        response = http_get(args.host, "/api/power?cmd=wake")
+        response = http_post(args.host, "/api/power?cmd=wake")
         print(response.decode("utf-8", "replace"), flush=True)
 
         deadline = time.time() + args.seconds

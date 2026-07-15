@@ -1,5 +1,16 @@
 # Changelog
 
+## v3.0.1
+
+- Hardened TF mounting, write/read verification, I/O fault latching and customer-facing recovery without routine reboot loops.
+- Fixed camera/JPEG/ISP cleanup so repeated wake and standby cycles recover after initialization failures.
+- Made validation jobs asynchronous and kept active Web, stream, download, validation and storage work from being interrupted by automatic FIELD entry.
+- Made configuration changes strict, transactional and POST-only; router passwords are no longer accepted in URLs or echoed by APIs.
+- Added persistent Web controls for automatic FIELD entry, idle countdown and recording segment duration.
+- Fixed multi-interface Web client accounting and made stream statistics concurrency-safe.
+- Made recording cleanup a coalesced background job with progress, deterministic residue verification and actionable Web errors; downloads and storage mutations now have race-free admission.
+- Improved AVI finalization, paired raw/annotated recovery, USB ownership recovery and ESP-IDF storage cleanup patches.
+
 ## v3.0.0
 
 - Reworked the customer Web flow around one recording segment per row, with raw video, annotated video and manual fill-frame action grouped together.

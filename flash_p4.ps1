@@ -1,5 +1,8 @@
 param(
     [string]$Port = "",
+    [ValidateSet("rev1", "rev31")]
+    [string]$Profile = "rev31",
+    [switch]$SkipBuild,
     [switch]$Monitor
 )
 
@@ -90,16 +93,29 @@ $env:PATH = ($ToolPath -join ";") + ";" + $env:PATH
 
 Push-Location $ProjectDir
 try {
-    & $Python $IdfPy build
-    if ($LASTEXITCODE -ne 0) {
-        throw "ESP-IDF build failed with exit code $LASTEXITCODE"
+    $BuildDir = Join-Path $ProjectDir ("build_" + $Profile)
+    if (-not $SkipBuild) {
+        # build_tmp.ps1 intentionally calls `exit`; run it in a child host so
+        # a successful build cannot terminate this script before flashing.
+        $PowerShellHost = (Get-Process -Id $PID).Path
+        & $PowerShellHost -NoProfile -ExecutionPolicy Bypass -File `
+            (Join-Path $ProjectDir "build_tmp.ps1") -Profile $Profile
+        if ($LASTEXITCODE -ne 0) {
+            throw "ESP-IDF $Profile build failed with exit code $LASTEXITCODE"
+        }
     }
-    & $Python $IdfPy -p $Port flash
+    $AppImage = Join-Path $BuildDir "esp32p4_buoy_vision_lab.bin"
+    if (-not (Test-Path -LiteralPath $AppImage)) {
+        throw "Missing $Profile application image: $AppImage. Build it before flashing."
+    }
+    Write-Host "Flashing profile $Profile from $BuildDir"
+    Write-Host "This writes bootloader, partition table and app only; it does not erase NVS or TF."
+    & $Python $IdfPy -B $BuildDir -p $Port flash
     if ($LASTEXITCODE -ne 0) {
         throw "ESP-IDF flash failed with exit code $LASTEXITCODE"
     }
     if ($Monitor) {
-        & $Python $IdfPy -p $Port monitor
+        & $Python $IdfPy -B $BuildDir -p $Port monitor
     }
 }
 finally {

@@ -262,14 +262,35 @@ def generate_inat_candidates(raw_dir: Path, out_dir: Path, per_class: int, image
     return candidates
 
 
-def curl_request(method: str, url: str, interface: str | None = None, data_file: Path | None = None, timeout: int = 30) -> str:
-    cmd = ["curl.exe", "--silent", "--show-error", "--fail-with-body", "--max-time", str(timeout)]
+def curl_request(
+    method: str,
+    url: str,
+    interface: str | None = None,
+    data_file: Path | None = None,
+    form_data: str | None = None,
+    timeout: int = 30,
+) -> str:
+    cmd = [
+        "curl.exe",
+        "--silent",
+        "--show-error",
+        "--fail-with-body",
+        "--max-time",
+        str(timeout),
+    ]
     if interface:
         cmd += ["--interface", interface]
     if method != "GET":
         cmd += ["-X", method]
     if data_file:
         cmd += ["--data-binary", f"@{data_file}"]
+    if form_data is not None:
+        cmd += [
+            "--header",
+            "Content-Type: application/x-www-form-urlencoded",
+            "--data",
+            form_data,
+        ]
     cmd.append(url)
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
@@ -277,8 +298,21 @@ def curl_request(method: str, url: str, interface: str | None = None, data_file:
     return proc.stdout
 
 
-def board_json(base_url: str, path: str, interface: str | None, timeout: int = 30) -> dict[str, Any]:
-    return json.loads(curl_request("GET", base_url.rstrip("/") + path, interface=interface, timeout=timeout))
+def board_json(
+    base_url: str,
+    path: str,
+    interface: str | None,
+    timeout: int = 30,
+    method: str = "GET",
+) -> dict[str, Any]:
+    return json.loads(
+        curl_request(
+            method,
+            base_url.rstrip("/") + path,
+            interface=interface,
+            timeout=timeout,
+        )
+    )
 
 
 def parse_jsonl_result(text: str) -> dict[str, Any] | None:
@@ -298,9 +332,15 @@ def parse_jsonl_result(text: str) -> dict[str, Any] | None:
 def run_candidate_on_board(candidate: Candidate, base_url: str, interface: str | None, dataset: str, wake: bool) -> dict[str, Any]:
     base_url = base_url.rstrip("/")
     if wake:
-        curl_request("GET", base_url + "/api/power?cmd=wake", interface=interface, timeout=10)
-    curl_request("GET", base_url + "/api/recognition?method=fish31", interface=interface, timeout=10)
-    curl_request("GET", base_url + "/api/config?inference_interval_ms=0", interface=interface, timeout=10)
+        curl_request("POST", base_url + "/api/power?cmd=wake", interface=interface, timeout=10)
+    curl_request("POST", base_url + "/api/recognition?method=fish31", interface=interface, timeout=10)
+    curl_request(
+        "POST",
+        base_url + "/api/config",
+        interface=interface,
+        form_data="inference_interval_ms=0",
+        timeout=10,
+    )
     path = "frames/frame_00001.jpg"
     put_url = f"{base_url}/api/dataset/file?dataset={urllib.parse.quote(dataset)}&path={urllib.parse.quote(path)}"
     curl_request("PUT", put_url, interface=interface, data_file=candidate.path, timeout=45)
@@ -309,6 +349,7 @@ def run_candidate_on_board(candidate: Candidate, base_url: str, interface: str |
         f"/api/dataset/run/start?dataset={urllib.parse.quote(dataset)}&method=fish31&limit=1&stride=1",
         interface,
         timeout=20,
+        method="POST",
     )
     run_id = start.get("run_id", "")
     deadline = time.time() + 70

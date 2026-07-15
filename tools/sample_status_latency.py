@@ -83,12 +83,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--wake",
         action="store_true",
-        help="Call /api/power?cmd=wake before sampling.",
+        help="POST /api/power?cmd=wake before sampling.",
     )
     parser.add_argument(
         "--set-interval-zero",
         action="store_true",
-        help="Call /api/config?inference_interval_ms=0 before sampling.",
+        help="POST inference_interval_ms=0 to /api/config before sampling.",
     )
     parser.add_argument(
         "--output",
@@ -157,22 +157,34 @@ def read_url(
     timeout_s: float,
     opener: urllib.request.OpenerDirector | None,
     bind_ip: str,
+    method: str = "GET",
+    data: bytes | None = None,
 ) -> bytes:
     if bind_ip:
         curl_bin = "curl.exe" if sys.platform.startswith("win") else "curl"
+        command = [
+            curl_bin,
+            "--interface",
+            bind_ip,
+            "--max-time",
+            f"{timeout_s:g}",
+            "--fail",
+            "-sS",
+            "-H",
+            "Cache-Control: no-store",
+        ]
+        if method != "GET":
+            command += ["--request", method]
+        if data is not None:
+            command += [
+                "--header",
+                "Content-Type: application/x-www-form-urlencoded",
+                "--data-binary",
+                data.decode("ascii"),
+            ]
+        command.append(url)
         result = subprocess.run(
-            [
-                curl_bin,
-                "--interface",
-                bind_ip,
-                "--max-time",
-                f"{timeout_s:g}",
-                "--fail",
-                "-sS",
-                "-H",
-                "Cache-Control: no-store",
-                url,
-            ],
+            command,
             capture_output=True,
             timeout=max(timeout_s + 2.0, 3.0),
         )
@@ -181,7 +193,10 @@ def read_url(
             raise RuntimeError(message or f"curl exited with {result.returncode}")
         return result.stdout
 
-    req = urllib.request.Request(url, headers={"Cache-Control": "no-store"})
+    headers = {"Cache-Control": "no-store"}
+    if data is not None:
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
     with open_request(req, timeout_s, opener) as response:
         return response.read()
 
@@ -202,9 +217,11 @@ def call_endpoint(
     timeout_s: float,
     opener: urllib.request.OpenerDirector | None,
     bind_ip: str,
+    method: str = "POST",
+    data: bytes | None = None,
 ) -> None:
     url = base_url + path
-    read_url(url, timeout_s, opener, bind_ip)
+    read_url(url, timeout_s, opener, bind_ip, method=method, data=data)
 
 
 def preflight_endpoint(
@@ -214,11 +231,12 @@ def preflight_endpoint(
     label: str,
     opener: urllib.request.OpenerDirector | None,
     bind_ip: str,
+    data: bytes | None = None,
 ) -> bool:
     last_error: BaseException | None = None
     for attempt in range(1, 4):
         try:
-            call_endpoint(base_url, path, timeout_s, opener, bind_ip)
+            call_endpoint(base_url, path, timeout_s, opener, bind_ip, data=data)
             return True
         except (RuntimeError, TimeoutError, OSError, urllib.error.URLError) as exc:
             last_error = exc
@@ -445,11 +463,12 @@ def main() -> int:
     if args.set_interval_zero:
         preflight_endpoint(
             base_url,
-            "/api/config?inference_interval_ms=0",
+            "/api/config",
             args.timeout_s,
             "set interval",
             opener,
             bind_ip,
+            data=b"inference_interval_ms=0",
         )
         time.sleep(0.2)
 

@@ -1,3 +1,9 @@
+param(
+    [ValidateSet('rev1', 'rev31')]
+    [string]$Profile = 'rev1',
+    [switch]$Clean
+)
+
 $ProjectDir = $PSScriptRoot
 $IdfPath = 'C:\esp\v6.0.1\esp-idf'
 $Python = 'C:\Espressif\tools\python\v6.0.1\venv\Scripts\python.exe'
@@ -25,7 +31,36 @@ $ToolPath = @(
 $env:PATH = ($ToolPath -join ';') + ';' + $env:PATH
 
 Push-Location $ProjectDir
-& $Python $IdfPy build
+$BuildDir = Join-Path $ProjectDir ("build_" + $Profile)
+$Sdkconfig = Join-Path $BuildDir 'sdkconfig'
+$Defaults = @(
+    (Join-Path $ProjectDir 'sdkconfig.defaults')
+)
+if ($Profile -eq 'rev31') {
+    $Defaults += Join-Path $ProjectDir 'sdkconfig.defaults.rev31'
+} else {
+    $Defaults += Join-Path $ProjectDir 'sdkconfig.defaults.esp32p4'
+}
+
+$SdkconfigArg = 'SDKCONFIG=' + ($Sdkconfig -replace '\\', '/')
+$DefaultsArg = 'SDKCONFIG_DEFAULTS=' + (($Defaults | ForEach-Object { $_ -replace '\\', '/' }) -join ';')
+
+Write-Host "Building profile $Profile in $BuildDir"
+if ($Clean -and (Test-Path $BuildDir)) {
+    # idf.py fullclean rejects the project's deterministic patch to the managed
+    # TinyUSB component. Removing only this profile's generated build directory
+    # gives the same compiler-level clean build without touching dependencies.
+    $projectFull = [IO.Path]::GetFullPath($ProjectDir).TrimEnd('\', '/')
+    $buildFull = [IO.Path]::GetFullPath($BuildDir).TrimEnd('\', '/')
+    $expectedPrefix = $projectFull + [IO.Path]::DirectorySeparatorChar
+    if (-not $buildFull.StartsWith($expectedPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+        -not ([IO.Path]::GetFileName($buildFull)).StartsWith('build_', [StringComparison]::Ordinal)) {
+        throw "Refusing to remove unexpected build path: $buildFull"
+    }
+    Write-Host "Removing generated build directory $buildFull"
+    Remove-Item -LiteralPath $buildFull -Recurse -Force
+}
+& $Python $IdfPy -B $BuildDir -D $SdkconfigArg -D $DefaultsArg build
 $exitCode = $LASTEXITCODE
 Pop-Location
 exit $exitCode

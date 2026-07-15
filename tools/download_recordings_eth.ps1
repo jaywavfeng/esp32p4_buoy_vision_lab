@@ -78,6 +78,7 @@ function Invoke-ActiveCurlText {
     param(
         [string]$Url,
         [string]$Method = "GET",
+        [string]$Body = "",
         [int]$TimeoutSec = 30
     )
 
@@ -91,6 +92,12 @@ function Invoke-ActiveCurlText {
     }
     if ($Method -ne "GET") {
         $args += @("--request", $Method)
+    }
+    if ($Body) {
+        $args += @(
+            "--header", "Content-Type: application/x-www-form-urlencoded",
+            "--data", $Body
+        )
     }
     $args += $Url
 
@@ -176,7 +183,7 @@ function Try-SelectBaseUrl {
         $status = Wait-ExportReady -Base $base
     } elseif ($StopRecordingFirst) {
         Write-Host "Stopping recording before export..."
-        Invoke-ActiveCurlText -Url "$base/api/config?recording=0" -TimeoutSec 15 | Out-Null
+        Invoke-ActiveCurlText -Url "$base/api/config" -Method "POST" -Body "recording=0" -TimeoutSec 15 | Out-Null
         Start-Sleep -Seconds 2
     }
 

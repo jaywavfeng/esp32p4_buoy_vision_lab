@@ -1,6 +1,6 @@
 # COCO 模型验证说明
 
-本文记录当前 `v3.0.0` 固件中 COCO 对照模型的验证路径。COCO 不是默认模型，客户默认使用 Fish31；COCO 通过 Web「模型切换」或 `/api/config?method=coco` 选择后用于演示、实时预览、FIELD 录像和手动补帧。
+本文记录当前 `v3.0.1` 固件中 COCO 对照模型的验证路径。COCO 不是默认模型，客户默认使用 Fish31；COCO 通过 Web「模型切换」或 `POST /api/config`（表单请求体 `method=coco`）选择后用于演示、实时预览、FIELD 录像和手动补帧。
 
 ## 模型信息
 
@@ -53,10 +53,10 @@ http://169.254.100.2/validate
 相关接口：
 
 ```text
-/api/validate/run?method=coco&sample=demo_01&box_min_score=50
-/api/validate/overlay.svg?id=<id>
-/api/dataset/run/start?dataset=coco_video_demo&limit=16&stride=1
-/api/dataset/frame.svg?run_id=<run>&dataset=coco_video_demo&index=<n>
+POST /api/validate/run  (表单请求体：method=coco&sample=demo_01&box_min_score=50)
+GET  /api/validate/overlay.svg?id=<id>
+POST /api/dataset/run/start?dataset=coco_video_demo&method=coco&limit=16&stride=1
+GET  /api/dataset/frame.svg?run_id=<run>&dataset=coco_video_demo&index=<n>
 ```
 
 COCO 演示短视频使用 `test_assets/coco_video_demo/frames/` 中 16 帧 JPEG。浏览器会逐帧请求板端推理 overlay，用于确认检测框绘制和视频演示链路正常。

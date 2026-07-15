@@ -285,15 +285,30 @@ def curl_request(
     url: str,
     interface: str | None = None,
     data_file: Path | None = None,
+    form_data: str | None = None,
     timeout: int = 30,
 ) -> str:
-    cmd = ["curl.exe", "--silent", "--show-error", "--fail-with-body", "--max-time", str(timeout)]
+    cmd = [
+        "curl.exe",
+        "--silent",
+        "--show-error",
+        "--fail-with-body",
+        "--max-time",
+        str(timeout),
+    ]
     if interface:
         cmd += ["--interface", interface]
     if method != "GET":
         cmd += ["-X", method]
     if data_file:
         cmd += ["--data-binary", f"@{data_file}"]
+    if form_data is not None:
+        cmd += [
+            "--header",
+            "Content-Type: application/x-www-form-urlencoded",
+            "--data",
+            form_data,
+        ]
     cmd.append(url)
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
@@ -301,8 +316,14 @@ def curl_request(
     return proc.stdout
 
 
-def board_get_json(base_url: str, path: str, interface: str | None, timeout: int = 30) -> dict[str, Any]:
-    text = curl_request("GET", base_url.rstrip("/") + path, interface=interface, timeout=timeout)
+def board_get_json(
+    base_url: str,
+    path: str,
+    interface: str | None,
+    timeout: int = 30,
+    method: str = "GET",
+) -> dict[str, Any]:
+    text = curl_request(method, base_url.rstrip("/") + path, interface=interface, timeout=timeout)
     return json.loads(text)
 
 
@@ -340,9 +361,15 @@ def run_candidate_on_board(
     wake: bool,
 ) -> dict[str, Any]:
     if wake:
-        curl_request("GET", base_url.rstrip("/") + "/api/power?cmd=wake", interface=interface, timeout=10)
-    curl_request("GET", base_url.rstrip("/") + "/api/recognition?method=tinycls", interface=interface, timeout=10)
-    curl_request("GET", base_url.rstrip("/") + "/api/config?inference_interval_ms=0", interface=interface, timeout=10)
+        curl_request("POST", base_url.rstrip("/") + "/api/power?cmd=wake", interface=interface, timeout=10)
+    curl_request("POST", base_url.rstrip("/") + "/api/recognition?method=tinycls", interface=interface, timeout=10)
+    curl_request(
+        "POST",
+        base_url.rstrip("/") + "/api/config",
+        interface=interface,
+        form_data="inference_interval_ms=0",
+        timeout=10,
+    )
 
     path = "frames/frame_00001.jpg"
     put_url = (
@@ -355,6 +382,7 @@ def run_candidate_on_board(
         f"/api/dataset/run/start?dataset={quote(dataset)}&method=tinycls&limit=1&stride=1",
         interface,
         timeout=20,
+        method="POST",
     )
     run_id = start.get("run_id", "")
     deadline = time.time() + 60
@@ -636,7 +664,7 @@ def main() -> int:
     if args.run_board and not args.reuse_manifest:
         interface = args.interface or None
         try:
-            curl_request("GET", args.board.rstrip("/") + "/api/recognition?method=tinycls", interface=interface, timeout=10)
+            curl_request("POST", args.board.rstrip("/") + "/api/recognition?method=tinycls", interface=interface, timeout=10)
             board_status = board_get_json(args.board, "/api/status", interface, timeout=10)
             print(
                 "board:",

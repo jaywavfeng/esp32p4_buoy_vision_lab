@@ -12,11 +12,30 @@ function Get-TargetVolume {
     )
     if ($Letter) {
         $cleanLetter = $Letter.TrimEnd(":")
-        return Get-Volume -DriveLetter $cleanLetter -ErrorAction Stop
+        return Get-Volume -DriveLetter $cleanLetter -ErrorAction SilentlyContinue
     }
     return Get-Volume | Where-Object {
         $_.FileSystemLabel -eq $Label
     } | Select-Object -First 1
+}
+
+function Test-DriveLetterMounted {
+    param(
+        [string]$Letter
+    )
+    if (-not $Letter) {
+        return $false
+    }
+    $cleanLetter = $Letter.TrimEnd(":")
+    $deviceId = "$cleanLetter`:"
+    $logicalDisk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$deviceId'" -ErrorAction SilentlyContinue
+    if ($logicalDisk -and $null -ne $logicalDisk.Size) {
+        return $true
+    }
+    # After a successful eject Windows can keep an empty PSDrive shell such as
+    # E:\ with Used=0 and Free=$null.  Treat only a logical disk with a real
+    # size as still mounted; otherwise the board may already have restored TF.
+    return $false
 }
 
 $volume = Get-TargetVolume -Label $VolumeLabel -Letter $DriveLetter
@@ -59,39 +78,29 @@ if ($initialDriveLetter) {
             throw "Drive '$drivePath' was not found by Windows Shell."
         }
         $drive.InvokeVerb("Eject")
-        Start-Sleep -Seconds 2
     }
     finally {
         [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell)
     }
 }
 
-$stillMounted = Get-TargetVolume -Label $VolumeLabel -Letter $DriveLetter
-if ($stillMounted) {
-    $target = "$initialDriveLetter`:"
-    Write-Warning "Windows still has '$VolumeLabel' mounted; taking the volume offline with mountvol ($target)."
-    & mountvol.exe $target /p
-    if ($LASTEXITCODE -ne 0) {
-        $cimVolume = Get-CimInstance Win32_Volume | Where-Object {
-            $_.Label -eq $VolumeLabel -or $_.Name -eq $volumePath
-        } | Select-Object -First 1
-        if (-not $cimVolume) {
-            throw "mountvol failed and Win32_Volume could not find '$VolumeLabel'."
-        }
-        $result = Invoke-CimMethod -InputObject $cimVolume -MethodName Dismount -Arguments @{
-            Force = $false
-            Permanent = $false
-        }
-        if ($result.ReturnValue -ne 0) {
-            throw "Could not safely dismount '$VolumeLabel' (mountvol exit $LASTEXITCODE, Win32_Volume return $($result.ReturnValue))."
-        }
+$waitDriveLetter = if ($DriveLetter) { $DriveLetter.TrimEnd(":") } else { $initialDriveLetter }
+$stillMounted = $true
+for ($i = 0; $i -lt 20; $i++) {
+    Start-Sleep -Milliseconds 700
+    if ($waitDriveLetter) {
+        $stillMounted = Test-DriveLetterMounted -Letter $waitDriveLetter
     }
-    Start-Sleep -Seconds 2
+    else {
+        $stillMounted = [bool](Get-TargetVolume -Label $VolumeLabel -Letter "")
+    }
+    if (-not $stillMounted) {
+        break
+    }
 }
-
-$stillMounted = Get-TargetVolume -Label $VolumeLabel -Letter $DriveLetter
 if ($stillMounted) {
-    throw "'$VolumeLabel' is still mounted. Close Explorer/files using it, then retry."
+    $displayLetter = if ($waitDriveLetter) { "$waitDriveLetter`:" } else { $volumePath }
+    throw "Windows did not eject '$VolumeLabel'. Close Explorer/files using $displayLetter and retry from the taskbar or this script. The script will not use mountvol /p because that disables the drive letter on later inserts."
 }
 
 if ($initialDriveLetter) {

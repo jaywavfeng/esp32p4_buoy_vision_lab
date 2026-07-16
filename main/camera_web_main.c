@@ -336,6 +336,7 @@ extern int esp_hosted_connect_to_slave(void);
 #define HISTORY_JSONL_PATH CONFIG_APP_SD_MOUNT_POINT "/esp32p4/history.jsonl"
 #define HISTORY_JSONL_OLD_PATH CONFIG_APP_SD_MOUNT_POINT "/esp32p4/history.old.jsonl"
 #define RECORDING_DIR CONFIG_APP_SD_MOUNT_POINT "/esp32p4/recordings"
+#define RECORDING_RECOVERY_DIR RECORDING_DIR "/lost_found"
 #define RECORDING_INDEX_PATH CONFIG_APP_SD_MOUNT_POINT "/esp32p4/recordings.jsonl"
 #define RECORDING_SUMMARY_PATH CONFIG_APP_SD_MOUNT_POINT "/esp32p4/summaries.jsonl"
 #define RECORDING_INDEX_OLD_PATH CONFIG_APP_SD_MOUNT_POINT "/esp32p4/recordings.old.jsonl"
@@ -358,6 +359,7 @@ extern int esp_hosted_connect_to_slave(void);
 #define RECORDING_MANIFEST_URI "/api/recording/manifest"
 #define RECORDING_FRAME_SVG_URI "/api/recording/frame.svg"
 #define DATASET_FRAME_SVG_URI "/api/dataset/frame.svg"
+#define RECORDING_AVI_HEADER_BYTES 224U
 #define HISTORY_QUEUE_DEPTH 8
 #define RECORDING_LABEL_BUCKETS 8
 #define JSONL_TAIL_LINE_BYTES 2048
@@ -1027,6 +1029,7 @@ static volatile uint32_t s_recording_queued;
 static volatile uint32_t s_recording_dropped;
 static volatile uint32_t s_recording_files_deleted;
 static volatile uint32_t s_recording_sd_errors;
+static volatile uint32_t s_recording_zero_frame_archives;
 static volatile uint32_t s_recording_summary_count;
 static volatile uint32_t s_recording_current_frames;
 static volatile uint64_t s_recording_bytes;
@@ -4754,6 +4757,7 @@ cleanup_verify:
         s_recording_queued = 0;
         s_recording_dropped = 0;
         s_recording_files_deleted = 0;
+        s_recording_zero_frame_archives = 0;
         s_recording_summary_count = 0;
         s_segment_sequence = 0;
         s_current_segment_base[0] = '\0';
@@ -4999,6 +5003,119 @@ static void preserve_failed_recording_part(const char *part_path)
     }
     ESP_LOGE(TAG, "failed to preserve unrecoverable AVI part %s: errno=%d",
              part_path, rename_errno);
+}
+
+static esp_err_t move_recording_recovery_file(const char *src_path,
+                                              const char *src_name,
+                                              const char *tag)
+{
+    if (!src_path || !src_name || !tag) {
+        errno = EINVAL;
+        return ESP_ERR_INVALID_ARG;
+    }
+    struct stat st = {0};
+    errno = 0;
+    if (stat(src_path, &st) != 0) {
+        int stat_errno = errno ? errno : EIO;
+        if (stat_errno == ENOENT) {
+            errno = 0;
+            return ESP_OK;
+        }
+        errno = stat_errno;
+        return ESP_FAIL;
+    }
+    if (!S_ISREG(st.st_mode)) {
+        errno = EINVAL;
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t dir_ret = ensure_dir(RECORDING_RECOVERY_DIR);
+    if (dir_ret != ESP_OK) {
+        return dir_ret;
+    }
+
+    char dest_path[448];
+    int len = snprintf(dest_path, sizeof(dest_path), "%s/%s.%s",
+                       RECORDING_RECOVERY_DIR, src_name, tag);
+    if (len < 0 || (size_t)len >= sizeof(dest_path)) {
+        errno = ENAMETOOLONG;
+        return ESP_ERR_INVALID_SIZE;
+    }
+    errno = 0;
+    if (rename(src_path, dest_path) == 0) {
+        ESP_LOGW(TAG, "archived recording recovery file %s -> %s",
+                 src_name, dest_path);
+        return ESP_OK;
+    }
+    int rename_errno = errno ? errno : EIO;
+    if (rename_errno == EEXIST) {
+        uint64_t now_ms = (uint64_t)(esp_timer_get_time() / 1000);
+        len = snprintf(dest_path, sizeof(dest_path), "%s/%s.%" PRIu64 ".%s",
+                       RECORDING_RECOVERY_DIR, src_name, now_ms, tag);
+        if (len < 0 || (size_t)len >= sizeof(dest_path)) {
+            errno = ENAMETOOLONG;
+            return ESP_ERR_INVALID_SIZE;
+        }
+        errno = 0;
+        if (rename(src_path, dest_path) == 0) {
+            ESP_LOGW(TAG, "archived recording recovery file %s -> %s",
+                     src_name, dest_path);
+            return ESP_OK;
+        }
+        rename_errno = errno ? errno : EIO;
+    }
+    errno = rename_errno;
+    return ESP_FAIL;
+}
+
+static esp_err_t archive_zero_frame_recording_part(const char *part_path,
+                                                   const char *part_name,
+                                                   const char *final_name)
+{
+    if (!part_path || !part_name || !final_name) {
+        errno = EINVAL;
+        return ESP_ERR_INVALID_ARG;
+    }
+    ESP_LOGW(TAG, "archiving zero-frame recording part %s", part_name);
+    esp_err_t ret = move_recording_recovery_file(part_path, part_name,
+                                                 "zero_frame");
+    int saved_errno = ret == ESP_OK ? 0 : (errno ? errno : EIO);
+
+    char meta_name[128];
+    strlcpy(meta_name, final_name, sizeof(meta_name));
+    size_t len = strlen(meta_name);
+    if (len > 4 && strcmp(meta_name + len - 4, ".avi") == 0) {
+        meta_name[len - 4] = '\0';
+        strlcat(meta_name, ".jsonl", sizeof(meta_name));
+        char meta_path[384];
+        snprintf(meta_path, sizeof(meta_path), "%s/%s", RECORDING_DIR, meta_name);
+        esp_err_t meta_ret = move_recording_recovery_file(meta_path, meta_name,
+                                                          "zero_frame");
+        if (ret == ESP_OK && meta_ret != ESP_OK) {
+            ret = meta_ret;
+            saved_errno = errno ? errno : EIO;
+        }
+    }
+    if (ret == ESP_OK) {
+        __atomic_add_fetch(&s_recording_zero_frame_archives, 1,
+                           __ATOMIC_ACQ_REL);
+        errno = 0;
+    } else {
+        errno = saved_errno ? saved_errno : EIO;
+    }
+    return ret;
+}
+
+static bool recording_recovery_error_is_zero_frame(esp_err_t ret, int error_number)
+{
+    if (ret == ESP_ERR_NOT_FOUND && error_number != ENOENT) {
+        return true;
+    }
+#ifdef ENODATA
+    if (error_number == ENODATA) {
+        return true;
+    }
+#endif
+    return false;
 }
 
 static esp_err_t recording_file_ready(const char *name, bool *out_ready)
@@ -5889,6 +6006,17 @@ static esp_err_t recover_incomplete_recordings(void)
         }
         char final_path[384];
         snprintf(final_path, sizeof(final_path), "%s/%s", RECORDING_DIR, final_name);
+        if (st.st_size <= (off_t)RECORDING_AVI_HEADER_BYTES) {
+            esp_err_t archive_ret =
+                archive_zero_frame_recording_part(part_path, entry->d_name,
+                                                  final_name);
+            if (archive_ret != ESP_OK) {
+                storage_maintenance_record_failure(
+                    &result, "zero-frame recording archive",
+                    errno ? errno : EIO, &s_recording_sd_errors);
+            }
+            continue;
+        }
         ESP_LOGW(TAG, "recovering incomplete recording part %s (%" PRId64 " bytes)",
                  entry->d_name, (int64_t)st.st_size);
         errno = 0;
@@ -5907,12 +6035,24 @@ static esp_err_t recover_incomplete_recordings(void)
         }
         ESP_LOGE(TAG, "failed to recover incomplete recording %s: %s errno=%d",
                  entry->d_name, esp_err_to_name(recover_ret), recover_errno);
-        preserve_failed_recording_part(part_path);
-        if (recover_errno != ENOENT) {
-            storage_maintenance_record_failure(
-                &result, "incomplete recording recovery", recover_errno,
-                &s_recording_sd_errors);
+        if (recover_errno == ENOENT) {
+            continue;
         }
+        if (recording_recovery_error_is_zero_frame(recover_ret, recover_errno)) {
+            esp_err_t archive_ret =
+                archive_zero_frame_recording_part(part_path, entry->d_name,
+                                                  final_name);
+            if (archive_ret != ESP_OK) {
+                storage_maintenance_record_failure(
+                    &result, "zero-frame recording archive",
+                    errno ? errno : EIO, &s_recording_sd_errors);
+            }
+            continue;
+        }
+        preserve_failed_recording_part(part_path);
+        storage_maintenance_record_failure(
+            &result, "incomplete recording recovery", recover_errno,
+            &s_recording_sd_errors);
     }
     errno = 0;
     if (closedir(dir) != 0) {
@@ -9651,7 +9791,8 @@ static const char s_customer_index_html_v2[] __attribute__((unused)) =
 "</div><div class=\"actions\"><button id=\"saveConfigBtn\" onclick=\"applyCustomerConfig()\" disabled>保存设置</button><button onclick=\"enterFieldMode()\">立即进入野外录像</button><button onclick=\"usbExportNow()\">USB 立即导出</button><button onclick=\"usbRestore()\">USB 恢复存储</button><button id=\"retryStorageBtn\" onclick=\"retryStorage()\">检查并重试 TF</button></div><div class=\"hint\" id=\"configMsg\">正在读取设备当前设置；读取成功后才可修改和保存。</div></section>"
 "<section class=\"panel\"><div class=\"top\"><div><div class=\"title small\">录像记录</div><div class=\"hint\" id=\"recordMeta\">--</div></div><button id=\"clearRecordingsBtn\" onclick=\"clearRecordings()\">清空录像记录</button></div><div class=\"rows records\" id=\"recordRows\"></div></section>"
 "</main><script>"
-"window.onerror=function(m){let e=document.getElementById('modeLine');if(e)e.textContent='页面脚本错误：'+m};const modeLine=document.getElementById('modeLine'),netRows=document.getElementById('netRows'),stateRows=document.getElementById('stateRows'),segmentSec=document.getElementById('segmentSec'),idleSec=document.getElementById('idleSec'),routerSsid=document.getElementById('routerSsid'),routerPass=document.getElementById('routerPass'),clearRouterPass=document.getElementById('clearRouterPass'),netMode=document.getElementById('netMode'),modelSelect=document.getElementById('modelSelect'),fieldAuto=document.getElementById('fieldAuto'),saveConfigBtn=document.getElementById('saveConfigBtn'),configMsg=document.getElementById('configMsg'),modelPanel=document.getElementById('modelPanel'),modelMsg=document.getElementById('modelMsg'),previewBtn=document.getElementById('previewBtn'),previewBox=document.getElementById('previewBox'),previewStream=document.getElementById('previewStream'),recordMeta=document.getElementById('recordMeta'),recordRows=document.getElementById('recordRows'),configInputs=[segmentSec,idleSec,routerSsid,routerPass,clearRouterPass,netMode,fieldAuto];let lastStatus=null,lastGroups=[],configReady=false,configDirty=false,configSaving=false;function setConfigEnabled(enabled){let active=enabled&&!configSaving;configInputs.forEach(e=>e.disabled=!active);saveConfigBtn.disabled=!active}function markConfigDirty(){if(!configReady)return;configDirty=true;configMsg.textContent='设置已修改；自动刷新不会覆盖输入，点击“保存设置”后生效'}configInputs.forEach(e=>{e.addEventListener('input',markConfigDirty);e.addEventListener('change',markConfigDirty)});function esc(v){return String(v==null?'':v).replace(/[&<>\\\"]/g,m=>m==='&'?'&amp;':m==='<'?'&lt;':m==='>'?'&gt;':'&quot;')}"
+"window.onerror=function(m){let e=document.getElementById('modeLine');if(e)e.textContent='页面脚本错误：'+m};const modeLine=document.getElementById('modeLine'),netRows=document.getElementById('netRows'),stateRows=document.getElementById('stateRows'),segmentSec=document.getElementById('segmentSec'),idleSec=document.getElementById('idleSec'),routerSsid=document.getElementById('routerSsid'),routerPass=document.getElementById('routerPass'),clearRouterPass=document.getElementById('clearRouterPass'),netMode=document.getElementById('netMode'),modelSelect=document.getElementById('modelSelect'),fieldAuto=document.getElementById('fieldAuto'),saveConfigBtn=document.getElementById('saveConfigBtn'),configMsg=document.getElementById('configMsg'),modelPanel=document.getElementById('modelPanel'),modelMsg=document.getElementById('modelMsg'),previewBtn=document.getElementById('previewBtn'),previewBox=document.getElementById('previewBox'),previewStream=document.getElementById('previewStream'),recordMeta=document.getElementById('recordMeta'),recordRows=document.getElementById('recordRows'),configInputs=[segmentSec,idleSec,routerSsid,routerPass,clearRouterPass,netMode,fieldAuto];let lastStatus=null,lastGroups=[],configReady=false,configDirty=false,configSaving=false,statusLoading=false,recordsLoading=false;function setConfigEnabled(enabled){let active=enabled&&!configSaving;configInputs.forEach(e=>e.disabled=!active);saveConfigBtn.disabled=!active}function markConfigDirty(){if(!configReady)return;configDirty=true;configMsg.textContent='设置已修改；自动刷新不会覆盖输入，点击“保存设置”后生效'}configInputs.forEach(e=>{e.addEventListener('input',markConfigDirty);e.addEventListener('change',markConfigDirty)});function esc(v){return String(v==null?'':v).replace(/[&<>\\\"]/g,m=>m==='&'?'&amp;':m==='<'?'&lt;':m==='>'?'&gt;':'&quot;')}"
+"function fetchWithTimeout(url,opt,ms){if(!window.AbortController)return fetch(url,opt||{});let c=new AbortController(),o=Object.assign({},opt||{}, {signal:c.signal}),t=setTimeout(()=>c.abort(),ms||4500);return fetch(url,o).finally(()=>clearTimeout(t))}"
 "function yes(v){return v?'<span class=\"ok\">是</span>':'<span class=\"bad\">否</span>'}function link(u){return u?'<a href=\"'+esc(u)+'\" target=\"_blank\">'+esc(u)+'</a>':'--'}"
 "function keep(id,v){let e=document.getElementById(id);if(e&&!configDirty&&document.activeElement!==e)e.value=v}function row(k,v){return '<div class=\"row\"><div class=\"label\">'+esc(k)+'</div><div>'+v+'</div></div>'}"
 "function fieldCountdown(c){if(!c.field_auto_enable)return '<span class=\"muted\">已关闭</span>';if(c.field_idle_paused)return '<span class=\"warn\">暂停：'+esc(c.field_idle_pause_reason||'设备正在处理其他任务')+'</span>';let ms=Number(c.field_idle_remaining_ms);return ms>=0?'<span class=\"ok\">运行中，'+Math.ceil(ms/1000)+' 秒后进入采集</span>':'<span class=\"muted\">等待计时</span>'}"
@@ -9660,8 +9801,8 @@ static const char s_customer_index_html_v2[] __attribute__((unused)) =
 "function recInfo(x){return x?fmtSec(x.duration_ms)+' | '+(x.frames||0)+' 帧 | '+fmtBytes(x.bytes)+' | '+modelName(x.method):'--'}"
 "function labelSummary(a){return (a||[]).slice(0,3).map(x=>esc(x.label)+' x'+(x.count||0)).join(' / ')||'--'}"
 "async function syncTime(){await fetch('/api/time/sync?epoch_ms='+Date.now(),{method:'POST',cache:'no-store'}).catch(()=>{})}"
-"async function loadAll(){await loadStatus();await loadRecords()}async function loadStatus(){try{let r=await fetch('/api/status?ts='+Date.now(),{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);let s=await r.json(),c=s.config||{};lastStatus=s;let clients=Number(s.client_count||s.web_clients||0),segMaxSec=Math.max(5,Math.floor(Number(c.recording_segment_max_ms||14400000)/1000));segmentSec.max=String(segMaxSec);modeLine.textContent='模式 '+(s.app_mode||'--')+' | 摄像头 '+cameraPowerLabel(s)+' | 网络 '+(s.network_mode||'--')+' | 模型 '+modelName(s.recognition_method);netRows.innerHTML=row('热点(AP)',link(s.ap_url))+row('路由器(STA)',link(s.sta_url))+row('网线(ETH)',link(s.eth_url))+row('mDNS',link(s.mdns_url))+row('客户端',String(clients));let tfOk=!!s.storage_acceptance_ok,tfText=tfOk?'写入验证通过':(s.storage_io_latched?'检测到写入故障，已停止录像写入':'尚未通过写入验证');stateRows.innerHTML=row('TF存储',yes(tfOk)+' '+esc(tfText)+' | '+esc(s.storage_status||''))+row('USB主机已配置',s.usb_host_connected?'<span class=\"ok\">是</span>':'<span class=\"muted\">否</span>')+row('USB占用',esc(s.usb_storage_owner||'none')+' '+esc(s.usb_last_error||''))+row('录像',esc(recordingLine(s)))+row('录像片段时长',Math.round(Number(c.recording_segment_ms||0)/1000)+' 秒');if(!configDirty){keep('segmentSec',Math.round((c.recording_segment_ms||60000)/1000));keep('idleSec',Math.round((c.field_idle_timeout_ms||300000)/1000));keep('routerSsid',c.router_ssid||'');netMode.value=s.network_mode||'apsta';fieldAuto.checked=!!c.field_auto_enable}modelSelect.value=s.recognition_method||'fish31';routerPass.placeholder=c.router_password_set?'已保存，留空不修改':'8-64 位，开放路由器可留空';if(!configReady){configReady=true;configMsg.textContent='已读取设备当前设置；修改后点击“保存设置”，以设备回显值为准'}setConfigEnabled(true);updateRecordProgress()}catch(e){modeLine.textContent='状态读取失败：'+(e&&e.message?e.message:e);if(!configReady)configMsg.textContent='暂时无法读取设备当前设置，已禁止保存；页面会自动重试'}}"
-"async function postConfig(q){let r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:q.toString(),cache:'no-store'}),t=await r.text(),j=null;try{j=t?JSON.parse(t):{}}catch(e){}if(!r.ok){let m=j&&(j.message||j.error)?(j.message||j.error):(t||('HTTP '+r.status));if(j&&j.action)m+='；'+j.action;throw new Error(m)}return j||{}}"
+"async function loadAll(){await loadStatus();await loadRecords()}async function loadStatus(){if(statusLoading)return;statusLoading=true;try{let r=await fetchWithTimeout('/api/status?ts='+Date.now(),{cache:'no-store'},4500);if(!r.ok)throw new Error('HTTP '+r.status);let s=await r.json(),c=s.config||{};lastStatus=s;let clients=Number(s.client_count||s.web_clients||0),segMaxSec=Math.max(5,Math.floor(Number(c.recording_segment_max_ms||14400000)/1000));segmentSec.max=String(segMaxSec);modeLine.textContent='模式 '+(s.app_mode||'--')+' | 摄像头 '+cameraPowerLabel(s)+' | 网络 '+(s.network_mode||'--')+' | 模型 '+modelName(s.recognition_method);netRows.innerHTML=row('热点(AP)',link(s.ap_url))+row('路由器(STA)',link(s.sta_url))+row('网线(ETH)',link(s.eth_url))+row('mDNS',link(s.mdns_url))+row('客户端',String(clients));let tfOk=!!s.storage_acceptance_ok,tfText=tfOk?'写入验证通过':(s.storage_io_latched?'检测到写入故障，已停止录像写入':'尚未通过写入验证'),zf=Number(s.recording_zero_frame_archives||0);stateRows.innerHTML=row('TF存储',yes(tfOk)+' '+esc(tfText)+' | '+esc(s.storage_status||''))+row('USB主机已配置',s.usb_host_connected?'<span class=\"ok\">是</span>':'<span class=\"muted\">否</span>')+row('USB占用',esc(s.usb_storage_owner||'none')+' '+esc(s.usb_last_error||''))+row('录像',esc(recordingLine(s)))+row('录像片段时长',Math.round(Number(c.recording_segment_ms||0)/1000)+' 秒')+(zf>0?row('恢复归档','已归档 '+zf+' 个 0 帧临时文件，录像列表不受影响；清空录像会一并删除'):'');if(!configDirty){keep('segmentSec',Math.round((c.recording_segment_ms||60000)/1000));keep('idleSec',Math.round((c.field_idle_timeout_ms||300000)/1000));keep('routerSsid',c.router_ssid||'');netMode.value=s.network_mode||'apsta';fieldAuto.checked=!!c.field_auto_enable}modelSelect.value=s.recognition_method||'fish31';routerPass.placeholder=c.router_password_set?'已保存，留空不修改':'8-64 位，开放路由器可留空';if(!configReady){configReady=true;configMsg.textContent='已读取设备当前设置；修改后点击“保存设置”，以设备回显值为准'}setConfigEnabled(true);updateRecordProgress()}catch(e){modeLine.textContent='状态读取失败：'+(e&&e.name==='AbortError'?'设备响应超时，可能正在切换存储或进入野外录像':(e&&e.message?e.message:e));if(!configReady)configMsg.textContent='暂时无法读取设备当前设置，已禁止保存；页面会自动重试'}finally{statusLoading=false}}"
+"async function postConfig(q){let r=await fetchWithTimeout('/api/config',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:q.toString(),cache:'no-store'},8000),t=await r.text(),j=null;try{j=t?JSON.parse(t):{}}catch(e){}if(!r.ok){let m=j&&(j.message||j.error)?(j.message||j.error):(t||('HTTP '+r.status));if(j&&j.action)m+='；'+j.action;throw new Error(m)}return j||{}}"
 "async function applyCustomerConfig(){if(!configReady){configMsg.textContent='尚未读取到设备当前设置，暂不能保存；请等待页面自动重试';return}if(!segmentSec.reportValidity()||!idleSec.reportValidity()){configMsg.textContent='请先修正标红的时间参数';return}if(clearRouterPass.checked&&routerPass.value.length){configMsg.textContent='不能同时填写新密码和清除密码；请只选择一种操作';return}let seg=Number(segmentSec.value),idle=Number(idleSec.value);if(!Number.isInteger(seg)||!Number.isInteger(idle)){configMsg.textContent='倒计时和片段时长必须是整数秒';return}let q=new URLSearchParams();q.set('recording_segment_ms',String(seg*1000));q.set('field_idle_timeout_ms',String(idle*1000));q.set('field_auto_enable',fieldAuto.checked?'1':'0');q.set('network_mode',netMode.value);q.set('router_ssid',routerSsid.value);if(clearRouterPass.checked)q.set('router_password','');else if(routerPass.value.length>0)q.set('router_password',routerPass.value);configSaving=true;setConfigEnabled(false);configMsg.textContent='正在保存并核对设备实际配置...';let saved=false;try{let j=await postConfig(q);saved=true;configDirty=false;let auto=j.field_auto_enable?'开启':'关闭';configMsg.textContent='已生效：自动采集 '+auto+'，倒计时 '+Math.round(j.field_idle_timeout_ms/1000)+' 秒，录像片段 '+Math.round(j.recording_segment_ms/1000)+' 秒（已有录像保持不变）'+(j.network_mode?'，网络 '+j.network_mode:'');await loadStatus()}catch(e){configMsg.textContent='保存未确认：'+(e&&e.message?e.message:e)+'；页面会自动重连，状态恢复后请核对并再次保存'}finally{if(saved){routerPass.value='';clearRouterPass.checked=false}configSaving=false;setConfigEnabled(configReady)}}"
 "function toggleModelPanel(){modelPanel.classList.toggle('hidden')}async function saveModel(){let q=new URLSearchParams();q.set('method',modelSelect.value);modelMsg.textContent='正在切换模型...';try{let j=await postConfig(q);modelMsg.textContent='模型已保存：'+modelName(j.recognition_method);await loadStatus()}catch(e){modelMsg.textContent='模型保存失败：'+(e&&e.message?e.message:e)}}"
 "async function enterFieldMode(){configMsg.textContent='正在检查 TF 存储状态...'}"
@@ -9673,15 +9814,15 @@ static const char s_customer_index_html_v2[] __attribute__((unused)) =
 "function renderRecord(g){let raw=rawOf(g),ann=annOf(g),base=raw||ann;if(!base)return '';let method=groupMethod(g),need=g.needs_rebuild||!ann;let status=need?'<span class=\"warn\">需补帧/重建</span>':'<span class=\"ok\">已生成</span>';let actions=(raw?'<a class=\"btn\" href=\"'+esc(raw.uri)+'\" target=\"_blank\">原视频</a>':'<span class=\"muted\">原视频</span>')+(ann?'<a class=\"btn\" href=\"'+esc(ann.uri)+'\" target=\"_blank\">推理视频</a>':'<span class=\"muted\">推理视频</span>')+(raw?'<button data-fill=\"'+esc(raw.name)+'\">补帧</button>':'');let progress=raw?'<div class=\"bar\" data-progress=\"'+esc(raw.name)+'\"><i></i></div><div class=\"sub\" data-progress-text=\"'+esc(raw.name)+'\"></div>':'';return '<div class=\"row\"><div><div class=\"record-title\">'+esc(recTime(base))+' | '+modelName(method)+'</div><div class=\"sub\">原视频 '+recInfo(raw)+'</div><div class=\"sub\">推理视频 '+recInfo(ann)+' | '+status+'</div><div class=\"sub\">'+labelSummary((ann||raw||{}).labels)+'</div>'+progress+'</div><div class=\"record-actions\">'+actions+'</div></div>'}"
 "async function startFill(name){let r=await fetch('/api/recording/enrich?name='+encodeURIComponent(name),{method:'POST',cache:'no-store'}).catch(()=>null);configMsg.textContent=r&&r.ok?'补帧任务已加入队列':'补帧启动失败';setTimeout(loadAll,800)}"
 "function updateRecordProgress(){let e=lastStatus&&lastStatus.enrichment;if(!e)return;document.querySelectorAll('[data-progress]').forEach(bar=>{let name=bar.getAttribute('data-progress'),i=bar.querySelector('i'),txt=Array.from(document.querySelectorAll('[data-progress-text]')).find(x=>x.getAttribute('data-progress-text')===name);if(e.raw_name===name&&(e.running||e.frame_count)){let pct=e.frame_count?Math.round((e.output_frames||0)*100/e.frame_count):0;i.style.width=pct+'%';if(txt)txt.textContent='补帧 '+(e.output_frames||0)+' / '+(e.frame_count||0)+' 帧 | stride '+(e.pass_stride||0)+' | '+(e.last_error||'')}else{i.style.width='0';if(txt)txt.textContent=''}})}"
-"async function loadRecords(){try{let c=lastStatus&&lastStatus.recording_cleanup;if(c&&(c.queued||c.running)){recordMeta.textContent='正在后台清理录像：已删除 '+(c.deleted_files||0)+' / '+(c.total_files||'?')+' 个文件；Web 保持可用';recordRows.innerHTML='<div class=\"row\"><div class=\"warn\">正在清理录像，下载和补帧暂不可用；完成后列表会自动刷新。</div></div>';return}let r=await fetch('/api/recordings?limit=30&ts='+Date.now(),{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);let j=await r.json();recordMeta.textContent='TF '+(j.sd_mounted?'可用':'不可用')+' | '+(j.storage_status||'')+' | 当前 '+(j.current_uri||'--');lastGroups=(j.recording_groups&&j.recording_groups.length)?j.recording_groups:pairFallback(j.recordings||[]);recordRows.innerHTML=lastGroups.map(renderRecord).join('')||'<div class=\"row\"><div class=\"muted\">暂无录像记录</div></div>';document.querySelectorAll('[data-fill]').forEach(b=>b.onclick=()=>startFill(b.getAttribute('data-fill')));updateRecordProgress()}catch(e){recordMeta.textContent='录像记录读取失败：'+(e&&e.message?e.message:e)}}"
+"async function loadRecords(){if(recordsLoading)return;recordsLoading=true;try{let c=lastStatus&&lastStatus.recording_cleanup;if(c&&(c.queued||c.running)){recordMeta.textContent='正在后台清理录像：已删除 '+(c.deleted_files||0)+' / '+(c.total_files||'?')+' 个文件；Web 保持可用';recordRows.innerHTML='<div class=\"row\"><div class=\"warn\">正在清理录像，下载和补帧暂不可用；完成后列表会自动刷新。</div></div>';return}let r=await fetchWithTimeout('/api/recordings?limit=30&ts='+Date.now(),{cache:'no-store'},5000);if(!r.ok)throw new Error('HTTP '+r.status);let j=await r.json();recordMeta.textContent='TF '+(j.sd_mounted?'可用':'不可用')+' | '+(j.storage_status||'')+' | 当前 '+(j.current_uri||'--');lastGroups=(j.recording_groups&&j.recording_groups.length)?j.recording_groups:pairFallback(j.recordings||[]);recordRows.innerHTML=lastGroups.map(renderRecord).join('')||'<div class=\"row\"><div class=\"muted\">暂无录像记录</div></div>';document.querySelectorAll('[data-fill]').forEach(b=>b.onclick=()=>startFill(b.getAttribute('data-fill')));updateRecordProgress()}catch(e){recordMeta.textContent='录像记录读取失败：'+(e&&e.name==='AbortError'?'设备忙或正在切换存储，稍后自动重试':(e&&e.message?e.message:e))}finally{recordsLoading=false}}"
 "function sleep(ms){return new Promise(resolve=>setTimeout(resolve,ms))}"
 "function actionButton(fn){return Array.from(document.querySelectorAll('button')).find(b=>(b.getAttribute('onclick')||'').indexOf(fn+'()')>=0)}"
 "function ensureStorageFlow(){let e=document.getElementById('storageFlow');if(!e){e=document.createElement('div');e.id='storageFlow';e.className='storage-flow';e.innerHTML='<div class=\"bar\"><i></i></div><div class=\"hint\" id=\"storageFlowText\"></div>';configMsg.parentNode.insertBefore(e,configMsg)}return e}"
 "function storagePhase(s){s=s||{};let owner=s.usb_storage_owner||'none',svc=s.storage_service||{},txt=svc.status||s.storage_status||'';if(s.storage_quiescing||s.usb_export_requested||s.usb_restore_requested||s.storage_retry_requested){return {busy:1,cls:'warn',text:s.usb_restore_requested?'正在把 TF 恢复给设备，请等待 5-15 秒':(s.usb_export_requested?'正在准备 USB U 盘，正在停止采集并交接 TF':'正在检查 TF 并执行写入验证，请等待'),action:'请等待当前存储流程完成'}}if(owner==='usb'||s.app_mode==='usb_export'){let c=!!s.usb_host_connected;return {done:1,cls:'warn',text:c?'电脑正在使用 P4_BUOY；拔掉 USB 后设备会自动恢复 TF':'USB 已断开，设备正在自动恢复 TF；若长时间未恢复可点击“USB 恢复存储”',action:c?'安全弹出后直接拔掉 USB 线':'等待自动恢复，或点击“USB 恢复存储”兜底'}}if(s.storage_acceptance_ok){return {done:1,cls:'ok',text:'TF 写入验证已通过，可以稳定录像和下载记录',action:''}}return {busy:0,cls:'bad',text:'TF 未通过写入验证：'+(txt||s.usb_last_error||'请检查卡片')+'；检查或更换 TF 后可在 Web 直接重试',action:'检查或更换 TF 卡，再点击“检查并重试 TF”'}}"
 "function enhanceStatus(){let s=lastStatus||{},p=storagePhase(s),flow=ensureStorageFlow(),ft=document.getElementById('storageFlowText');flow.className='storage-flow '+(p.busy?'active':(p.done?'done':''));if(ft)ft.textContent=p.text;if(stateRows&&stateRows.innerHTML.indexOf('存储流程')<0)stateRows.innerHTML+=row('存储流程','<span class=\"'+p.cls+'\">'+esc(p.text)+'</span>');let usbOwner=(s.usb_storage_owner==='usb'||s.app_mode==='usb_export'),field=actionButton('enterFieldMode'),ue=actionButton('usbExportNow'),ur=actionButton('usbRestore'),sr=document.getElementById('retryStorageBtn');if(field){field.disabled=!!s.storage_quiescing||s.app_mode==='field'||s.network_shutdown_for_idle||!!s.usb_host_connected||usbOwner;field.title=field.disabled?(s.usb_host_connected?'先安全弹出 P4_BUOY 并拔掉 USB 线':(p.action||'当前状态不能进入野外录像')):''}if(ue){ue.disabled=!!s.storage_quiescing||usbOwner||s.app_mode!=='server';ue.title=ue.disabled?(s.app_mode==='export'?'以太网导出模式不能切换 USB；请先返回服务器模式':p.text):''}if(ur){ur.disabled=!!s.storage_quiescing||!!s.usb_restore_requested||!usbOwner;ur.title=ur.disabled?'当前状态不能恢复 TF':(s.usb_host_connected?'确认电脑已安全弹出或 USB 已拔掉后，可兜底恢复 TF':'USB 已断开，可安全恢复 TF 给设备')}if(sr){sr.disabled=!!s.storage_quiescing||usbOwner||!!s.storage_retry_requested;sr.title=sr.disabled?p.text:'重新挂载并执行真实写入、同步、读回验证'}}"
 "const baseLoadStatus=loadStatus;loadStatus=async function(){await baseLoadStatus();enhanceStatus()};"
-"async function readActionJson(url,opt){let r=await fetch(url,opt||{cache:'no-store'}).catch(()=>null);if(!r)throw new Error('网络连接失败');let t=await r.text().catch(()=>''),j=null;try{j=t?JSON.parse(t):null}catch(e){}if(!r.ok){throw new Error(j&&j.message?(j.message+(j.action?'；'+j.action:'')):(j&&j.error?j.error:(t||('HTTP '+r.status))))}return j||{}}"
-"async function statusOnce(){let r=await fetch('/api/status?ts='+Date.now(),{cache:'no-store'});let s=await r.json();lastStatus=s;enhanceStatus();return s}"
+"async function readActionJson(url,opt){let r=await fetchWithTimeout(url,opt||{cache:'no-store'},8000).catch(e=>{if(e&&e.name==='AbortError')throw new Error('设备响应超时，可能正在切换存储或模式');return null});if(!r)throw new Error('网络连接失败');let t=await r.text().catch(()=>''),j=null;try{j=t?JSON.parse(t):null}catch(e){}if(!r.ok){throw new Error(j&&j.message?(j.message+(j.action?'；'+j.action:'')):(j&&j.error?j.error:(t||('HTTP '+r.status))))}return j||{}}"
+"async function statusOnce(){let r=await fetchWithTimeout('/api/status?ts='+Date.now(),{cache:'no-store'},4500);let s=await r.json();lastStatus=s;enhanceStatus();return s}"
 "async function waitStorageStable(ms){let start=Date.now(),s=lastStatus||{};while(Date.now()-start<ms){s=await statusOnce().catch(()=>s);if(!s.storage_quiescing&&!s.usb_export_requested&&!s.usb_restore_requested&&!s.storage_retry_requested)return s;configMsg.textContent=storagePhase(s).text;await sleep(1000)}throw new Error('存储流程等待超时；Web 仍在线，请检查卡片后再次重试')}"
 "async function waitTfReady(ms){let start=Date.now(),s=lastStatus||{};while(Date.now()-start<ms){s=await statusOnce().catch(()=>s);if(s.storage_acceptance_ok&&s.usb_storage_owner!=='usb'&&!s.storage_quiescing)return s;configMsg.textContent='正在检查 TF 存储，请等待... '+storagePhase(s).text;await sleep(1000)}throw new Error('TF 未通过写入验证，请检查或更换卡片后点击“检查并重试 TF”')}"
 "async function retryStorage(){let b=document.getElementById('retryStorageBtn');if(b)b.disabled=true;try{configMsg.textContent='正在重新挂载 TF 并执行写入/读回验证...';await readActionJson('/api/storage/retry?confirm=RETRY',{method:'POST',cache:'no-store'});await waitTfReady(60000);configMsg.textContent='TF 写入验证已通过，可以稳定录像'}catch(e){configMsg.textContent='TF 重试未通过：'+(e&&e.message?e.message:e)}finally{if(b)b.disabled=false;setTimeout(loadAll,800)}}"
@@ -10835,6 +10976,7 @@ static esp_err_t status_get_handler(httpd_req_t *req)
              "\"recording_enabled\":%s,\"recording_segments\":%" PRIu32 ",\"recording_frames\":%" PRIu32 ","
              "\"recording_queued\":%" PRIu32 ",\"recording_dropped\":%" PRIu32 ","
              "\"recording_deleted\":%" PRIu32 ",\"recording_sd_errors\":%" PRIu32 ","
+             "\"recording_zero_frame_archives\":%" PRIu32 ","
              "\"recording_summary_count\":%" PRIu32 ",\"recording_bytes\":%" PRIu64 ","
              "\"recording_current_uri\":\"%s\",\"recording_current_frames\":%" PRIu32 ","
              "\"recording_current_bytes\":%" PRIu64 ","
@@ -10958,6 +11100,7 @@ static esp_err_t status_get_handler(httpd_req_t *req)
              s_recording_enabled ? "true" : "false", s_recording_segments, s_recording_frames,
              s_recording_queued, s_recording_dropped,
              s_recording_files_deleted, s_recording_sd_errors,
+             s_recording_zero_frame_archives,
              s_recording_summary_count, (uint64_t)s_recording_bytes,
              s_recording_current_uri, s_recording_current_frames,
              (uint64_t)s_recording_current_bytes,
@@ -14525,6 +14668,9 @@ static esp_err_t storage_records_delete_handler(httpd_req_t *req)
     deleted += delete_dir_whitelist(RECORDING_DIR, ".avi", ".mjpg", ".jsonl", &freed, &failed);
     deleted += delete_dir_whitelist(RECORDING_DIR, ".part", ".idx", ".new", &freed, &failed);
     deleted += delete_dir_whitelist(RECORDING_DIR, ".prev", ".corrupt", NULL, &freed, &failed);
+    deleted += delete_dir_whitelist(RECORDING_RECOVERY_DIR, ".avi", ".jsonl", ".part", &freed, &failed);
+    deleted += delete_dir_whitelist(RECORDING_RECOVERY_DIR, ".idx", ".new", ".prev", &freed, &failed);
+    deleted += delete_dir_whitelist(RECORDING_RECOVERY_DIR, ".corrupt", ".zero_frame", NULL, &freed, &failed);
     deleted += delete_dir_whitelist(HISTORY_SNAPSHOT_DIR, ".jpg", ".jpeg", NULL, &freed, &failed);
     deleted += delete_dir_whitelist(DATASET_RUN_DIR, ".jsonl", ".json", NULL, &freed, &failed);
     const char *indexes[] = {
@@ -18379,6 +18525,14 @@ static esp_err_t usb_restore_handler(httpd_req_t *req)
     if (s_app_mode != APP_MODE_USB_EXPORT) {
         httpd_resp_set_status(req, "409 Conflict");
         return httpd_resp_sendstr(req, "USB export is not active");
+    }
+    usb_msc_export_status_t usb_status = {0};
+    usb_msc_export_get_status(&usb_status);
+    if (usb_status.host_connected) {
+        return send_customer_action_json(
+            req, "409 Conflict", "usb_host_active",
+            "Windows is still using P4_BUOY, so TF cannot be restored to the device yet",
+            "close any Explorer window or file using P4_BUOY, then safely eject P4_BUOY in Windows; the device will restore automatically, or you can click USB restore again after eject");
     }
     if (s_storage_quiescing || storage_transition_active()) {
         return send_customer_action_json(

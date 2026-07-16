@@ -727,9 +727,16 @@ esp_err_t avi_mjpeg_recover_part(const char *part_path, const char *final_path)
     }
 
     if (writer->index_count == 0) {
+        int no_frame_errno =
+#ifdef ENODATA
+            ENODATA;
+#else
+            EINVAL;
+#endif
         errno = 0;
         avi_mjpeg_writer_abort(writer);
-        return ESP_ERR_INVALID_RESPONSE;
+        errno = no_frame_errno;
+        return ESP_ERR_NOT_FOUND;
     }
     errno = 0;
     if (ftruncate(part_fd, (long)valid_end) != 0) {

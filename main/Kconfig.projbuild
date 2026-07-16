@@ -118,13 +118,15 @@ menu "Wi-Fi Camera Web Control"
         default y
 
     config APP_USB_MSC_SD_FREQ_KHZ
-        int "USB export SDMMC frequency in kHz"
+        int "USB export SDMMC maximum frequency in kHz"
         depends on APP_USB_MSC_ENABLE
-        default 40000
+        default 20000
         range 400 40000
         help
-            This affects only USB mass-storage mode. Field capture continues
-            to use APP_SD_MAX_FREQ_KHZ.
+            This is an upper bound for USB mass-storage mode. The application
+            will not use a wider or faster profile than the TF mode that just
+            passed its write/fsync/reopen/read verification. Field capture
+            continues to use APP_SD_MAX_FREQ_KHZ.
 
     config APP_USB_MSC_PRODUCT_NAME
         string "USB mass-storage product name"

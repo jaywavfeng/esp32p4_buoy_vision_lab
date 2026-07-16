@@ -3,12 +3,12 @@
   "idf.customExtraVars": {
     "IDF_TARGET": "esp32p4"
   },
-  "idf.portWin": "COM3",
+  "idf.portWin": "COM6",
   "idf.flashType": "UART",
   "clangd.path": "C:\\Espressif\\tools\\esp-clang\\esp-20.1.1_20250829\\esp-clang\\bin\\clangd.exe",
   "clangd.arguments": [
     "--background-index",
     "--query-driver=**",
-    "--compile-commands-dir=d:\\ZJU\\Project\\wifi_led_web\\build"
+    "--compile-commands-dir=${workspaceFolder}\\build_rev31"
   ]
 }

@@ -1117,6 +1117,7 @@ static void storage_latch_io_error(const char *operation, int error_number);
 static bool storage_errno_is_media_failure(int error_number);
 static bool storage_backend_is_tf(void);
 static bool storage_usb_owned(void);
+static bool usb_auto_export_allowed_mode(app_mode_t mode);
 
 static const char *recognition_method_name(recognition_method_t method)
 {
@@ -9560,7 +9561,7 @@ static const char s_customer_index_html_v2[] __attribute__((unused)) =
 "<section class=\"grid\"><div class=\"panel\"><div class=\"title small\">连接地址</div><div class=\"rows\" id=\"netRows\"></div></div><div class=\"panel\"><div class=\"title small\">采集状态</div><div class=\"rows\" id=\"stateRows\"></div></div></section>"
 "<section class=\"panel\"><div class=\"title small\">现场查看</div><div class=\"hint\">默认不打开实时图传，需要时再开启。</div><div class=\"actions\"><button id=\"previewBtn\" onclick=\"togglePreview()\">打开实时图传</button><button onclick=\"toggleModelPanel()\">模型切换</button></div><div id=\"modelPanel\" class=\"panel hidden\" style=\"margin-top:12px\"><div class=\"form\"><label>推理模型<select id=\"modelSelect\"><option value=\"fish31\">Fish31</option><option value=\"tinycls\">TinyCNN</option><option value=\"coco\">COCO</option></select></label></div><div class=\"actions\"><button onclick=\"saveModel()\">保存模型</button><a class=\"btn\" href=\"/validate\" target=\"_blank\">手机验证</a></div><div class=\"hint\" id=\"modelMsg\">Fish31 为默认模型。</div></div><div id=\"previewBox\" class=\"preview\"><img id=\"previewStream\" alt=\"camera stream\"></div></section>"
 "<section class=\"panel\"><div class=\"title small\">用户设置</div><div class=\"form\">"
-"<label>录像片段时长(秒)<input id=\"segmentSec\" type=\"number\" min=\"5\" max=\"14400\" step=\"1\" required disabled><span class=\"hint\" id=\"segmentHint\">5-14400 秒，默认 60 秒；仅影响当前和后续录像，已有录像保持不变。</span></label>"
+"<label>录像片段时长(秒)<input id=\"segmentSec\" type=\"number\" min=\"5\" max=\"14400\" step=\"1\" required disabled></label>"
 "<label>无连接进入采集(秒)<input id=\"idleSec\" type=\"number\" min=\"10\" max=\"86400\" step=\"1\" required disabled></label>"
 "<label>网络模式<select id=\"netMode\" disabled><option value=\"apsta\">AP+STA</option><option value=\"softap\">SoftAP</option><option value=\"sta\">STA</option></select></label>"
 "<label>路由器 SSID<input id=\"routerSsid\" maxlength=\"32\" autocomplete=\"off\" disabled></label>"
@@ -9570,16 +9571,16 @@ static const char s_customer_index_html_v2[] __attribute__((unused)) =
 "</div><div class=\"actions\"><button id=\"saveConfigBtn\" onclick=\"applyCustomerConfig()\" disabled>保存设置</button><button onclick=\"enterFieldMode()\">立即进入野外录像</button><button onclick=\"usbExportNow()\">USB 立即导出</button><button onclick=\"usbRestore()\">USB 恢复存储</button><button id=\"retryStorageBtn\" onclick=\"retryStorage()\">检查并重试 TF</button></div><div class=\"hint\" id=\"configMsg\">正在读取设备当前设置；读取成功后才可修改和保存。</div></section>"
 "<section class=\"panel\"><div class=\"top\"><div><div class=\"title small\">录像记录</div><div class=\"hint\" id=\"recordMeta\">--</div></div><button id=\"clearRecordingsBtn\" onclick=\"clearRecordings()\">清空录像记录</button></div><div class=\"rows records\" id=\"recordRows\"></div></section>"
 "</main><script>"
-"window.onerror=function(m){let e=document.getElementById('modeLine');if(e)e.textContent='页面脚本错误：'+m};const modeLine=document.getElementById('modeLine'),netRows=document.getElementById('netRows'),stateRows=document.getElementById('stateRows'),segmentSec=document.getElementById('segmentSec'),segmentHint=document.getElementById('segmentHint'),idleSec=document.getElementById('idleSec'),routerSsid=document.getElementById('routerSsid'),routerPass=document.getElementById('routerPass'),clearRouterPass=document.getElementById('clearRouterPass'),netMode=document.getElementById('netMode'),modelSelect=document.getElementById('modelSelect'),fieldAuto=document.getElementById('fieldAuto'),saveConfigBtn=document.getElementById('saveConfigBtn'),configMsg=document.getElementById('configMsg'),modelPanel=document.getElementById('modelPanel'),modelMsg=document.getElementById('modelMsg'),previewBtn=document.getElementById('previewBtn'),previewBox=document.getElementById('previewBox'),previewStream=document.getElementById('previewStream'),recordMeta=document.getElementById('recordMeta'),recordRows=document.getElementById('recordRows'),configInputs=[segmentSec,idleSec,routerSsid,routerPass,clearRouterPass,netMode,fieldAuto];let lastStatus=null,lastGroups=[],configReady=false,configDirty=false,configSaving=false;function setConfigEnabled(enabled){let active=enabled&&!configSaving;configInputs.forEach(e=>e.disabled=!active);saveConfigBtn.disabled=!active}function markConfigDirty(){if(!configReady)return;configDirty=true;configMsg.textContent='设置已修改；自动刷新不会覆盖输入，点击“保存设置”后生效'}configInputs.forEach(e=>{e.addEventListener('input',markConfigDirty);e.addEventListener('change',markConfigDirty)});function esc(v){return String(v==null?'':v).replace(/[&<>\\\"]/g,m=>m==='&'?'&amp;':m==='<'?'&lt;':m==='>'?'&gt;':'&quot;')}"
+"window.onerror=function(m){let e=document.getElementById('modeLine');if(e)e.textContent='页面脚本错误：'+m};const modeLine=document.getElementById('modeLine'),netRows=document.getElementById('netRows'),stateRows=document.getElementById('stateRows'),segmentSec=document.getElementById('segmentSec'),idleSec=document.getElementById('idleSec'),routerSsid=document.getElementById('routerSsid'),routerPass=document.getElementById('routerPass'),clearRouterPass=document.getElementById('clearRouterPass'),netMode=document.getElementById('netMode'),modelSelect=document.getElementById('modelSelect'),fieldAuto=document.getElementById('fieldAuto'),saveConfigBtn=document.getElementById('saveConfigBtn'),configMsg=document.getElementById('configMsg'),modelPanel=document.getElementById('modelPanel'),modelMsg=document.getElementById('modelMsg'),previewBtn=document.getElementById('previewBtn'),previewBox=document.getElementById('previewBox'),previewStream=document.getElementById('previewStream'),recordMeta=document.getElementById('recordMeta'),recordRows=document.getElementById('recordRows'),configInputs=[segmentSec,idleSec,routerSsid,routerPass,clearRouterPass,netMode,fieldAuto];let lastStatus=null,lastGroups=[],configReady=false,configDirty=false,configSaving=false;function setConfigEnabled(enabled){let active=enabled&&!configSaving;configInputs.forEach(e=>e.disabled=!active);saveConfigBtn.disabled=!active}function markConfigDirty(){if(!configReady)return;configDirty=true;configMsg.textContent='设置已修改；自动刷新不会覆盖输入，点击“保存设置”后生效'}configInputs.forEach(e=>{e.addEventListener('input',markConfigDirty);e.addEventListener('change',markConfigDirty)});function esc(v){return String(v==null?'':v).replace(/[&<>\\\"]/g,m=>m==='&'?'&amp;':m==='<'?'&lt;':m==='>'?'&gt;':'&quot;')}"
 "function yes(v){return v?'<span class=\"ok\">是</span>':'<span class=\"bad\">否</span>'}function link(u){return u?'<a href=\"'+esc(u)+'\" target=\"_blank\">'+esc(u)+'</a>':'--'}"
 "function keep(id,v){let e=document.getElementById(id);if(e&&!configDirty&&document.activeElement!==e)e.value=v}function row(k,v){return '<div class=\"row\"><div class=\"label\">'+esc(k)+'</div><div>'+v+'</div></div>'}"
 "function fieldCountdown(c){if(!c.field_auto_enable)return '<span class=\"muted\">已关闭</span>';if(c.field_idle_paused)return '<span class=\"warn\">暂停：'+esc(c.field_idle_pause_reason||'设备正在处理其他任务')+'</span>';let ms=Number(c.field_idle_remaining_ms);return ms>=0?'<span class=\"ok\">运行中，'+Math.ceil(ms/1000)+' 秒后进入采集</span>':'<span class=\"muted\">等待计时</span>'}"
 "function fmtBytes(v){v=Number(v)||0;return v>=1048576?Math.round(v/1048576)+' MB':Math.round(v/1024)+' KB'}function fmtSec(v){v=Number(v)||0;return v?Math.round(v/1000)+' 秒':'--'}"
-"function modelName(m){return m==='tinycls'?'TinyCNN':(m==='coco'?'COCO':'Fish31')}function recTime(x){let t=Number(x&&x.start_epoch_ms)||0;return t?new Date(t).toLocaleString():('boot '+Math.round((Number(x&&x.start_ms)||0)/1000)+'s')}"
+"function modelName(m){return m==='tinycls'?'TinyCNN':(m==='coco'?'COCO':'Fish31')}function cameraPowerLabel(s){let p=s&&s.power_mode;if(p==='running')return '运行中';if(p==='error')return '异常'+(s.camera_error?'：'+s.camera_error:'');return '待机'}function recordingLine(s){let done=Math.floor(Number(s&&s.recording_segments||0)/2),cur=Number(s&&s.recording_current_frames||0);return '已完成 '+done+' 段 / 当前片段 '+cur+' 帧'}function recTime(x){let t=Number(x&&x.start_epoch_ms)||0;return t?new Date(t).toLocaleString():('boot '+Math.round((Number(x&&x.start_ms)||0)/1000)+'s')}"
 "function recInfo(x){return x?fmtSec(x.duration_ms)+' | '+(x.frames||0)+' 帧 | '+fmtBytes(x.bytes)+' | '+modelName(x.method):'--'}"
 "function labelSummary(a){return (a||[]).slice(0,3).map(x=>esc(x.label)+' x'+(x.count||0)).join(' / ')||'--'}"
 "async function syncTime(){await fetch('/api/time/sync?epoch_ms='+Date.now(),{method:'POST',cache:'no-store'}).catch(()=>{})}"
-"async function loadAll(){await loadStatus();await loadRecords()}async function loadStatus(){try{let r=await fetch('/api/status?ts='+Date.now(),{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);let s=await r.json(),c=s.config||{};lastStatus=s;let clients=Number(s.client_count||s.web_clients||0),segMaxSec=Math.max(5,Math.floor(Number(c.recording_segment_max_ms||14400000)/1000));segmentSec.max=String(segMaxSec);segmentHint.textContent='5-'+segMaxSec+' 秒；当前 '+Math.round(Number(c.recording_segment_ms||60000)/1000)+' 秒。仅影响当前和后续录像，已有录像保持不变。';modeLine.textContent='模式 '+(s.app_mode||'--')+' | 电源 '+(s.power_mode||'--')+' | 网络 '+(s.network_mode||'--')+' | 模型 '+modelName(s.recognition_method);netRows.innerHTML=row('热点(AP)',link(s.ap_url))+row('路由器(STA)',link(s.sta_url))+row('网线(ETH)',link(s.eth_url))+row('mDNS',link(s.mdns_url))+row('客户端',String(clients));let tfOk=!!s.storage_acceptance_ok,tfText=tfOk?'写入验证通过':(s.storage_io_latched?'检测到写入故障，已停止录像写入':'尚未通过写入验证');stateRows.innerHTML=row('TF存储',yes(tfOk)+' '+esc(tfText)+' | '+esc(s.storage_status||''))+row('USB主机已配置',s.usb_host_connected?'<span class=\"ok\">是</span>':'<span class=\"muted\">否</span>')+row('USB占用',esc(s.usb_storage_owner||'none')+' '+esc(s.usb_last_error||''))+row('录像',esc(s.recording_segments||0)+' 段 / '+esc(s.recording_frames||0)+' 帧')+row('录像片段时长',Math.round(Number(c.recording_segment_ms||0)/1000)+' 秒')+row('片段设置说明','仅影响当前和后续录像，已有录像保持原样')+row('自动采集倒计时',fieldCountdown(c));if(!configDirty){keep('segmentSec',Math.round((c.recording_segment_ms||60000)/1000));keep('idleSec',Math.round((c.field_idle_timeout_ms||300000)/1000));keep('routerSsid',c.router_ssid||'');netMode.value=s.network_mode||'apsta';fieldAuto.checked=!!c.field_auto_enable}modelSelect.value=s.recognition_method||'fish31';routerPass.placeholder=c.router_password_set?'已保存，留空不修改':'8-64 位，开放路由器可留空';if(!configReady){configReady=true;configMsg.textContent='已读取设备当前设置；修改后点击“保存设置”，以设备回显值为准'}setConfigEnabled(true);updateRecordProgress()}catch(e){modeLine.textContent='状态读取失败：'+(e&&e.message?e.message:e);if(!configReady)configMsg.textContent='暂时无法读取设备当前设置，已禁止保存；页面会自动重试'}}"
+"async function loadAll(){await loadStatus();await loadRecords()}async function loadStatus(){try{let r=await fetch('/api/status?ts='+Date.now(),{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);let s=await r.json(),c=s.config||{};lastStatus=s;let clients=Number(s.client_count||s.web_clients||0),segMaxSec=Math.max(5,Math.floor(Number(c.recording_segment_max_ms||14400000)/1000));segmentSec.max=String(segMaxSec);modeLine.textContent='模式 '+(s.app_mode||'--')+' | 摄像头 '+cameraPowerLabel(s)+' | 网络 '+(s.network_mode||'--')+' | 模型 '+modelName(s.recognition_method);netRows.innerHTML=row('热点(AP)',link(s.ap_url))+row('路由器(STA)',link(s.sta_url))+row('网线(ETH)',link(s.eth_url))+row('mDNS',link(s.mdns_url))+row('客户端',String(clients));let tfOk=!!s.storage_acceptance_ok,tfText=tfOk?'写入验证通过':(s.storage_io_latched?'检测到写入故障，已停止录像写入':'尚未通过写入验证');stateRows.innerHTML=row('TF存储',yes(tfOk)+' '+esc(tfText)+' | '+esc(s.storage_status||''))+row('USB主机已配置',s.usb_host_connected?'<span class=\"ok\">是</span>':'<span class=\"muted\">否</span>')+row('USB占用',esc(s.usb_storage_owner||'none')+' '+esc(s.usb_last_error||''))+row('录像',esc(recordingLine(s)))+row('录像片段时长',Math.round(Number(c.recording_segment_ms||0)/1000)+' 秒');if(!configDirty){keep('segmentSec',Math.round((c.recording_segment_ms||60000)/1000));keep('idleSec',Math.round((c.field_idle_timeout_ms||300000)/1000));keep('routerSsid',c.router_ssid||'');netMode.value=s.network_mode||'apsta';fieldAuto.checked=!!c.field_auto_enable}modelSelect.value=s.recognition_method||'fish31';routerPass.placeholder=c.router_password_set?'已保存，留空不修改':'8-64 位，开放路由器可留空';if(!configReady){configReady=true;configMsg.textContent='已读取设备当前设置；修改后点击“保存设置”，以设备回显值为准'}setConfigEnabled(true);updateRecordProgress()}catch(e){modeLine.textContent='状态读取失败：'+(e&&e.message?e.message:e);if(!configReady)configMsg.textContent='暂时无法读取设备当前设置，已禁止保存；页面会自动重试'}}"
 "async function postConfig(q){let r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:q.toString(),cache:'no-store'}),t=await r.text(),j=null;try{j=t?JSON.parse(t):{}}catch(e){}if(!r.ok){let m=j&&(j.message||j.error)?(j.message||j.error):(t||('HTTP '+r.status));if(j&&j.action)m+='；'+j.action;throw new Error(m)}return j||{}}"
 "async function applyCustomerConfig(){if(!configReady){configMsg.textContent='尚未读取到设备当前设置，暂不能保存；请等待页面自动重试';return}if(!segmentSec.reportValidity()||!idleSec.reportValidity()){configMsg.textContent='请先修正标红的时间参数';return}if(clearRouterPass.checked&&routerPass.value.length){configMsg.textContent='不能同时填写新密码和清除密码；请只选择一种操作';return}let seg=Number(segmentSec.value),idle=Number(idleSec.value);if(!Number.isInteger(seg)||!Number.isInteger(idle)){configMsg.textContent='倒计时和片段时长必须是整数秒';return}let q=new URLSearchParams();q.set('recording_segment_ms',String(seg*1000));q.set('field_idle_timeout_ms',String(idle*1000));q.set('field_auto_enable',fieldAuto.checked?'1':'0');q.set('network_mode',netMode.value);q.set('router_ssid',routerSsid.value);if(clearRouterPass.checked)q.set('router_password','');else if(routerPass.value.length>0)q.set('router_password',routerPass.value);configSaving=true;setConfigEnabled(false);configMsg.textContent='正在保存并核对设备实际配置...';let saved=false;try{let j=await postConfig(q);saved=true;configDirty=false;let auto=j.field_auto_enable?'开启':'关闭';configMsg.textContent='已生效：自动采集 '+auto+'，倒计时 '+Math.round(j.field_idle_timeout_ms/1000)+' 秒，录像片段 '+Math.round(j.recording_segment_ms/1000)+' 秒（已有录像保持不变）'+(j.network_mode?'，网络 '+j.network_mode:'');await loadStatus()}catch(e){configMsg.textContent='保存未确认：'+(e&&e.message?e.message:e)+'；页面会自动重连，状态恢复后请核对并再次保存'}finally{if(saved){routerPass.value='';clearRouterPass.checked=false}configSaving=false;setConfigEnabled(configReady)}}"
 "function toggleModelPanel(){modelPanel.classList.toggle('hidden')}async function saveModel(){let q=new URLSearchParams();q.set('method',modelSelect.value);modelMsg.textContent='正在切换模型...';try{let j=await postConfig(q);modelMsg.textContent='模型已保存：'+modelName(j.recognition_method);await loadStatus()}catch(e){modelMsg.textContent='模型保存失败：'+(e&&e.message?e.message:e)}}"
@@ -9596,8 +9597,8 @@ static const char s_customer_index_html_v2[] __attribute__((unused)) =
 "function sleep(ms){return new Promise(resolve=>setTimeout(resolve,ms))}"
 "function actionButton(fn){return Array.from(document.querySelectorAll('button')).find(b=>(b.getAttribute('onclick')||'').indexOf(fn+'()')>=0)}"
 "function ensureStorageFlow(){let e=document.getElementById('storageFlow');if(!e){e=document.createElement('div');e.id='storageFlow';e.className='storage-flow';e.innerHTML='<div class=\"bar\"><i></i></div><div class=\"hint\" id=\"storageFlowText\"></div>';configMsg.parentNode.insertBefore(e,configMsg)}return e}"
-"function storagePhase(s){s=s||{};let owner=s.usb_storage_owner||'none',svc=s.storage_service||{},txt=svc.status||s.storage_status||'';if(s.storage_quiescing||s.usb_export_requested||s.usb_restore_requested||s.storage_retry_requested){return {busy:1,cls:'warn',text:s.usb_restore_requested?'正在把 TF 恢复给设备，请等待 5-15 秒':(s.usb_export_requested?'正在准备 USB U 盘，正在停止采集并交接 TF':'正在检查 TF 并执行写入验证，请等待'),action:'请等待当前存储流程完成'}}if(owner==='usb'||s.app_mode==='usb_export'){let c=!!s.usb_host_connected;return {done:1,cls:'warn',text:c?'电脑仍在使用 P4_BUOY；请先安全弹出并拔掉 USB 线':'USB 主机配置已停止；为避免复位/重新枚举误回收，TF 仍隔离，请点击“USB 恢复存储”',action:c?'先安全弹出 P4_BUOY 并拔掉 USB 线':'点击“USB 恢复存储”完成写入验证'}}if(s.storage_acceptance_ok){return {done:1,cls:'ok',text:'TF 写入验证已通过，可以稳定录像和下载记录',action:''}}return {busy:0,cls:'bad',text:'TF 未通过写入验证：'+(txt||s.usb_last_error||'请检查卡片')+'；检查或更换 TF 后可在 Web 直接重试',action:'检查或更换 TF 卡，再点击“检查并重试 TF”'}}"
-"function enhanceStatus(){let s=lastStatus||{},p=storagePhase(s),flow=ensureStorageFlow(),ft=document.getElementById('storageFlowText');flow.className='storage-flow '+(p.busy?'active':(p.done?'done':''));if(ft)ft.textContent=p.text;if(stateRows&&stateRows.innerHTML.indexOf('存储流程')<0)stateRows.innerHTML+=row('存储流程','<span class=\"'+p.cls+'\">'+esc(p.text)+'</span>');let usbOwner=(s.usb_storage_owner==='usb'||s.app_mode==='usb_export'),field=actionButton('enterFieldMode'),ue=actionButton('usbExportNow'),ur=actionButton('usbRestore'),sr=document.getElementById('retryStorageBtn');if(field){field.disabled=!!s.storage_quiescing||s.app_mode==='field'||s.network_shutdown_for_idle||!!s.usb_host_connected||usbOwner;field.title=field.disabled?(s.usb_host_connected?'先安全弹出 P4_BUOY 并拔掉 USB 线':(p.action||'当前状态不能进入野外录像')):''}if(ue){ue.disabled=!!s.storage_quiescing||usbOwner||s.app_mode!=='server';ue.title=ue.disabled?(s.app_mode==='export'?'以太网导出模式不能切换 USB；请先返回服务器模式':p.text):''}if(ur){ur.disabled=!!s.usb_host_connected||!!s.storage_quiescing||!!s.usb_restore_requested||!usbOwner;ur.title=s.usb_host_connected?'先在电脑安全弹出 P4_BUOY 并拔掉 USB 线':(ur.disabled?'当前状态不能恢复 TF':'USB 已断开，可安全恢复 TF 给设备')}if(sr){sr.disabled=!!s.storage_quiescing||usbOwner||!!s.storage_retry_requested;sr.title=sr.disabled?p.text:'重新挂载并执行真实写入、同步、读回验证'}}"
+"function storagePhase(s){s=s||{};let owner=s.usb_storage_owner||'none',svc=s.storage_service||{},txt=svc.status||s.storage_status||'';if(s.storage_quiescing||s.usb_export_requested||s.usb_restore_requested||s.storage_retry_requested){return {busy:1,cls:'warn',text:s.usb_restore_requested?'正在把 TF 恢复给设备，请等待 5-15 秒':(s.usb_export_requested?'正在准备 USB U 盘，正在停止采集并交接 TF':'正在检查 TF 并执行写入验证，请等待'),action:'请等待当前存储流程完成'}}if(owner==='usb'||s.app_mode==='usb_export'){let c=!!s.usb_host_connected;return {done:1,cls:'warn',text:c?'电脑正在使用 P4_BUOY；拔掉 USB 后设备会自动恢复 TF':'USB 已断开，设备正在自动恢复 TF；若长时间未恢复可点击“USB 恢复存储”',action:c?'安全弹出后直接拔掉 USB 线':'等待自动恢复，或点击“USB 恢复存储”兜底'}}if(s.storage_acceptance_ok){return {done:1,cls:'ok',text:'TF 写入验证已通过，可以稳定录像和下载记录',action:''}}return {busy:0,cls:'bad',text:'TF 未通过写入验证：'+(txt||s.usb_last_error||'请检查卡片')+'；检查或更换 TF 后可在 Web 直接重试',action:'检查或更换 TF 卡，再点击“检查并重试 TF”'}}"
+"function enhanceStatus(){let s=lastStatus||{},p=storagePhase(s),flow=ensureStorageFlow(),ft=document.getElementById('storageFlowText');flow.className='storage-flow '+(p.busy?'active':(p.done?'done':''));if(ft)ft.textContent=p.text;if(stateRows&&stateRows.innerHTML.indexOf('存储流程')<0)stateRows.innerHTML+=row('存储流程','<span class=\"'+p.cls+'\">'+esc(p.text)+'</span>');let usbOwner=(s.usb_storage_owner==='usb'||s.app_mode==='usb_export'),field=actionButton('enterFieldMode'),ue=actionButton('usbExportNow'),ur=actionButton('usbRestore'),sr=document.getElementById('retryStorageBtn');if(field){field.disabled=!!s.storage_quiescing||s.app_mode==='field'||s.network_shutdown_for_idle||!!s.usb_host_connected||usbOwner;field.title=field.disabled?(s.usb_host_connected?'先安全弹出 P4_BUOY 并拔掉 USB 线':(p.action||'当前状态不能进入野外录像')):''}if(ue){ue.disabled=!!s.storage_quiescing||usbOwner||s.app_mode!=='server';ue.title=ue.disabled?(s.app_mode==='export'?'以太网导出模式不能切换 USB；请先返回服务器模式':p.text):''}if(ur){ur.disabled=!!s.storage_quiescing||!!s.usb_restore_requested||!usbOwner;ur.title=ur.disabled?'当前状态不能恢复 TF':(s.usb_host_connected?'确认电脑已安全弹出或 USB 已拔掉后，可兜底恢复 TF':'USB 已断开，可安全恢复 TF 给设备')}if(sr){sr.disabled=!!s.storage_quiescing||usbOwner||!!s.storage_retry_requested;sr.title=sr.disabled?p.text:'重新挂载并执行真实写入、同步、读回验证'}}"
 "const baseLoadStatus=loadStatus;loadStatus=async function(){await baseLoadStatus();enhanceStatus()};"
 "async function readActionJson(url,opt){let r=await fetch(url,opt||{cache:'no-store'}).catch(()=>null);if(!r)throw new Error('网络连接失败');let t=await r.text().catch(()=>''),j=null;try{j=t?JSON.parse(t):null}catch(e){}if(!r.ok){throw new Error(j&&j.message?(j.message+(j.action?'；'+j.action:'')):(j&&j.error?j.error:(t||('HTTP '+r.status))))}return j||{}}"
 "async function statusOnce(){let r=await fetch('/api/status?ts='+Date.now(),{cache:'no-store'});let s=await r.json();lastStatus=s;enhanceStatus();return s}"
@@ -9607,7 +9608,7 @@ static const char s_customer_index_html_v2[] __attribute__((unused)) =
 "async function prepareFieldStorage(){let s=await waitStorageStable(45000);if(s.usb_storage_owner==='usb'||s.app_mode==='usb_export')throw new Error('TF 仍由 USB 隔离；请先安全弹出并拔线，再点击“USB 恢复存储”');if(!s.storage_acceptance_ok){configMsg.textContent='TF 尚未通过验证；Wi-Fi 保持连接，页面可能短暂重连，正在安全重试...';await readActionJson('/api/storage/retry?confirm=RETRY',{method:'POST',cache:'no-store'});s=await waitTfReady(60000)}return s}"
 "enterFieldMode=async function(){if(!confirm('确认立即进入野外录像？设备会先核对 TF 写入状态。'))return;let b=actionButton('enterFieldMode');if(b)b.disabled=true;try{await prepareFieldStorage();configMsg.textContent='正在进入野外录像，Web 可能断开，设备开始写入 TF...';await readActionJson('/api/mode/field?confirm=FIELD',{method:'POST',cache:'no-store'});configMsg.textContent='正在进入野外录像'}catch(e){configMsg.textContent='进入野外录像未完成：'+(e&&e.message?e.message:e)}finally{setTimeout(loadAll,1200)}};"
 "usbExportNow=async function(){try{configMsg.textContent='正在准备 USB U 盘，可能需要 5-15 秒...';let s=lastStatus||await statusOnce();if(!(s.usb_storage_owner==='usb'||s.app_mode==='usb_export'))await readActionJson('/api/mode/usb?confirm=USB',{method:'POST',cache:'no-store'});let start=Date.now();while(Date.now()-start<60000){s=await statusOnce().catch(()=>s);if(s.usb_storage_owner==='usb'||s.app_mode==='usb_export'){configMsg.textContent='P4_BUOY U 盘已交给电脑，Web 保持在线；拔出前请先在 Windows 安全弹出';break}configMsg.textContent=storagePhase(s).text;await sleep(1000)}}catch(e){configMsg.textContent='USB 导出未完成：'+(e&&e.message?e.message:e)}finally{setTimeout(loadAll,800)}};"
-"usbRestore=async function(){try{let s=lastStatus||await statusOnce();if(s.usb_host_connected)throw new Error('电脑仍在使用 P4_BUOY；请先安全弹出并拔掉 USB 线');configMsg.textContent='正在安全断开 USB 存储并把 TF 恢复给设备，可能需要 5-15 秒...';await readActionJson('/api/mode/usb/restore?confirm=RESTORE',{method:'POST',cache:'no-store'});await waitTfReady(60000);configMsg.textContent='TF 已恢复给设备并通过写入验证，可以继续录像和下载'}catch(e){configMsg.textContent='USB 恢复未完成：'+(e&&e.message?e.message:e)+'；请按提示处理后重试'}finally{setTimeout(loadAll,800)}};"
+"usbRestore=async function(){try{configMsg.textContent='正在安全断开 USB 存储并把 TF 恢复给设备，可能需要 5-15 秒...';await readActionJson('/api/mode/usb/restore?confirm=RESTORE',{method:'POST',cache:'no-store'});await waitTfReady(60000);configMsg.textContent='TF 已恢复给设备并通过写入验证，可以继续录像和下载'}catch(e){configMsg.textContent='USB 恢复未完成：'+(e&&e.message?e.message:e)+'；请确认电脑已安全弹出或 USB 已拔掉后重试'}finally{setTimeout(loadAll,800)}};"
 "let recordingCleanupJobId=0;function renderRecordingCleanup(s){s=s||{};let c=s.recording_cleanup||{},b=document.getElementById('clearRecordingsBtn'),active=!!(c.queued||c.running),total=Number(c.total_files)||0,deleted=Number(c.deleted_files)||0;if(active){recordingCleanupJobId=Number(c.job_id)||recordingCleanupJobId;if(b){b.disabled=true;b.textContent='正在清理 '+deleted+(total?' / '+total:'')};recordMeta.textContent='正在后台清理录像：已删除 '+deleted+(total?' / '+total:'')+' 个文件；Web 和状态检查保持可用';recordRows.innerHTML='<div class=\"row\"><div class=\"warn\">正在清理录像，旧下载链接已暂停；完成后列表会自动刷新。</div></div>';configMsg.textContent='录像清理正在后台进行，请勿重启或重复点击；可以继续查看设备状态';[actionButton('enterFieldMode'),actionButton('usbExportNow'),actionButton('usbRestore'),document.getElementById('retryStorageBtn')].forEach(x=>{if(x){x.disabled=true;x.title='等待录像清理完成'}});setConfigEnabled(false);return}if(b){let transfers=Number(s.file_download_clients)||0,blocked=!!s.storage_quiescing||s.usb_storage_owner==='usb'||s.app_mode!=='server'||!s.sd_mounted||transfers>0;b.disabled=blocked;b.textContent='清空录像记录';b.title=transfers>0?'仍有文件下载或上传，请结束后再清理':(blocked?'当前存储状态不能清理录像':'')}if(recordingCleanupJobId&&Number(c.job_id)===recordingCleanupJobId&&c.done){if(c.ok){configMsg.textContent='清理完成：删除 '+deleted+' 个文件，释放 '+fmtBytes(c.freed_bytes||0)+'；目录复扫无残留'}else{configMsg.textContent='清理未完成：'+(c.message||'请检查 TF 健康状态')+'（剩余 '+(c.remaining_files||0)+'，错误 '+(c.errors||0)+'）；请先检查并重试 TF'}recordingCleanupJobId=0;setTimeout(loadRecords,200)}}"
 "const loadStatusWithStorage=loadStatus;loadStatus=async function(){await loadStatusWithStorage();renderRecordingCleanup(lastStatus)};"
 "async function pollRecordingCleanup(jobId){let deadline=Date.now()+600000,lastNetworkError='';while(Date.now()<deadline){try{let r=await fetch('/api/status?cleanup_job='+jobId+'&ts='+Date.now(),{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);let s=await r.json();lastStatus=s;enhanceStatus();renderRecordingCleanup(s);let c=s.recording_cleanup||{};if(Number(c.job_id)===Number(jobId)&&c.done){await loadRecords();return}}catch(e){lastNetworkError=e&&e.message?e.message:String(e)}await sleep(700)}configMsg.textContent='清理状态暂未确认'+(lastNetworkError?'：'+lastNetworkError:'')+'；设备会继续后台处理，请保持页面打开并查看状态，不要重启或重复点击'}"
@@ -10504,6 +10505,8 @@ static esp_err_t status_get_handler(httpd_req_t *req)
     power_state_t state = s_power_state;
     usb_msc_export_status_t usb_status = {0};
     usb_msc_export_get_status(&usb_status);
+    bool usb_export_active = s_usb_storage_ready || s_app_mode == APP_MODE_USB_EXPORT;
+    bool usb_host_visible = usb_status.host_connected && usb_export_active;
     uint32_t history_count = 0;
     uint32_t free_heap = 0;
     uint32_t min_free_heap = 0;
@@ -10816,7 +10819,7 @@ static esp_err_t status_get_handler(httpd_req_t *req)
               s_eth_last_error,
               CONFIG_APP_USB_MSC_ENABLE ? "true" : "false",
               usb_status.initialized ? "true" : "false",
-               usb_status.host_connected ? "true" : "false",
+               usb_host_visible ? "true" : "false",
                storage_request_pending(&s_usb_export_requested) ? "true" : "false",
                storage_request_pending(&s_usb_restore_requested) ? "true" : "false",
                storage_request_pending(&s_storage_retry_requested) ? "true" : "false",
@@ -12787,6 +12790,13 @@ static esp_err_t timeline_get_handler_internal(httpd_req_t *req)
 static bool storage_usb_owned(void)
 {
     return s_usb_storage_ready || s_app_mode == APP_MODE_USB_EXPORT;
+}
+
+static bool usb_auto_export_allowed_mode(app_mode_t mode)
+{
+    return mode == APP_MODE_SERVER ||
+           mode == APP_MODE_FIELD ||
+           mode == APP_MODE_EXPORT;
 }
 
 static esp_err_t send_customer_action_json(httpd_req_t *req, const char *status,
@@ -18290,14 +18300,6 @@ static esp_err_t usb_restore_handler(httpd_req_t *req)
         httpd_resp_set_status(req, "409 Conflict");
         return httpd_resp_sendstr(req, "USB export is not active");
     }
-    usb_msc_export_status_t usb_status = {0};
-    usb_msc_export_get_status(&usb_status);
-    if (usb_status.host_connected) {
-        return send_customer_action_json(
-            req, "409 Conflict", "usb_host_active",
-            "the computer is still connected to the writable TF card",
-            "safely eject P4_BUOY in the computer, unplug the USB cable, wait until USB connected shows No, then retry restore");
-    }
     if (s_storage_quiescing || storage_transition_active()) {
         return send_customer_action_json(
             req, "409 Conflict", "storage_busy",
@@ -18318,7 +18320,7 @@ static esp_err_t usb_restore_handler(httpd_req_t *req)
     return http_send_cstr_chunked(
         req,
         "{\"ok\":true,\"mode\":\"usb_restore_pending\","
-        "\"note\":\"the inactive USB configuration will be soft-disconnected; after a transfer barrier TF will be remounted and write-verified; Web stays online\"}");
+        "\"note\":\"USB MSC will be soft-disconnected; TF will be remounted and write-verified; Web stays online\"}");
 #endif
 }
 
@@ -18374,9 +18376,27 @@ static esp_err_t storage_init_usb_sdmmc_card(void)
     vTaskDelay(pdMS_TO_TICKS(50));
     ESP_GOTO_ON_ERROR(storage_reset_card_power(), fail, TAG, "USB TF power reset failed");
 
+    /* USB must not silently select a faster/wider bus than the application
+     * has just proved writable. Some cards enumerate and read successfully at
+     * 4-bit/40 MHz but time out on their first real write. Besides corrupting
+     * the MSC transfer, that stalls the shared controller used by Hosted on
+     * Slot 1 and causes the whole device to restart. */
+    int usb_width = 1;
+    int usb_freq_khz = CONFIG_APP_USB_MSC_SD_FREQ_KHZ < 10000 ?
+                       CONFIG_APP_USB_MSC_SD_FREQ_KHZ : 10000;
+    if (strcmp(s_sd_mount_mode, "sdmmc_4bit") == 0) {
+        usb_width = 4;
+        usb_freq_khz = CONFIG_APP_USB_MSC_SD_FREQ_KHZ < CONFIG_APP_SD_MAX_FREQ_KHZ ?
+                       CONFIG_APP_USB_MSC_SD_FREQ_KHZ : CONFIG_APP_SD_MAX_FREQ_KHZ;
+    } else if (strncmp(s_sd_mount_mode, "sdspi", 5) == 0 && usb_freq_khz > 5000) {
+        usb_freq_khz = 5000;
+    }
+    ESP_LOGI(TAG, "USB TF profile selected from write-verified %s: SDMMC %d-bit at %d kHz",
+             s_sd_mount_mode, usb_width, usb_freq_khz);
+
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     host.slot = SDMMC_HOST_SLOT_0;
-    host.max_freq_khz = CONFIG_APP_USB_MSC_SD_FREQ_KHZ;
+    host.max_freq_khz = usb_freq_khz;
     host.unaligned_multi_block_rw_max_chunk_size = 8;
     host.pwr_ctrl_handle = s_sd_pwr_ctrl;
     bool host_owned_by_hosted = false;
@@ -18398,13 +18418,15 @@ static esp_err_t storage_init_usb_sdmmc_card(void)
     ESP_GOTO_ON_ERROR(ret, fail, TAG, "USB SDMMC host init failed");
 
     sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
-    slot_config.width = 4;
+    slot_config.width = usb_width;
     slot_config.clk = CONFIG_APP_SD_PIN_CLK;
     slot_config.cmd = CONFIG_APP_SD_PIN_CMD;
     slot_config.d0 = CONFIG_APP_SD_PIN_D0;
-    slot_config.d1 = CONFIG_APP_SD_PIN_D1;
-    slot_config.d2 = CONFIG_APP_SD_PIN_D2;
-    slot_config.d3 = CONFIG_APP_SD_PIN_D3;
+    if (slot_config.width == 4) {
+        slot_config.d1 = CONFIG_APP_SD_PIN_D1;
+        slot_config.d2 = CONFIG_APP_SD_PIN_D2;
+        slot_config.d3 = CONFIG_APP_SD_PIN_D3;
+    }
     slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
     ret = sdmmc_host_init_slot(host.slot, &slot_config);
     ESP_GOTO_ON_ERROR(ret, fail, TAG, "USB SDMMC slot init failed");
@@ -18417,7 +18439,7 @@ static esp_err_t storage_init_usb_sdmmc_card(void)
     ESP_GOTO_ON_ERROR(ret, fail, TAG, "USB SDMMC card init failed");
 
     s_usb_sd_card_initialized = true;
-    ESP_LOGI(TAG, "USB TF ready: SDMMC 4-bit at %d kHz", CONFIG_APP_USB_MSC_SD_FREQ_KHZ);
+    ESP_LOGI(TAG, "USB TF ready: SDMMC %d-bit at %d kHz", usb_width, usb_freq_khz);
     sdmmc_card_print_info(stdout, s_usb_sd_card);
     return ESP_OK;
 
@@ -20470,7 +20492,8 @@ static void usb_host_event_callback(bool connected, void *arg)
     }
     if (connected && CONFIG_APP_USB_MSC_AUTO_EXPORT &&
         !s_usb_auto_export_suppressed &&
-        s_app_mode == APP_MODE_SERVER) {
+        usb_auto_export_allowed_mode(s_app_mode) &&
+        !storage_usb_owned()) {
         bool admitted = storage_transition_reserve_event(
             STORAGE_TRANSITION_USB_EXPORT, &s_usb_export_requested);
         if (admitted) {
@@ -20479,19 +20502,20 @@ static void usb_host_event_callback(bool connected, void *arg)
             ESP_LOGI(TAG, "USB1 host detected during %s; deferring TF export",
                      storage_transition_name(storage_transition_owner()));
         }
-    } else if (connected && s_app_mode == APP_MODE_EXPORT) {
-        s_usb_auto_export_suppressed = true;
-        ESP_LOGW(TAG,
-                 "USB1 host detected in Ethernet export mode; writable USB TF export is disabled until SERVER mode");
     } else if (!connected && s_app_mode == APP_MODE_USB_EXPORT &&
-               __atomic_load_n(&s_usb_host_seen_during_export,
-                               __ATOMIC_ACQUIRE)) {
-        /* TINYUSB_EVENT_DETACHED means USB configuration became inactive. It
-         * is also emitted for SetConfiguration(0) and reset, so it is not proof
-         * that VBUS/cable is physically gone. Keep the writable TF quarantined
-         * until the user explicitly requests restore from Web. */
-        ESP_LOGI(TAG,
-                 "USB1 host configuration inactive; TF remains quarantined until explicit Web restore");
+               storage_usb_owned()) {
+        if (!__atomic_load_n(&s_usb_restore_auto_blocked, __ATOMIC_ACQUIRE)) {
+            bool admitted = storage_transition_reserve_event(
+                STORAGE_TRANSITION_USB_RESTORE, &s_usb_restore_requested);
+            if (admitted) {
+                ESP_LOGI(TAG, "USB1 host inactive; queued automatic TF restore");
+            } else {
+                ESP_LOGI(TAG, "USB1 host inactive during %s; deferring TF restore",
+                         storage_transition_name(storage_transition_owner()));
+            }
+        } else {
+            ESP_LOGW(TAG, "USB1 host inactive; automatic restore is blocked until the next USB edge or Web retry");
+        }
         s_usb_auto_export_suppressed = false;
     } else if (!connected) {
         s_usb_auto_export_suppressed = false;
@@ -20674,31 +20698,22 @@ static void enter_usb_export_mode(void)
     s_usb_storage_ready = true;
     strlcpy(s_usb_last_error, "ok", sizeof(s_usb_last_error));
     set_storage_service_state(STORAGE_SERVICE_AVAILABLE,
-                               "USB host owns writable TF; Web online; safe eject, unplug, then use Web restore");
+                               "USB host owns writable TF; safe eject and unplug to restore automatically; Web stays online when available");
     s_storage_quiescing = false;
     mark_network_activity();
     open_network_access_window("USB export active");
-    ESP_LOGI(TAG, "USB writable TF ready; Web remains online; safe eject, unplug, then request Web restore");
+    ESP_LOGI(TAG, "USB writable TF ready; safe eject and unplug to restore automatically");
 #endif
 }
 
-static esp_err_t enter_usb_app_restore_mode(void)
+static esp_err_t enter_usb_app_restore_mode(bool suppress_reexport)
 {
 #if CONFIG_APP_USB_MSC_ENABLE
-    usb_msc_export_status_t usb_status = {0};
-    usb_msc_export_get_status(&usb_status);
-    if (usb_status.host_connected) {
-        strlcpy(s_usb_last_error,
-                "USB restore rejected: computer reconnected; safely eject and unplug first",
-                sizeof(s_usb_last_error));
-        set_storage_service_state(
-            STORAGE_SERVICE_ERROR,
-            "USB restore rejected because the host reconnected; safely eject P4_BUOY and unplug USB before retrying");
-        return ESP_ERR_INVALID_STATE;
-    }
-
     ESP_LOGI(TAG, "restoring TF ownership from USB to application");
     s_storage_quiescing = true;
+    if (suppress_reexport) {
+        s_usb_auto_export_suppressed = true;
+    }
     s_vision_enabled = false;
     s_history_enabled = false;
     s_recording_enabled = false;
@@ -20736,8 +20751,13 @@ static esp_err_t enter_usb_app_restore_mode(void)
     __atomic_store_n(&s_usb_host_seen_during_export, false,
                      __ATOMIC_RELEASE);
     s_storage_mount_allowed = true;
+    vTaskDelay(pdMS_TO_TICKS(250));
+    usb_msc_export_status_t usb_status = {0};
     usb_msc_export_get_status(&usb_status);
-    s_usb_auto_export_suppressed = usb_status.host_connected;
+    s_usb_auto_export_suppressed = suppress_reexport || usb_status.host_connected;
+    if (suppress_reexport) {
+        __atomic_store_n(&s_usb_export_requested, false, __ATOMIC_RELEASE);
+    }
     esp_err_t mount_ret = storage_mount();
     if (mount_ret != ESP_OK) {
         snprintf(s_usb_last_error, sizeof(s_usb_last_error),
@@ -20903,9 +20923,15 @@ static void network_watchdog_tick(void)
         if (CONFIG_APP_USB_MSC_AUTO_EXPORT &&
             usb_status.host_connected && !s_usb_storage_ready &&
             !s_usb_auto_export_suppressed &&
-            s_app_mode == APP_MODE_SERVER) {
+            usb_auto_export_allowed_mode(s_app_mode)) {
             storage_transition_reserve_event(
                 STORAGE_TRANSITION_USB_EXPORT, &s_usb_export_requested);
+        } else if (!usb_status.host_connected &&
+                   s_app_mode == APP_MODE_USB_EXPORT &&
+                   storage_usb_owned() &&
+                   !__atomic_load_n(&s_usb_restore_auto_blocked, __ATOMIC_ACQUIRE)) {
+            storage_transition_reserve_event(
+                STORAGE_TRANSITION_USB_RESTORE, &s_usb_restore_requested);
         }
     }
 #endif
@@ -20933,7 +20959,7 @@ static void network_watchdog_tick(void)
             field_idle_pause_latch();
             return;
         }
-        if (s_app_mode == APP_MODE_SERVER &&
+        if (usb_auto_export_allowed_mode(s_app_mode) &&
             !storage_usb_owned() && !s_storage_quiescing) {
             enter_usb_export_mode();
         }
@@ -20951,10 +20977,14 @@ static void network_watchdog_tick(void)
             &s_usb_restore_manual_requested, false, __ATOMIC_ACQ_REL);
         esp_err_t restore_ret = ESP_ERR_INVALID_STATE;
         if (s_app_mode == APP_MODE_USB_EXPORT && !s_storage_quiescing) {
-            restore_ret = enter_usb_app_restore_mode();
+            restore_ret = enter_usb_app_restore_mode(manual_restore);
         }
         if (restore_ret == ESP_OK) {
             __atomic_store_n(&s_usb_restore_auto_blocked, false, __ATOMIC_RELEASE);
+            if (manual_restore) {
+                s_usb_auto_export_suppressed = true;
+                __atomic_store_n(&s_usb_export_requested, false, __ATOMIC_RELEASE);
+            }
         } else if (storage_usb_owned()) {
             __atomic_store_n(&s_usb_restore_auto_blocked, true, __ATOMIC_RELEASE);
             ESP_LOGE(TAG,

@@ -1,8 +1,8 @@
 param(
     [string]$VolumeLabel = "P4_BUOY",
     [int]$TestSizeMiB = 64,
-    [double]$MinReadMiBs = 6.0,
-    [double]$MinWriteMiBs = 4.0
+    [double]$MinReadMiBs = 0.5,
+    [double]$MinWriteMiBs = 0.5
 )
 
 $ErrorActionPreference = "Stop"
@@ -23,7 +23,7 @@ if (-not $volume) {
         $_.InstanceId -like "USB*" -or
         $_.FriendlyName -match "ESP|TinyUSB|P4|Buoy|Mass Storage|MSC|Serial|JTAG|CDC|USB"
     } | Select-Object Class,FriendlyName,Status,InstanceId | Format-Table -AutoSize
-    throw "Writable USB volume '$VolumeLabel' was not found. Check the DEVICE jumper and USB-A data cable."
+    throw "Writable USB volume '$VolumeLabel' was not found. Connect the PC to the board's USB 2.0 Type-C DEVICE port with a data-capable cable; do not use the Type-A HOST port or an A-to-A cable."
 }
 
 $usbRoot = "{0}:\" -f $volume.DriveLetter
@@ -130,4 +130,4 @@ if (-not $hashOk -or -not $renameOk -or -not $deleteOk -or -not $speedOk) {
     throw "USB MSC acceptance failed. Keep the feature branch unmerged and inspect the reported result."
 }
 
-Write-Host "USB MSC acceptance passed. Safely eject $usbRoot, wait at least 2 seconds, then reset the board."
+Write-Host "USB MSC acceptance passed. Run tools\eject_usb_msc.ps1, physically unplug the USB data cable, then restore TF from Web."

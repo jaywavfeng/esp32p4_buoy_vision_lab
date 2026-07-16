@@ -65,7 +65,7 @@ CONFIG_APP_RECORDING_SEGMENT_MAX_MS=14400000
 CONFIG_APP_FIELD_RECORDING_MAX_FPS=12
 CONFIG_APP_USB_MSC_ENABLE=y
 CONFIG_APP_USB_MSC_AUTO_EXPORT=y
-CONFIG_APP_USB_MSC_SD_FREQ_KHZ=40000
+CONFIG_APP_USB_MSC_SD_FREQ_KHZ=20000
 CONFIG_TINYUSB_MSC_BUFSIZE=32768
 CONFIG_FATFS_USE_LABEL=y
 CONFIG_APP_ENRICHMENT_ENABLE=y
@@ -123,10 +123,16 @@ detect USB host
 约束：
 
 - USB 模式下板端不得访问 `/sdcard`。
+- `CONFIG_APP_USB_MSC_SD_FREQ_KHZ` 只是 USB 上限。USB 必须沿用板端刚通过真实写入、`fsync`、重开和读回验证的总线宽度与频率；不能把已回退到 `1-bit/10 MHz` 的卡重新强制到 `4-bit/40 MHz`。
+- ESP-Hosted 使用 SDMMC Slot 1，TF 使用 Slot 0。释放 Slot 0 时，IDF 6.0.1 补丁会把当前槽归还仍注册的 Slot 1，并保留空槽 ISR 防护，避免 C6 SDIO 中断丢失后重启 P4。
 - `/api/status` 继续上报 `usb_host_connected`、`usb_storage_owner`、`storage_quiescing`、`usb_last_error`。
 - TinyUSB `DETACHED` 或 USB 配置失活不代表数据线已物理拔出，不会触发 TF 自动重新挂载。
 - 安全弹出并物理拔线后，TF 继续保持隔离；用户须从 Web 点击「USB 恢复存储」，或调用 `POST /api/mode/usb/restore?confirm=RESTORE`，成功完成挂载和写读验证后才交还应用。
 - 不再设置“抑制下次自动导出”；下一次物理插入仍会自动导出。
+
+硬件连接：电脑应通过支持数据的 A-to-C 或 C-to-C 线连接 J15 USB 2.0 Type-C `DEVICE` 口。J18 叠层 Type-A 是 P4 作为 USB 主机时使用的 `HOST` 口；不要用 A-to-A 线连接电脑，也不要带电改变 HOST 供电跳接。官方端口定义见 [ESP32-P4-Function-EV-Board v1.5.2 User Guide](https://documentation.espressif.com/esp-dev-kits/en/latest/esp32p4/esp32-p4-function-ev-board/index.html)。
+
+历史结论：USB MSC 在 `bca4815`（v2.0.0）首次加入；v2.0.0、v3.0.0 与修复前 v3.0.1 都采用“TinyUSB 无介质枚举 -> 卸载 FatFS/Slot 0 -> 重建 SDMMC 卡 -> `tinyusb_msc_new_storage_sdmmc()` -> 重新枚举”的同一主流程，也都把 USB TF 固定成 `4-bit/40 MHz`。因此本次故障不是近期重构改变了核心交接方式，而是新 TF 在该档位可枚举、可读但真实写入超时，加上 IDF 6.0.1 共享 Slot 0/1 的当前槽清理缺陷。修复保留原交接方式，只增加验证档位继承和共享控制器修复。
 
 ## 5. API 摘要
 

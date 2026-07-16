@@ -1,311 +1,298 @@
-# ESP32-P4 新版板测试问题记录
+# P4 Buoy Vision 板端验收测试问题记录
 
-## 测试基线
+日期：2026-07-16  
+测试角色：客户验收人员视角  
+测试目标：按客户需求实际操作板子，记录“期望行为、实际行为、用户影响、修改建议”。  
+测试约束：未修改 `main/`、`components/`、`tools/` 等源码；未切换本机 Wi-Fi；USB 线全程物理连接；使用 Windows 安全弹出模拟拔出；使用 COM6 串口 reset。
 
-- 测试日期：2026-07-14（Asia/Shanghai）
-- Git 提交：`2c725fdeab6052c9ea46ced538c33296723a5df0`
-- 目标芯片：ESP32-P4 rev v3.1，16 MB Flash，32 MB PSRAM
-- ESP-IDF：`v6.0.1-dirty`
-- 固件版本：`3.0.0`
-- 应用镜像大小：9,979,008 字节
-- 应用镜像 SHA-256：`FB76F2ECFA0402E0D51C3A8658545B37871C8A539C7CDA82A99ACBB56FA41874`
-- Flash 回读校验：从 `0x10000` 回读 9,979,008 字节，SHA-256 与本地镜像完全一致
-- 测试网络：电脑保持连接 2.4 GHz 路由器；板端 STA 为 `192.168.1.80`，Ethernet 静态回退为 `169.254.100.2`
-- TF 卡：`TW000`，SDHC，约 119,276 MB，启动时识别为 SDMMC 4-bit/20 MHz
+## 1. 测试环境
 
-板端热点按用户要求不连接、不验收，不属于缺陷。Wi-Fi 密码未写入本文档。
+| 项目 | 实测值 |
+|---|---|
+| 板端地址 | `http://169.254.100.2/` |
+| 串口 | `COM6` |
+| 固件版本 | `3.0.1` |
+| ESP-IDF | `v6.0.1-dirty` |
+| USB 设备 | `P4_BUOY`，VID/PID `303A:4002` |
+| TF 容量 | 约 119 GB，FAT32 |
+| 最终状态 | 已恢复到 `server`，TF `sdmmc_1bit` 挂载，写入验证通过 |
+| 关键配置 | `recording_segment_ms=1800000`，`field_idle_timeout_ms=30000`，`field_auto_enable=true`，`method=fish31` |
+| 测试结束设置 | 为避免无人访问后继续进入 FIELD，测试结束后临时把 `field_auto_enable=false`；上表关键配置为验收测试期间使用的客户配置 |
 
-## 当前修复分支状态（2026-07-15）
+## 2. 总体验收结论
 
-本节描述 `fix/test-issues-hardening` 的 `v3.0.1` 修复状态。下文各 ISSUE 的“实际”和日志仍是基线固件 `2c725fd` 的原始测试证据；本节的构建与板端结果只记录本修复版本重新取得的证据。
+当前固件已经具备 Web 配置、模型切换、单图/视频验证、实时图传、FIELD 并发写 raw/annotated、正常片段闭合、录像列表下载、补帧、USB 导出/恢复等主要能力。
 
-| 构建配置 | 应用镜像 | SHA-256 | 14 MiB 应用分区余量 |
-|---|---:|---|---:|
-| rev1 | 9,984,512 字节 | `14D35147F4E68E85B3CCF56C7416A89FD571921BD30C2485F65551F3F4D1ED65` | 4,695,552 字节（31.99%） |
-| rev3.1 | 10,062,272 字节 | `594F272A370E71D967F5DCF414DC3E2A94156D16F4027A6AE653ED2B6956F80E` | 4,617,792 字节（31.46%） |
+但按客户最核心要求判断，当前版本还不能作为完整可靠交付版本，主要阻塞是：
 
-| 问题 | 当前代码处理 | 本轮验证与剩余风险 |
-|---|---|---|
-| ISSUE-001 TF 写入失败 | 挂载后执行真实 4 KiB 写入、`fsync`、重开读回验证；I/O 故障会锁存并停止后续录像写入，状态页不再把“仅挂载成功”当成“可录像”。Web 提供“检查并重试 TF”。 | 实机在 4-bit 真失败后自动降级到 `sdmmc_1bit` 并通过写入、同步、重开读回；完成 603.6 秒 FIELD 和 79 对 raw/annotated。最终镜像再次完成短片段实录。卡片、供电或信号完整性物理故障仍不能由软件掩盖。 |
-| ISSUE-002 相机失败后无法唤醒 | 相机/JPEG/ISP/video VFS 的失败路径改为对称、best-effort 清理，并提前申请关键 JPEG/DMA 资源，避免一次失败污染后续唤醒。 | 已完成三轮 wake/JPEG/standby；最终镜像从 standby 到首批 JPEG 约 1.17 秒，未需重启。极端内存故障注入仍属于持续回归项。 |
-| ISSUE-003 USB 恢复风暴 | 移除无效 USB DMA reserve，补齐 Hosted SDMMC slot 清理；TinyUSB `DETACHED`/配置失活不再被当成物理拔线，TF 会保持隔离，只有用户在安全弹出并拔线后从 Web 明确恢复；失败时不无限交叉重试或主动重启。 | 使用真实 USB1 主机完成安全弹出、物理拔线、隔离状态确认、Web 显式恢复、失败注入，以及恢复后重新插线导出回归。 |
-| ISSUE-004 客户端计数 | 客户端槽位按“同 IP、空/过期槽、最老槽”的顺序选择，避免新地址覆盖仍活跃的旧地址。 | STA 与 Ethernet 同时访问实测 `client_count=2`；AP 多来源可继续作为扩展回归。 |
-| ISSUE-005 长验证被自动 FIELD 打断 | `/api/validate/run` 改为异步任务：`POST` 立即返回任务 ID，页面轮询 `/api/validate/status?id=...`；活动验证任务计入自动采集暂停条件，不占住单个 HTTP worker。 | Fish31、TinyCNN、COCO 异步任务与各 16 帧数据集均通过；Web 在任务期间保持响应。 |
-| ISSUE-006 配置静默接受错误值 | 配置写入统一使用 `POST /api/config`，严格校验完整数字、布尔值、枚举、长度和表单编码；候选配置先原子写入 NVS，成功后才切换运行值。带修改参数的 `GET /api/config` 返回 405。 | 最终镜像实测修改型 GET 为 405、非法 POST 为 400；8 秒片段/15 秒倒计时/自动采集开启经软件重启仍保留并实际进入 FIELD。交付前恢复 60 秒/300 秒/开启，并再次重启确认。 |
-| ISSUE-007 清空后残留 | 后台 cleanup job 关闭目录后分批删除、覆盖 FAT 长文件名和原子索引备份，完成后复扫目录与索引；下载/上传/清理使用统一 admission 与锁。 | 慢下载期间 79 ms 返回 409；取消后 reader 归零；两个请求同一 job ID、均为 202，第二个合并；清理期间列表为 423；最终 19/19 删除、remaining=0、errors=0，列表为空。 |
+- P0：FIELD 录制未达到片段长度时被 reset 中断，已写入几十帧的视频没有恢复成成对 AVI，而是从客户可见数据中消失。
+- P0：FIELD/自动 FIELD 后 reset 的重启过程中至少两次复现 `tlsf_free` double-free 断言崩溃，系统二次重启后才恢复。
+- P0/P1：Windows 安全弹出 USB 后，板端 60 秒内没有自动恢复 SERVER；如果客户把“弹出”理解为“拔出”，体验不满足需求。
+- P1：USB 导出后 Windows 经常识别到 `P4_BUOY` 但不给盘符，普通用户在资源管理器里可能找不到 U 盘。
+- P1：每次启动/恢复都会先尝试 SDMMC 4-bit，写入自检失败后降级到 1-bit，功能可用但可靠性和性能风险明显。
 
-### v3.0.1 最终板端门禁（2026-07-15）
+## 3. 板端实测矩阵
 
-- rev1 与 rev3.1 均从空构建目录完成 ESP-IDF 6.0.1 clean build；嵌入式客户页和验证页 JavaScript 通过 `node --check`，`git diff --check` 通过。
-- COM6 确认为 ESP32-P4 rev3.1；未擦除 Flash，仅写入 `0x2000` bootloader、`0x8000` partition table、`0x10000` app。三段随后独立 `verify-flash`，digest 全部匹配。
-- STA `192.168.1.80` 与 Ethernet `169.254.100.2` 的 `/healthz` 均为 200；Ethernet 连续 10 次响应为 48-72 ms，清理与下载竞态期间 Web 仍可查询状态。
-- 最终状态为 SERVER/standby，TF `storage_acceptance_ok=true`、`storage_write_verified=true`、reader=0；正式默认配置为 `field_auto_enable=true`、`field_idle_timeout_ms=300000`、`recording_segment_ms=60000`，软件重启后回读一致。
-- 管理员认证仍不在本轮范围内，只允许部署在受信任局域网。真实 USB1 主机当前不可用，因此 ISSUE-003 的物理枚举、安全弹出、拔线和再次导出仍是唯一关键环境缺口。
+| 编号 | 场景 | 期望行为 | 实际行为 | 结论 | 修改建议 |
+|---|---|---|---|---|---|
+| T-01 | `/api/status` 状态读取 | SERVER 下能看到模式、网络、TF、USB、模型、相机状态 | 返回 `app_mode=server`、TF ready、Web 地址、模型等完整字段 | 通过 | 保持字段稳定，避免 UI 文案与实际模式不一致 |
+| T-02 | 保存配置 | 保存 1800 秒片段、30 秒自动采集、Fish31 后回显生效 | `/api/config` 返回成功，回显 `recording_segment_ms=1800000`、`field_idle_timeout_ms=30000` | 通过 | `recording_enabled=false` 容易让用户误会，可改成“SERVER 待机，FIELD 时启用录像” |
+| T-03 | TF 重试 | TF 已就绪时应快速返回成功 | `POST /api/storage/retry` 返回 `already_ready=true` | 通过 | 页面可显示“已就绪，无需重试” |
+| T-04 | 清空录像 | 用户确认后后台清理并显示进度 | 空列表状态下仍创建 job，最终 `succeeded`，`total=1 deleted=1` | 通过但需谨慎 | 清空是真删除，应强化二次确认和删除数量展示 |
+| T-05 | 模型切换 | TinyCNN/COCO/Fish31 都能保存并回显 | 三个模型均切换成功，`model_info` 对应更新 | 通过 | 保持模型名、输入尺寸、class_count 在 UI 中清晰显示 |
+| T-06 | 单图验证 | 提交后异步完成，Web 不阻塞 | Fish31 样例 `fish31_01` 完成，expected `fish_23`，Top-1 `fish_23`，`matched=true` | 通过 | 页面继续保留任务 ID 和失败重试提示 |
+| T-07 | 16 帧视频验证 | 16 帧全部板端推理完成 | `fish31_video_demo` 16/16 成功，平均约 169 ms，P95 177 ms | 通过 | 验证结果文件会写入 TF，页面可提示占用空间 |
+| T-08 | 实时图传 | 唤醒相机，`/stream` 输出 MJPEG，关闭可回待机 | 唤醒后 `camera_ready=true`，5 秒抓取 652613 字节 MJPEG，待机接口返回成功 | 通过 | 首帧等待期间 UI 应显示“正在唤醒” |
+| T-09 | 手动进入 FIELD | 点击后真实进入 FIELD，Web 断开，开始写 TF | 返回 `field_pending`；串口显示 HTTP/Wi-Fi/Ethernet 停止，FIELD active，raw/annotated 开始写入 | 通过 | Web 文案应明确“退出 FIELD 需要 reset/重启” |
+| T-10 | FIELD 并发写入 | raw 和 annotated 同时运行，帧数一致 | 10 秒测试片段中 raw/annotated 分别成对闭合，帧数一致 | 通过 | 保持 raw 队列和 annotated 写入进度日志 |
+| T-11 | 正常片段闭合 | 达到片段长度后自动形成成对 AVI | 临时设置 10 秒片段，生成 5 对 AVI；帧数分别为 47/47、28/28、28/28、28/28、28/28 | 通过 | 1800 秒完整长跑仍建议做夜间稳定性测试 |
+| T-12 | 1800 秒片段中 reset | 只录 10-30 秒也必须恢复成一对 AVI | 1800 秒配置下录到 raw/annotated 64 帧以上后 reset；导出 TF 后没有 `20260716_112602` 对应 AVI，也没有 `.part` | 不通过，P0 | 必须实现 `.avi.part` 恢复闭合，不能静默删除客户数据 |
+| T-13 | 30 秒无连接自动 FIELD | 无 Web/stream/download/validate 后 30 秒真实进入 FIELD | 串口显示 `idle_ms=30000, web_clients=0`，随后关闭网络并开始写 raw/annotated | 通过 | 自动进入前如页面在线，应明确倒计时暂停原因 |
+| T-14 | 自动 FIELD 后 reset | 自动进入采集后，中断也应保留短视频 | 自动 FIELD 写到 64 帧以上后 reset；导出 TF 后没有 `20260716_112927` 对应 AVI | 不通过，P0 | 与 T-12 同源，恢复逻辑必须覆盖自动 FIELD |
+| T-15 | reset 后启动稳定性 | reset 后应一次干净启动 | FIELD/自动 FIELD reset 后至少两次出现 `assert failed: tlsf_free ... block already marked as free`，随后二次重启 | 不通过，P0 | 开发需定位内存重复释放，特别是 USB/Hosted/TF 切换路径 |
+| T-16 | SERVER 下 USB 立即导出 | 点击后进入 USB_EXPORT，Windows 枚举 `P4_BUOY` | 2 次轮询后 `app_mode=usb_export`、`usb_storage_owner=usb`；Windows 看到 `P4_BUOY` | 通过但有 UX 问题 | 解决无盘符问题，见 BUG-004 |
+| T-17 | USB 占用期间 Web 列表 | Web 应明确说明 TF 被 USB 占用 | `/api/recordings` 返回 `TF card is exported to the computer over USB` | 通过 | UI 应把该错误翻译成用户可理解提示 |
+| T-18 | Windows 安全弹出后自动恢复 | 安全弹出/拔出后恢复 SERVER | Windows eject 后 60 秒内仍 `app_mode=usb_export`、`usb_storage_owner=usb`、`usb_host_connected=true` | 不通过/需澄清，P0/P1 | 自动恢复实现、客户操作流程和文档口径必须统一 |
+| T-19 | USB 恢复存储按钮 | 用户手动恢复后 TF 交还应用 | `POST /api/mode/usb/restore` 后回到 `server`，TF ready | 通过 | 如果仍需手动恢复，页面必须明确写“弹出后点击恢复” |
+| T-20 | 录像列表 | 成对展示 raw/annotated | `/api/recordings` 返回 5 个 `recording_groups`，每组 raw/annotated 齐全 | 通过 | 编号每次 FIELD 从 001 开始，建议改成全局单调或突出时间戳 |
+| T-21 | Web 下载 | raw/annotated 链接可下载有效文件 | raw 下载 922088 字节，annotated 下载 1174746 字节，与 TF 文件一致 | 通过 | 下载时自动 FIELD 倒计时应暂停 |
+| T-22 | manifest/首帧 | manifest 和 SVG 可访问 | `/api/recording/manifest` 返回 ok，首帧 SVG 可打开 | 通过 | SVG 内容较大，页面应避免卡顿 |
+| T-23 | 补帧 | raw 补帧应生成完整 annotated | `raw_001...` 补帧 47/47，coverage 1000，最终 `last_error=ok` | 通过 | 补帧会改写 annotated，应显示“正在重建”状态 |
+| T-24 | USB 盘符可见性 | 普通用户应能在资源管理器看到 U 盘 | 多次导出后 Windows 识别到 `P4_BUOY` 卷，但无 DriveLetter；需要用卷 GUID 或手动分配 `Y:` 才能操作 | 不通过，P1 | 调整 USB MSC/分区/卷策略，或在 Web/说明书给出明确盘符处理方法 |
+| T-25 | TF 挂载性能和稳定性 | TF 应稳定以预期总线模式写入 | 每次启动先 4-bit/20MHz 写入自检失败，降级到 1-bit/10MHz 后通过 | 有风险，P1 | 若硬件不适合 4-bit，应默认 1-bit；否则修复 4-bit 信号/时序 |
+| T-26 | FIELD 中 USB 热插 | FIELD 录制中插 USB 应先闭合视频再导出 | 本轮 USB 线全程物理连接，无法真实复现“从未插到热插”；Windows eject 不能触发板端物理 detached | 未完全覆盖 | 后续必须用真实物理拔插复测；当前 reset 中断已证明短片段恢复不满足 |
 
-### 用户可见配置与恢复约定
+## 4. P0 问题
 
-- Web「用户设置」可修改并持久化：自动进入野外采集开关、无连接进入采集倒计时 `10-86400` 秒、录像片段时长 `5-14400` 秒。保存成功文案和 `/api/status.config` 显示的是设备实际采用值，不以前端输入值冒充成功；片段时长只影响当前及后续采集，不在后台重切历史录像。
-- 倒计时遇到 Web/图传/下载/验证/数据集/推理或存储维护任务会暂停，页面显示暂停原因；任务结束后重新计时，避免用户操作被突然断网。
-- TF 重试、重新挂载和格式化均通过互斥的维护流程执行：先停止采集与存储使用者，闭合录像，再操作文件系统并执行写读验证，最后恢复原相机状态、网络和 Web。普通失败不要求用户重启；页面可能短暂重连，用户应等待状态更新，不要重复点击。
-- `POST /api/storage/retry?confirm=RETRY` 是普通用户首选恢复入口。`POST /api/storage/remount?confirm=REMOUNT` 和 `POST /api/storage/format?confirm=FORMAT` 只允许在 SERVER 模式运行；格式化会删除整张 TF 的数据，只能在明确备份并确认后使用。
-- TinyUSB `DETACHED` 或 USB 配置失活只表示协议配置不再活动，不等于数据线已物理拔出。固件不会因此自动回收 TF 或再次枚举；用户须先安全弹出并拔线，再在 Web 点击「USB 恢复存储」。显式恢复完成写入、同步和读回验证前，TF 始终保持隔离。
-- ESP-IDF 6.0.1 的 FAT 格式化函数存在“格式化完成、重新挂载失败却返回成功”的问题。构建期补丁现在会传播重新挂载错误并保留资源给应用统一清理，防止页面误报成功；同时包含 Hosted SDMMC slot 清理补丁。补丁脚本只接受预期 IDF 版本，无法安全匹配时构建直接失败。
-- 所有修改状态的 Web/API 操作使用 `POST` 或对应的非 GET 方法；误用 GET 返回 `405 Method Not Allowed`。Wi-Fi 密码只通过 POST body 提交，服务端拒绝把密码放在 URL 中，状态和配置响应也不回显明文。
-- 管理员认证不在本轮修复范围内，当前固件不能宣称管理接口已受身份认证保护。完成认证前只应部署在受信任的局域网/设备专网，不能把管理 Web 直接暴露到互联网。
+### BUG-001：FIELD reset 中断后短录像丢失，未形成客户要求的成对 AVI
 
-## ISSUE-001：TF 写入持续失败，FIELD 录像和后续数据链路整体不可用
+优先级：P0  
+影响需求：FIELD 短录像保留、reset 中断恢复、自动 FIELD 后录像可验收。
 
-- 严重度：Critical / P0
-- 固件 SHA-256：`FB76F2ECFA0402E0D51C3A8658545B37871C8A539C7CDA82A99ACBB56FA41874`
-- 前置条件：TF 卡已插入；SERVER 状态 API 显示 `sd_mounted=true`、`tf_ready=true`、`storage_acceptance_ok=true`
-- 复现率：FIELD 写自检 3/3（Fish31、TinyCNN、COCO 各一次）；SERVER/数据集写入也多次出现
+期望行为：
 
-### 复现步骤
+- 片段长度设置为 1800 秒时，即使只录 10-30 秒后 reset，也要在重启后整理出一对 `raw_*.avi` 和 `annotated_*.avi`。
+- 如果 raw/annotated 已经各写入部分帧，恢复逻辑应闭合 AVI 头/索引并保留 sidecar。
+- 恢复失败时应报告明确错误，不能静默删除客户数据。
 
-1. 重启进入 SERVER，确认 TF 显示已挂载。
-2. 设置片段时长为 5 秒并关闭自动采集。
-3. 分别选择 Fish31、TinyCNN、COCO。
-4. 调用 `POST /api/mode/field?confirm=FIELD`。
-5. 通过串口观察网络关闭后的 TF 写自检和录像初始化。
+实测行为：
 
-### 预期
+- 手动 FIELD：1800 秒配置下，串口显示 `raw_001_20260716_112602_fish31.avi` 和 `annotated_001_20260716_112602_fish31.avi` 已打开并写到 64 帧以上。
+- reset 后 USB 导出检查 `esp32p4/recordings`，没有任何 `112602` 对应 AVI/JSONL，也没有 `.part`、`.idx` 或 `.corrupt` 留存。
+- 自动 FIELD：串口显示 `raw_001_20260716_112927_fish31.avi` 和 annotated 写到 64 帧以上。
+- reset 后同样没有 `112927` 对应文件。
 
-板端关闭网络、进入 FIELD，持续生成成对的 raw/annotated AVI 和 sidecar；TF 写错误为 0。
+用户影响：
 
-### 实际
+- 野外设备只要未达到 1800 秒就遇到 reset、掉电或类似中断，客户会拿不到任何已录视频。
+- 这正好违反“哪怕只录 10 秒，也必须形成一对视频”的核心需求。
 
-三个模型均在写入第一字节前失败，无法开始正常录像：
+修改建议：
 
-```text
-TF post-mount: directories ready
-sdmmc_write_sectors_dma: sdmmc_send_cmd returned 0x109, status 0xe00
-diskio_sdmmc: sdmmc_write_blocks failed (0x109)
-TF write self-test short write: offset=0 result=-1 errno=5
-storage service: error - offline TF capture TF mount failed: ESP_FAIL
-```
+- 开发启动恢复流程，扫描 `*.avi.part`、sidecar 和临时索引。
+- 对 raw 和 annotated 分别尝试补写 AVI header/index 并 rename 为正式 `.avi`。
+- 如果只有 raw 可恢复，也应基于 raw 生成 annotated 或至少生成明确的待补帧记录。
+- 禁止恢复前静默删除可恢复的 `.part`。
+- 在 `/api/status` 或事件日志中记录恢复成功/失败文件名和原因。
 
-此外还观察到：
+### BUG-002：FIELD/自动 FIELD 后 reset 启动过程中出现 double-free 断言崩溃
 
-- 启动阶段设置 TF 卷标时出现同一 `0x109` 写失败。
-- 一次较早的 FIELD 运行中，AVI 写入固定停在 382,976 字节，之后持续 `short write ... errno=5`，`errors` 至少累计到 256。
-- Fish31 内置 16 帧数据集 API 报告 `processed=16`、`ok_frames=16`、`failed_frames=0`，但下载到的结果 JSONL 为 0 字节；汇总 JSON 和 SVG 偶尔仍可写入。
+优先级：P0  
+影响需求：野外可靠性、reset 恢复、USB 导出恢复。
 
-### 影响
+期望行为：
 
-核心 FIELD 录像不可用，并直接阻断以下验收：AVI 帧率/可播放性、raw/annotated 配对、完整下载与 Range、三模型补帧、短片段合并、录像中复位/USB 接管恢复，以及不少于 10 分钟的 Fish31 FIELD 稳定性测试。API 的 `tf_ready`/`storage_acceptance_ok` 还会在实际不可写时给出误导性的健康状态。
+- reset 后设备一次启动成功。
+- 即使前一次处于 FIELD 录像，也不应发生堆内存断言。
 
-### 临时规避与建议
+实测行为：
 
-没有可靠的软件规避。重启只能恢复 SERVER 访问，不能保证写入。建议先用另一张已知良好的 TF 卡复测，以区分卡片/信号完整性与驱动资源问题；随后检查 SDMMC 供电、走线、总线宽度/频率和写后自检，并让状态 API 以实际写自检结果决定 `tf_ready`。
-
-## ISSUE-002：相机唤醒可能因 JPEG 引擎创建失败，失败后资源未释放且无法重试恢复
-
-- 严重度：High / P1
-- 固件 SHA-256：`FB76F2ECFA0402E0D51C3A8658545B37871C8A539C7CDA82A99ACBB56FA41874`
-- 前置条件：SERVER、Fish31、相机处于 standby
-- 复现率：多个重启轮次中出现 2 次；进入该故障后再次唤醒 2/2 失败。另有一次重启后唤醒成功，说明具有间歇性
-
-### 复现步骤
-
-1. 重启并等待 SERVER/STA 就绪。
-2. 调用 `GET /api/power?cmd=wake`。
-3. 等待 5 至 10 秒，读取 `/api/status`。
-4. 若首次失败，再次调用 wake。
-
-### 预期
-
-OV5647 与硬件 JPEG 初始化成功，`power_mode=running`、`camera_ready=true`，快照和 MJPEG 有帧；失败后重试应能完整清理并重新初始化。
-
-### 实际
-
-受控复现中 OV5647 已检测到，但 JPEG 编码引擎返回内存不足；随后的清理未注销 `video20`，所有重试均失败：
+- FIELD/自动 FIELD 录像后串口 reset。
+- 启动过程中出现：
 
 ```text
-ov5647: Detected Camera sensor PID=0x5647
-failed to create jpeg encoder engine
-failed to init JPEG encoder
-resetting esp-video after camera open failure ret=ESP_ERR_NO_MEM
-camera start failed: ESP_ERR_NO_MEM
-esp_video: Failed to register video VFS dev name=video20
-Failed to create hardware ISP video device
-camera start failed: ESP_FAIL
+assert failed: tlsf_free tlsf.c:630 (!block_is_free(block) && "block already marked as free")
 ```
 
-API 最终为 `power_mode=error`、`camera_ready=false`、`camera_error="video init failed: ESP_FAIL"`；快照返回 `no frame available`，MJPEG 为 0 帧。
+- 本轮至少两次复现，随后系统二次重启，最终才进入 USB_EXPORT。
 
-### 影响
+用户影响：
 
-图传、实时推理、历史记录和 FIELD 采集均被阻断。仅查看总 heap/PSRAM 仍有约 33 MB，无法提前判断该硬件 JPEG/内部内存资源失败。
+- 客户现场会看到设备重启时间变长，且存在无法恢复或循环重启风险。
+- 该问题和 USB/TF/Hosted/网络切换路径相关，发生在关键恢复流程中，风险高。
 
-### 临时规避与建议
+修改建议：
 
-重启后重试有时可恢复，但不可靠。建议核对硬件 JPEG 引擎和内部 DMA 内存的分配顺序；任何 `camera_open` 失败路径都应对称销毁 JPEG、ISP、video VFS 和设备句柄，然后加入“失败后再次 wake”回归测试。
+- 优先分析 reset 后启动期间 ESP-Hosted、TinyUSB、TF mount/unmount、网络任务释放顺序。
+- 对所有 destroy/free/deinit 路径加幂等保护。
+- 增加 FIELD->reset->USB_EXPORT 连续压力测试。
 
-## ISSUE-003：从 USB_EXPORT 手动恢复 TF 失败，进入挂载重试风暴并最终重启
+### BUG-003：Windows 安全弹出不能让板端自动恢复 SERVER
 
-- 严重度：High / P1
-- 固件 SHA-256：`FB76F2ECFA0402E0D51C3A8658545B37871C8A539C7CDA82A99ACBB56FA41874`
-- 前置条件：SERVER、TF 已挂载；本轮未连接 USB1 主机，使用受支持的手动 USB API 测试所有权切换
-- 复现率：1/1
+优先级：P0/P1，取决于客户最终口径。  
+影响需求：USB 拔出后恢复 Web 服务模式。
 
-### 复现步骤
+期望行为：
 
-1. 调用 `POST /api/mode/usb?confirm=USB`。
-2. 确认 API 显示 `app_mode=usb_export`、`usb_storage_owner=usb`、`sd_mounted=false`，Web 仍在线。
-3. 调用 `POST /api/mode/usb/restore?confirm=RESTORE`。
-4. 等待并观察串口及 `/api/status`。
+- 客户在 Windows 安全弹出 U 盘后，设备应进入可恢复路径。
+- 如果需求定义为“拔出后自动恢复”，则物理拔线后应自动回到 SERVER。
+- 用户不应卡在不知道下一步做什么的状态。
 
-### 预期
+实测行为：
 
-USB MSC 介质被安全撤下，TF 重新由应用挂载；状态回到 SERVER、`usb_storage_owner=app`、`sd_mounted=true`，Web 始终在线。
+- 当前 USB_EXPORT 下 Windows 安全弹出 `P4_BUOY`。
+- 60 秒轮询内，板端仍显示：
+  - `app_mode=usb_export`
+  - `usb_storage_owner=usb`
+  - `usb_host_connected=true`
+  - `sd_mounted=false`
+- 只有手动调用 `POST /api/mode/usb/restore?confirm=RESTORE` 后，设备才回到 SERVER。
 
-### 实际
+用户影响：
 
-USB 交接成功，但恢复阶段失败：
+- 客户会以为已经“拔出/弹出”，但设备仍不恢复录像能力。
+- 如果此时离开现场，设备可能长期停在 USB_EXPORT，无法自动采集。
 
-```text
-USB MSC DMA reserve allocation failed (25600 bytes)
-Writable TF card detached from USB MSC storage
-TF mount failed on sdmmc_4bit: ESP_ERR_NO_MEM
-slot is not available
-TF remount after USB detach attempt ... failed: ESP_ERR_NO_MEM
-USB detached; TF remount failed after retries: ESP_ERR_NO_MEM; rebooting
-```
+修改建议：
 
-恢复 API 返回已受理，但随后状态为 `app_mode=server`、`usb_storage_owner=none`、`sd_mounted=false`，存储接口返回 409；固件高频尝试 SDMMC 4-bit、1-bit 和 SDSPI，最终主动重启。
+- 明确区分“Windows 安全弹出”和“物理拔线”。
+- 如果要满足客户“弹出即恢复”，需在 MSC eject/stop/unit attention 等状态后自动交还 TF。
+- 如果必须物理拔线或手动恢复，Web、README、客户手册必须统一写清楚。
 
-### 影响
+## 5. P1 问题
 
-旧版在 USB 所有权交回应用时可能使 TF 在本次运行中永久不可用，并产生大量错误日志和额外复位；USB 导出不能作为可靠的现场工作流。
+### BUG-004：USB 导出后 Windows 识别到卷但没有盘符
 
-### 临时规避与建议
+优先级：P1  
+影响需求：USB U 盘导出可用性。
 
-当前只能重启恢复。建议检查 USB MSC DMA 预留缓冲的生命周期、SDMMC controller/slot 的对称释放，并在恢复失败时停止高频交叉回退，避免资源状态进一步恶化。
+期望行为：
 
-### 当前修复验收步骤（显式 Web 恢复）
+- 普通 Windows 用户插上/导出后能在资源管理器看到 `P4_BUOY` 盘符。
 
-1. 在 SERVER 且 TF 写读验证通过时插入真实 USB1 主机，确认 Windows 出现 `P4_BUOY`、Web 在线，状态为 `app_mode=usb_export`、`usb_storage_owner=usb`、`sd_mounted=false`。
-2. 完成文件复制并在 Windows 安全弹出，然后物理拔掉 USB 数据线。
-3. 确认 TinyUSB `DETACHED`/配置失活没有触发 TF 回收或重新枚举；TF 仍保持隔离，Web 明确提示点击「USB 恢复存储」。
-4. 用户点击 Web「USB 恢复存储」（等价于 `POST /api/mode/usb/restore?confirm=RESTORE`）。
-5. 确认状态回到 SERVER、`usb_storage_owner=app`、`sd_mounted=true`、`storage_acceptance_ok=true`，Web 始终可恢复访问，且没有重启或挂载重试风暴。
-6. 分别注入 USB reset、`SetConfiguration(0)` 和恢复失败；线缆或主机配置仍可能活动时必须继续隔离 TF，失败后保留可操作提示。完成显式恢复后重新插线，验证下一次导出正常。
+实测行为：
 
-## ISSUE-004：Ethernet 与 STA 两个真实来源不能同时计入 Web 客户端数
+- Windows `Get-Volume` 能看到 `P4_BUOY`，但 `DriveLetter` 为空。
+- 需要通过卷 GUID 路径访问，或手动分配 `Y:` 后才能使用脚本弹出。
+- `tools/eject_usb_msc.ps1` 默认只查找带盘符的卷，因此无盘符时直接报 `Volume 'P4_BUOY' was not found`。
 
-- 严重度：Medium / P2
-- 固件 SHA-256：`FB76F2ECFA0402E0D51C3A8658545B37871C8A539C7CDA82A99ACBB56FA41874`
-- 前置条件：电脑同时有 Ethernet `169.254.12.109` 和 WLAN `192.168.1.21`；板端两个地址均可 HTTP 访问
-- 复现率：1/1；代码只读检查与现象一致
+用户影响：
 
-### 复现步骤
+- 客户会认为 U 盘没有弹出或设备不可用。
+- 现场复制数据的门槛变高。
 
-1. 强制从 Ethernet 源地址请求 `http://169.254.100.2/healthz`。
-2. 在 30 秒内从 WLAN 请求 `http://192.168.1.80/api/status`。
-3. 读取 `client_count` 和 `web_clients`。
+修改建议：
 
-### 预期
+- 检查 FAT32 分区、MBR/分区属性、Removable Media 行为和 Windows automount 兼容性。
+- 工具脚本支持无盘符卷，通过 Volume GUID 或 DiskNumber 操作。
+- Web 页面提示“若无盘符，请在磁盘管理中分配盘符”只能作为临时方案，不应作为最终体验。
 
-两个不同源 IP 同时处于有效期内，客户端数为 2。
+### BUG-005：TF 每次先以 4-bit/20MHz 写入自检失败，再降级到 1-bit/10MHz
 
-### 实际
+优先级：P1  
+影响需求：长期录像可靠性、USB 导出速度、客户信心。
 
-客户端数始终为 1。客户端槽位查找在遇到第一个非匹配活动槽时提前保留了“最老槽”，后续即使存在空槽也不会改用空槽，因此新地址覆盖旧地址。
+期望行为：
 
-### 影响
+- TF 挂载模式稳定，写入自检一次通过。
 
-多客户端显示不准确；自动采集的“任一 Web 客户在线即暂停”判断可能遗忘仍在使用的旧客户端，增加误关网风险。
+实测行为：
 
-### 临时规避与建议
+- 多次启动/恢复日志均出现：
+  - `TF mount attempt #1: sdmmc_4bit ...`
+  - `sdmmc_write_sectors_dma returned 0x109`
+  - `TF runtime I/O failure latched`
+  - 降级到 `sdmmc_1bit` 后写入自检通过。
 
-测试时保持至少一个客户端持续轮询。修复时应先查找同地址，再优先选择空/过期槽，只有槽位全满时才替换最老槽。
+用户影响：
 
-## ISSUE-005：活动中的长耗时验证请求不会持续阻止自动 FIELD
+- 虽然最终可用，但启动/恢复变慢。
+- 1-bit/10MHz 对长时间高码率录像和 USB 拷贝速度有压力。
+- 日志中的 I/O failure 会削弱客户对存储可靠性的信任。
 
-- 严重度：Medium / P2
-- 固件 SHA-256：`FB76F2ECFA0402E0D51C3A8658545B37871C8A539C7CDA82A99ACBB56FA41874`
-- 前置条件：自动采集开启、空闲时间 300 秒；启动一次长时间未返回的 `/api/validate/run`
-- 复现率：1/1
+修改建议：
 
-### 复现步骤
+- 如果硬件当前只能稳定 1-bit，应默认使用 1-bit，减少失败路径。
+- 如果目标是 4-bit，需修复 TF 线序、上拉、时钟、DMA 或 LDO 时序。
+- Web 状态应把“已降级但可用”和“不可用故障”区分开。
 
-1. 开启自动采集，设置 300 秒空闲。
-2. 发起 `/api/validate/run` 并保持连接等待，不再发送额外轮询。
-3. 通过串口观察约 300 秒后的模式变化。
+### BUG-006：USB 导出期间状态文案和客户操作流程仍需统一
 
-### 预期
+优先级：P1  
+影响需求：USB 任意模式导出、拔出后恢复 Web。
 
-HTTP 请求仍在执行时应视为客户端活跃，不能关闭网络。
+实测行为：
 
-### 实际
+- `/api/status.storage_service.status` 显示 `safe eject and unplug to restore automatically`。
+- 开发文档中又存在“安全弹出并物理拔线后仍需 Web 点击恢复”的口径。
+- 本次 Windows 安全弹出后并未自动恢复，手动恢复按钮可以恢复。
 
-请求只在进入 handler 时登记一次，客户端槽位 30 秒后过期；请求仍未返回时板端自动关闭网络并进入 FIELD，客户端连接被中断。
+用户影响：
 
-### 影响
+- 客户不知道应该等待自动恢复、拔线，还是返回 Web 点击恢复。
 
-长模型验证或其他未单独维护 active counter 的耗时 API 会被自动采集打断，并可能触发 ISSUE-001。
+修改建议：
 
-### 临时规避与建议
+- 以客户最终需求为准统一：自动恢复就实现自动恢复；手动恢复就把“必须手动点击”写进所有 UI 和文档。
+- Web 页面在 USB_EXPORT 下显示明确步骤：复制完成、Windows 弹出、物理拔线/点击恢复、恢复完成。
 
-执行板端验证前关闭自动采集，或由前端并行轮询状态。建议对活动 HTTP handler 维护进入/退出计数，空闲切换同时检查该计数。
+### BUG-007：FIELD 录像编号每次从 001 重新开始，易造成用户误解
 
-## ISSUE-006：`/api/config` 对非数字参数和非法网络模式静默接受
+优先级：P1/P2  
+影响需求：录像可追溯性。
 
-- 严重度：Low / P3
-- 固件 SHA-256：`FB76F2ECFA0402E0D51C3A8658545B37871C8A539C7CDA82A99ACBB56FA41874`
-- 前置条件：SERVER Web 可访问
-- 复现率：3/3
+实测行为：
 
-### 复现步骤与实际
+- 10 秒片段测试生成 `raw_001_20260716_112233...` 到 `raw_005_...`。
+- 后续 1800 秒短录测试又从 `raw_001_20260716_112602...` 开始。
+- 文件名靠时间戳保持唯一，但用户看到多个 `001` 容易误会覆盖或排序错误。
 
-- `GET /api/config?recording_segment_ms=abc` 返回 200，并把片段时长写成最小值 5,000 ms。
-- `GET /api/config?field_idle_timeout_ms=abc` 返回 200，并把空闲时间写成最小值 10,000 ms。
-- `GET /api/config?network_mode=invalid` 返回 200，静默保持原模式。
+修改建议：
 
-同一 API 对未知模型会正确返回 400，专用 `/api/netmode?mode=bad` 也会返回 400，因此错误处理不一致。
+- 使用全局递增编号、session_id，或在 UI 中把日期时间作为主标识。
+- 保证文件列表按时间排序，不按编号误排序。
 
-### 预期
+## 6. P2/体验改进
 
-非数字值或未支持的枚举值返回 HTTP 400，且不修改 NVS。
+### UX-001：SERVER 下 `recording_enabled=false` 容易误导
 
-### 影响
+实测行为：保存配置和 SERVER 状态中 `recording_enabled=false`，但进入 FIELD 后确实会录像。  
+建议：改成更贴近用户的状态，例如“SERVER 待机，FIELD 将启用录像”。
 
-调用者输入错误时会在未察觉的情况下写入边界值，可能把 60 秒片段改为 5 秒，或误以为网络模式已生效。
+### UX-002：清空录像按钮是真删除，需要更强保护
 
-### 临时规避与建议
+实测行为：即使列表为空，后台清理任务仍报告删除 1 个相关文件。  
+建议：确认框中显示预计删除范围，清理后显示删除数量和释放空间。
 
-客户端必须先校验并读取响应值复核。服务端应使用带完整尾字符检查的数值解析，并对非法网络模式显式返回 400。
+### UX-003：USB 导出期间 Web 列表不可读是合理的，但页面提示要更像用户语言
 
-## ISSUE-007：失败录像后的“清空录像”首次调用可能残留文件
+实测行为：`/api/recordings` 返回英文错误，说明 TF 已导出给电脑。  
+建议：页面显示“TF 卡正在作为 U 盘给电脑使用，录像没有丢失；复制完成后请弹出并恢复存储”。
 
-- 严重度：Medium / P2
-- 固件 SHA-256：`FB76F2ECFA0402E0D51C3A8658545B37871C8A539C7CDA82A99ACBB56FA41874`
-- 前置条件：ISSUE-001 产生了 `.avi.part` 和 sidecar 残片，随后重启回 SERVER
-- 复现率：1/1
+## 7. 已通过能力清单
 
-### 复现步骤
+以下能力在本次板端实测中可用：
 
-1. 让 FIELD 录像因 TF 写错误中断并重启。
-2. 确认目录中有 4 个残片。
-3. 调用一次 `POST /api/recordings/cleanup`。
-4. 再调用 `/api/storage/files`。
+- Web 状态读取。
+- 保存 1800 秒片段、30 秒自动 FIELD、Fish31 模型。
+- TF 重试接口。
+- 模型切换 TinyCNN/COCO/Fish31。
+- Fish31 单图验证。
+- Fish31 16 帧视频验证。
+- 相机唤醒和 MJPEG 实时图传。
+- 手动进入 FIELD。
+- FIELD 采集、推理、raw/annotated 写入并发运行。
+- 正常达到片段长度后闭合成对 AVI。
+- 30 秒无 Web 连接自动进入 FIELD。
+- Web 录像列表成对显示。
+- raw/annotated Web 下载。
+- manifest 和首帧 SVG 访问。
+- raw 补帧重建 annotated。
+- SERVER 下 USB 立即导出。
+- 手动 USB 恢复存储。
 
-### 预期
+## 8. 未完全覆盖或需要后续上板复测
 
-一次调用删除全部录像和临时文件，索引同步为空。
-
-### 实际
-
-首次响应 `deleted_files=3`，但仍残留一个 0 字节 `raw_*.jsonl`；第二次调用才删除最后一个文件。
-
-### 影响
-
-清空操作的“完成”响应不可信，故障恢复后可能遗留孤立 sidecar 或污染后续索引。
-
-### 临时规避与建议
-
-清空后再次查询文件列表，必要时重复清空。建议删除遍历结束后重新扫描，只有目录中无目标文件且索引已重建时才返回成功。
-
-## 当前验收结论
-
-ISSUE-001、002、004、005、006、007 的代码修复与当前可用板端门禁均已通过，可作为 `v3.0.1` 交付候选。ISSUE-003 的防重试风暴、显式恢复和所有权隔离代码已完成，但缺少真实 USB1 主机，不能宣称物理 USB 工作流验收完成。`p4-buoy.local` 在本机 Windows 仍无可用解析客户端，不据此记产品缺陷。
+- 真正的 FIELD 物理热插 USB：本轮 USB 线按用户要求全程物理连接，只能用 Windows eject 和 Web USB 导出模拟部分流程，不能完全替代“FIELD 录像时从未插线到插线”的电气事件。
+- 1800 秒完整长片段：本轮用 10 秒临时片段验证正常闭合，用 1800 秒配置验证短录 reset 中断；1800 秒完整跑满建议做夜间/长期稳定性测试。
+- 物理拔线后的自动恢复：本轮用 Windows 安全弹出模拟拔出，但板端仍认为 host connected；需要实际物理拔线复测 TinyUSB detach 路径。

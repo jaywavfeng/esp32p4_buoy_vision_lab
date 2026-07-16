@@ -297,16 +297,16 @@ menu "Wi-Fi Camera Web Control"
 
     config APP_SD_BUS_WIDTH
         int "TF card SDMMC bus width"
-        default 4
+        default 1
         range 1 4
 
     config APP_SD_MAX_FREQ_KHZ
         int "TF card bus max frequency in kHz"
-        default 20000
+        default 10000
         range 400 40000
         help
             Maximum TF card bus frequency used by both SDMMC and SDSPI mounts.
-            20000 is the IDF default speed; raise only after board-side signal
+            10000 is the stable delivery default; raise only after board-side signal
             integrity has been verified.
 
     config APP_SD_PIN_CMD

@@ -70,6 +70,20 @@ static void tinyusb_event_callback(tinyusb_event_t *event, void *arg)
     }
 }
 
+void app_usb_msc_eject_cb(void)
+{
+    if (s_forced_reconnect) {
+        ESP_LOGI(TAG, "USB MSC eject ignored during forced media reconnect");
+        return;
+    }
+    s_status.host_connected = false;
+    set_error("USB host ejected media; restoring TF to application", ESP_OK);
+    ESP_LOGI(TAG, "USB MSC media ejected by host; queueing TF restore to application");
+    if (s_host_callback) {
+        s_host_callback(false, s_host_callback_arg);
+    }
+}
+
 static void reserve_dma_block(void)
 {
     if (s_dma_reserve) {

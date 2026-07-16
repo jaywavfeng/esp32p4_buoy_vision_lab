@@ -256,10 +256,10 @@ extern int esp_hosted_connect_to_slave(void);
 #define CONFIG_APP_ENABLE_LEGACY_COKE_SPRITE 0
 #endif
 #ifndef CONFIG_APP_SD_BUS_WIDTH
-#define CONFIG_APP_SD_BUS_WIDTH 4
+#define CONFIG_APP_SD_BUS_WIDTH 1
 #endif
 #ifndef CONFIG_APP_SD_MAX_FREQ_KHZ
-#define CONFIG_APP_SD_MAX_FREQ_KHZ 20000
+#define CONFIG_APP_SD_MAX_FREQ_KHZ 10000
 #endif
 #ifndef CONFIG_APP_SD_USE_SDMMC
 #define CONFIG_APP_SD_USE_SDMMC 1
@@ -4899,10 +4899,8 @@ static esp_err_t cleanup_recording_temp_files(void)
             continue;
         }
         /* 删除所有 .part、.part.corrupt、.idx */
-        if (has_suffix(entry->d_name, ".avi.part") ||
-            has_suffix(entry->d_name, ".new") ||
+        if (has_suffix(entry->d_name, ".new") ||
             has_suffix(entry->d_name, ".prev") ||
-            has_suffix(entry->d_name, ".part.corrupt") ||
             has_suffix(entry->d_name, ".idx")) {
             char path[384];
             snprintf(path, sizeof(path), "%s/%s", RECORDING_DIR, entry->d_name);
@@ -4937,8 +4935,22 @@ static esp_err_t cleanup_recording_temp_files(void)
                     continue;
                 }
             }
-            if ((stat_ret != 0 && stat_errno == ENOENT) ||
-                (stat_ret == 0 && st.st_size == 0)) {
+            bool keep_for_recovery = false;
+            if (stat_ret != 0 && stat_errno == ENOENT) {
+                char part_path[416];
+                struct stat part_st = {0};
+                snprintf(part_path, sizeof(part_path), "%s.part", avi_path);
+                if (stat(part_path, &part_st) == 0 && S_ISREG(part_st.st_mode)) {
+                    keep_for_recovery = true;
+                }
+                snprintf(part_path, sizeof(part_path), "%s.part.corrupt", avi_path);
+                if (stat(part_path, &part_st) == 0 && S_ISREG(part_st.st_mode)) {
+                    keep_for_recovery = true;
+                }
+            }
+            if (!keep_for_recovery &&
+                ((stat_ret != 0 && stat_errno == ENOENT) ||
+                 (stat_ret == 0 && st.st_size == 0))) {
                 char path[384];
                 snprintf(path, sizeof(path), "%s/%s", RECORDING_DIR, entry->d_name);
                 errno = 0;
@@ -4957,6 +4969,36 @@ static esp_err_t cleanup_recording_temp_files(void)
                                            &s_recording_sd_errors);
     }
     return storage_maintenance_finish(&result);
+}
+
+static void preserve_failed_recording_part(const char *part_path)
+{
+    if (!part_path || part_path[0] == '\0') {
+        return;
+    }
+    char corrupt_path[416];
+    int len = snprintf(corrupt_path, sizeof(corrupt_path), "%s.corrupt", part_path);
+    if (len < 0 || (size_t)len >= sizeof(corrupt_path)) {
+        ESP_LOGE(TAG, "cannot preserve failed AVI part; path too long: %s", part_path);
+        return;
+    }
+    errno = 0;
+    if (rename(part_path, corrupt_path) == 0) {
+        ESP_LOGW(TAG, "preserved unrecoverable AVI part as %s", corrupt_path);
+        return;
+    }
+    int rename_errno = errno ? errno : EIO;
+    if (rename_errno == EEXIST) {
+        ESP_LOGW(TAG,
+                 "unrecoverable AVI part remains at %s because %s already exists",
+                 part_path, corrupt_path);
+        return;
+    }
+    if (rename_errno == ENOENT) {
+        return;
+    }
+    ESP_LOGE(TAG, "failed to preserve unrecoverable AVI part %s: errno=%d",
+             part_path, rename_errno);
 }
 
 static esp_err_t recording_file_ready(const char *name, bool *out_ready)
@@ -5012,8 +5054,8 @@ static esp_err_t recording_has_paired_file(const char *name, bool *out_paired)
     return recording_file_ready(pair, out_paired);
 }
 
-static esp_err_t purge_unpaired_recording_files(uint64_t *freed_bytes,
-                                                uint32_t *out_deleted)
+static esp_err_t __attribute__((unused))
+purge_unpaired_recording_files(uint64_t *freed_bytes, uint32_t *out_deleted)
 {
     if (out_deleted) {
         *out_deleted = 0;
@@ -5845,12 +5887,30 @@ static esp_err_t recover_incomplete_recordings(void)
             }
             continue;
         }
-        ESP_LOGW(TAG, "discarding incomplete recording part %s (%" PRId64 " bytes)",
+        char final_path[384];
+        snprintf(final_path, sizeof(final_path), "%s/%s", RECORDING_DIR, final_name);
+        ESP_LOGW(TAG, "recovering incomplete recording part %s (%" PRId64 " bytes)",
                  entry->d_name, (int64_t)st.st_size);
         errno = 0;
-        if (unlink(part_path) != 0 && errno != ENOENT) {
+        esp_err_t recover_ret = avi_mjpeg_recover_part(part_path, final_path);
+        if (recover_ret == ESP_OK) {
+            ESP_LOGW(TAG, "recovered incomplete recording %s -> %s",
+                     entry->d_name, final_name);
+            continue;
+        }
+        int recover_errno = errno;
+        if (recover_errno == 0) {
+            recover_errno =
+                (recover_ret == ESP_ERR_INVALID_RESPONSE ||
+                 recover_ret == ESP_ERR_INVALID_SIZE) ? EINVAL :
+                (recover_ret == ESP_ERR_NO_MEM ? ENOMEM : EIO);
+        }
+        ESP_LOGE(TAG, "failed to recover incomplete recording %s: %s errno=%d",
+                 entry->d_name, esp_err_to_name(recover_ret), recover_errno);
+        preserve_failed_recording_part(part_path);
+        if (recover_errno != ENOENT) {
             storage_maintenance_record_failure(
-                &result, "incomplete recording unlink", errno ? errno : EIO,
+                &result, "incomplete recording recovery", recover_errno,
                 &s_recording_sd_errors);
         }
     }
@@ -5865,18 +5925,6 @@ static esp_err_t recover_incomplete_recordings(void)
         esp_err_t cleanup_ret = cleanup_recording_temp_files();
         if (cleanup_ret != ESP_OK && result.result == ESP_OK) {
             result.result = cleanup_ret;
-            result.error_number = errno ? errno : EIO;
-            result.media_failure =
-                storage_errno_is_media_failure(result.error_number);
-        }
-    }
-    if (!result.media_failure) {
-        uint64_t freed = 0;
-        uint32_t deleted = 0;
-        errno = 0;
-        esp_err_t purge_ret = purge_unpaired_recording_files(&freed, &deleted);
-        if (purge_ret != ESP_OK && result.result == ESP_OK) {
-            result.result = purge_ret;
             result.error_number = errno ? errno : EIO;
             result.media_failure =
                 storage_errno_is_media_failure(result.error_number);
@@ -7173,9 +7221,41 @@ static esp_err_t storage_prepare_dirs_after_mount(const char *mode)
              volume_label_degraded ? " with a maintenance warning" : "");
 
     if (s_app_mode == APP_MODE_SERVER) {
-        /* Keep startup responsive, but never skip the write/read health check. */
-        ESP_LOGI(TAG, "TF post-mount: write verified; deep recovery deferred in SERVER mode");
-        if (capacity_info_degraded) {
+        ESP_LOGI(TAG, "TF post-mount: write verified; running bounded recording recovery in SERVER mode");
+        bool recording_recovery_degraded = false;
+        int recording_recovery_errno = 0;
+        const char *recording_recovery_stage = "none";
+        errno = 0;
+        esp_err_t recording_recovery_ret = recover_incomplete_recordings();
+        if (recording_recovery_ret != ESP_OK) {
+            int helper_errno = errno ? errno : EIO;
+            if (storage_errno_is_media_failure(helper_errno) ||
+                !storage_acceptance_ok()) {
+                return recording_recovery_ret;
+            }
+            recording_recovery_degraded = true;
+            recording_recovery_errno = helper_errno;
+            recording_recovery_stage = "part recovery";
+        }
+        errno = 0;
+        recording_recovery_ret = reconcile_recording_indexes();
+        if (recording_recovery_ret != ESP_OK) {
+            int helper_errno = errno ? errno : EIO;
+            if (storage_errno_is_media_failure(helper_errno) ||
+                !storage_acceptance_ok()) {
+                return recording_recovery_ret;
+            }
+            if (!recording_recovery_degraded) {
+                recording_recovery_degraded = true;
+                recording_recovery_errno = helper_errno;
+                recording_recovery_stage = "index reconciliation";
+            }
+        }
+        if (recording_recovery_degraded) {
+            set_storage_status(
+                "TF write verified on %s; recording recovery warning at %s errno=%d; inspect recordings via Web/USB",
+                mode, recording_recovery_stage, recording_recovery_errno);
+        } else if (capacity_info_degraded) {
             set_storage_status(
                 "TF write verified on %s; capacity warning errno=%d; dataset=%s label=%s",
                 mode, capacity_info_errno,
@@ -19224,6 +19304,34 @@ fail:
     return ret;
 }
 
+static esp_err_t restart_webserver_after_storage_restore(void)
+{
+    http_server_set_stopping(true);
+    httpd_handle_t server = s_server;
+    if (server) {
+        esp_err_t stop_ret = httpd_stop(server);
+        if (stop_ret != ESP_OK) {
+            ESP_LOGE(TAG, "HTTP server restart stop failed after storage restore: %s",
+                     esp_err_to_name(stop_ret));
+            http_server_set_stopping(false);
+            return stop_ret;
+        }
+        if (s_server == server) {
+            s_server = NULL;
+        }
+        ESP_LOGI(TAG, "HTTP server stopped for storage restore refresh");
+    }
+    if (s_mdns_started) {
+#if CONFIG_APP_MDNS_ENABLE
+        mdns_free();
+#endif
+        s_mdns_started = false;
+        ESP_LOGI(TAG, "mDNS stopped for storage restore refresh");
+    }
+    s_http_server_ready = false;
+    return start_webserver();
+}
+
 static void event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
     if (event_base == ETH_EVENT) {
@@ -20621,6 +20729,54 @@ static void enter_usb_export_mode(void)
         return;
     }
     coco_espdl_release_background();
+    errno = 0;
+    ret = recover_incomplete_recordings();
+    if (ret != ESP_OK) {
+        int helper_errno = errno ? errno : EIO;
+        if (storage_errno_is_media_failure(helper_errno) || !storage_acceptance_ok()) {
+            snprintf(s_usb_last_error, sizeof(s_usb_last_error),
+                     "recording recovery failed before USB export: %s",
+                     esp_err_to_name(ret));
+            ESP_LOGE(TAG, "%s errno=%d; TF remains with application",
+                     s_usb_last_error, helper_errno);
+            restore_usb_previous_runtime();
+            __atomic_store_n(&s_usb_host_seen_during_export, false,
+                             __ATOMIC_RELEASE);
+            s_storage_mount_allowed = true;
+            s_storage_quiescing = false;
+            set_storage_service_state(
+                STORAGE_SERVICE_ERROR,
+                "USB export stopped because recording recovery hit TF I/O error: %s",
+                esp_err_to_name(ret));
+            return;
+        }
+        ESP_LOGW(TAG, "recording recovery before USB export degraded: %s errno=%d",
+                 esp_err_to_name(ret), helper_errno);
+    }
+    errno = 0;
+    ret = reconcile_recording_indexes();
+    if (ret != ESP_OK) {
+        int helper_errno = errno ? errno : EIO;
+        if (storage_errno_is_media_failure(helper_errno) || !storage_acceptance_ok()) {
+            snprintf(s_usb_last_error, sizeof(s_usb_last_error),
+                     "recording index reconciliation failed before USB export: %s",
+                     esp_err_to_name(ret));
+            ESP_LOGE(TAG, "%s errno=%d; TF remains with application",
+                     s_usb_last_error, helper_errno);
+            restore_usb_previous_runtime();
+            __atomic_store_n(&s_usb_host_seen_during_export, false,
+                             __ATOMIC_RELEASE);
+            s_storage_mount_allowed = true;
+            s_storage_quiescing = false;
+            set_storage_service_state(
+                STORAGE_SERVICE_ERROR,
+                "USB export stopped because recording index recovery hit TF I/O error: %s",
+                esp_err_to_name(ret));
+            return;
+        }
+        ESP_LOGW(TAG, "recording index reconciliation before USB export degraded: %s errno=%d",
+                 esp_err_to_name(ret), helper_errno);
+    }
     cleanup_recording_temp_files();
 
     s_last_recording_frame_ms = 0;
@@ -20776,6 +20932,15 @@ static esp_err_t enter_usb_app_restore_mode(bool suppress_reexport)
      * remount needs attention. Restore the user's camera/model/capture state
      * now; a later Web TF retry must not snapshot permanently disabled flags. */
     restore_usb_previous_runtime();
+    esp_err_t web_ret = restart_webserver_after_storage_restore();
+    if (web_ret != ESP_OK) {
+        set_storage_service_state(STORAGE_SERVICE_ERROR,
+                                  "USB restored TF, but HTTP restart failed: %s; reboot if Web is unavailable",
+                                  esp_err_to_name(web_ret));
+        if (mount_ret == ESP_OK) {
+            mount_ret = web_ret;
+        }
+    }
     s_storage_quiescing = false;
     mark_network_activity();
     open_network_access_window(mount_ret == ESP_OK ?

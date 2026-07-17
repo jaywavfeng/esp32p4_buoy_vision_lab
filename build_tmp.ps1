@@ -8,6 +8,7 @@ $ProjectDir = $PSScriptRoot
 $IdfPath = 'C:\esp\v6.0.1\esp-idf'
 $Python = 'C:\Espressif\tools\python\v6.0.1\venv\Scripts\python.exe'
 $IdfPy = Join-Path $IdfPath 'tools\idf.py'
+$Objdump = 'C:\Espressif\tools\riscv32-esp-elf\esp-15.2.0_20251204\riscv32-esp-elf\bin\riscv32-esp-elf-objdump-xespv2p2.exe'
 
 $env:IDF_TOOLS_PATH = 'C:\Espressif\tools'
 $env:IDF_COMPONENT_CACHE_PATH = Join-Path $ProjectDir '.idf_component_cache'
@@ -44,6 +45,7 @@ if ($Profile -eq 'rev31') {
 
 $SdkconfigArg = 'SDKCONFIG=' + ($Sdkconfig -replace '\\', '/')
 $DefaultsArg = 'SDKCONFIG_DEFAULTS=' + (($Defaults | ForEach-Object { $_ -replace '\\', '/' }) -join ';')
+$ObjdumpArg = 'CMAKE_OBJDUMP=' + ($Objdump -replace '\\', '/')
 
 Write-Host "Building profile $Profile in $BuildDir"
 if ($Clean -and (Test-Path $BuildDir)) {
@@ -60,7 +62,7 @@ if ($Clean -and (Test-Path $BuildDir)) {
     Write-Host "Removing generated build directory $buildFull"
     Remove-Item -LiteralPath $buildFull -Recurse -Force
 }
-& $Python $IdfPy -B $BuildDir -D $SdkconfigArg -D $DefaultsArg build
+& $Python $IdfPy -B $BuildDir -D $SdkconfigArg -D $DefaultsArg -D $ObjdumpArg build
 $exitCode = $LASTEXITCODE
 Pop-Location
 exit $exitCode

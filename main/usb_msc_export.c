@@ -50,10 +50,14 @@ static void tinyusb_event_callback(tinyusb_event_t *event, void *arg)
     bool connected = s_status.host_connected;
     if (event->id == TINYUSB_EVENT_ATTACHED) {
         connected = true;
+        s_status.bus_active = true;
+        s_status.last_sof_age_ms = UINT32_MAX;
         notify = true;
         ESP_LOGI(TAG, "USB1 host configured");
     } else if (event->id == TINYUSB_EVENT_DETACHED) {
         connected = false;
+        s_status.bus_active = false;
+        s_status.last_sof_age_ms = UINT32_MAX;
         notify = true;
         ESP_LOGI(TAG, "USB1 host detached; queueing TF restore to application");
     }
@@ -77,6 +81,8 @@ void app_usb_msc_eject_cb(void)
         return;
     }
     s_status.host_connected = false;
+    s_status.bus_active = false;
+    s_status.last_sof_age_ms = UINT32_MAX;
     set_error("USB host ejected media; restoring TF to application", ESP_OK);
     ESP_LOGI(TAG, "USB MSC media ejected by host; queueing TF restore to application");
     if (s_host_callback) {
@@ -122,17 +128,68 @@ static void prepare_usb_descriptors(void)
 
 static void force_host_reenumeration_if_needed(void)
 {
-    if (!tud_inited() || !tud_mounted()) {
+    if (!tud_inited() || (!tud_connected() && !tud_mounted())) {
         return;
     }
 
     s_forced_reconnect = true;
     ESP_LOGI(TAG, "Forcing USB MSC re-enumeration after TF media attach");
     (void)tud_disconnect();
-    vTaskDelay(pdMS_TO_TICKS(350));
+    vTaskDelay(pdMS_TO_TICKS(180));
     (void)tud_connect();
-    vTaskDelay(pdMS_TO_TICKS(350));
+    vTaskDelay(pdMS_TO_TICKS(220));
     s_forced_reconnect = false;
+}
+
+static void connect_host_after_media_change(void)
+{
+    if (!tud_inited()) {
+        return;
+    }
+    if (!tud_connected() && !tud_mounted()) {
+        s_forced_reconnect = true;
+        ESP_LOGI(TAG, "Connecting USB MSC device after TF media attach");
+        (void)tud_connect();
+        vTaskDelay(pdMS_TO_TICKS(220));
+        s_forced_reconnect = false;
+        s_status.host_connected = tud_connected() || tud_mounted();
+        s_status.bus_active = s_status.host_connected;
+        return;
+    }
+    force_host_reenumeration_if_needed();
+    s_status.host_connected = tud_connected() || tud_mounted();
+    s_status.bus_active = s_status.host_connected;
+}
+
+static void soft_disconnect_host_for_restore(void)
+{
+    if (!tud_inited() ||
+        (!s_status.host_connected && !tud_connected() && !tud_mounted())) {
+        return;
+    }
+    s_forced_reconnect = true;
+    ESP_LOGI(TAG, "Soft-disconnecting USB MSC before returning TF to application");
+    (void)tud_disconnect();
+    vTaskDelay(pdMS_TO_TICKS(180));
+    s_status.host_connected = false;
+    s_status.bus_active = false;
+    s_status.last_sof_age_ms = UINT32_MAX;
+    s_forced_reconnect = false;
+}
+
+static void refresh_stale_host_state(void)
+{
+    if (!s_status.initialized || !tud_inited()) {
+        return;
+    }
+    bool tinyusb_connected = tud_connected() || tud_mounted();
+    s_status.bus_active = tinyusb_connected;
+    s_status.last_sof_age_ms = UINT32_MAX;
+    if (s_status.host_connected && !tinyusb_connected) {
+        s_status.host_connected = false;
+        s_status.bus_active = false;
+        set_error("USB host disconnected", ESP_OK);
+    }
 }
 
 esp_err_t usb_msc_export_init(usb_msc_host_event_cb_t callback, void *callback_arg)
@@ -207,8 +264,8 @@ esp_err_t usb_msc_export_attach_sdmmc(sdmmc_card_t *card)
 
     s_status.storage_ready = true;
     set_error("USB host owns writable TF", ESP_OK);
-    force_host_reenumeration_if_needed();
-    ESP_LOGI(TAG, "Writable TF card exposed on USB1; safe eject then unplug to restore automatically");
+    connect_host_after_media_change();
+    ESP_LOGI(TAG, "Writable TF card exposed on USB1; Web restore or unplug can return TF to application");
     return ESP_OK;
 }
 
@@ -223,9 +280,25 @@ esp_err_t usb_msc_export_detach_storage(void)
         return ESP_OK;
     }
 
-    esp_err_t ret = tinyusb_msc_delete_storage(s_storage);
+    bool host_was_active = s_status.host_connected ||
+                           (tud_inited() && (tud_connected() || tud_mounted()));
+    if (host_was_active) {
+        soft_disconnect_host_for_restore();
+    }
+
+    esp_err_t ret = ESP_OK;
+    for (int attempt = 0; attempt < 12; attempt++) {
+        ret = tinyusb_msc_delete_storage(s_storage);
+        if (ret == ESP_OK || ret != ESP_ERR_INVALID_STATE) {
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(120));
+    }
     if (ret != ESP_OK) {
         set_error("detach TF failed", ret);
+        if (host_was_active && tud_inited()) {
+            (void)tud_connect();
+        }
         return ret;
     }
 
@@ -233,12 +306,20 @@ esp_err_t usb_msc_export_detach_storage(void)
     s_status.storage_ready = false;
     reserve_dma_block();
     set_error("USB storage detached", ESP_OK);
+    /*
+     * Keep the USB device soft-disconnected after returning TF to the app.
+     * Reconnecting an MSC interface without media leaves Windows with a
+     * "No Media" P4_BUOY disk and makes the next Web restore/export cycle feel
+     * stuck. The next explicit export attaches real TF media first, then calls
+     * tud_connect() so Windows only sees a usable drive.
+     */
     ESP_LOGI(TAG, "Writable TF card detached from USB MSC storage");
     return ESP_OK;
 }
 
 void usb_msc_export_get_status(usb_msc_export_status_t *status)
 {
+    refresh_stale_host_state();
     if (status) {
         *status = s_status;
     }

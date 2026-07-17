@@ -111,6 +111,32 @@ OLD_FAT_FORMAT_REMOUNT = """    esp_err_t err = s_f_mount(card, s_ctx[id]->fs, p
 
     return ret;"""
 
+OLD_HOSTED_STA_TX_ALLOC = """\t/*  Prepare transport buffer directly consumable */
+\tcopy_buff = mempool_alloc(((struct mempool*)chan_arr[ESP_STA_IF]->memp), MAX_TRANSPORT_BUFFER_SIZE, true);
+\tassert(copy_buff);
+\tg_h.funcs->_h_memcpy(copy_buff+H_ESP_PAYLOAD_HEADER_OFFSET, buffer, len);"""
+
+NEW_HOSTED_STA_TX_ALLOC = """\t/*  Prepare transport buffer directly consumable */
+\tcopy_buff = mempool_alloc(((struct mempool*)chan_arr[ESP_STA_IF]->memp), MAX_TRANSPORT_BUFFER_SIZE, true);
+\tif (!copy_buff) {
+\t\terrno = -ENOBUFS;
+\t\treturn ESP_ERR_NO_MEM;
+\t}
+\tg_h.funcs->_h_memcpy(copy_buff+H_ESP_PAYLOAD_HEADER_OFFSET, buffer, len);"""
+
+OLD_HOSTED_AP_TX_ALLOC = """\t/*  Prepare transport buffer directly consumable */
+\tcopy_buff = mempool_alloc(((struct mempool*)chan_arr[ESP_AP_IF]->memp), MAX_TRANSPORT_BUFFER_SIZE, true);
+\tassert(copy_buff);
+\tg_h.funcs->_h_memcpy(copy_buff+H_ESP_PAYLOAD_HEADER_OFFSET, buffer, len);"""
+
+NEW_HOSTED_AP_TX_ALLOC = """\t/*  Prepare transport buffer directly consumable */
+\tcopy_buff = mempool_alloc(((struct mempool*)chan_arr[ESP_AP_IF]->memp), MAX_TRANSPORT_BUFFER_SIZE, true);
+\tif (!copy_buff) {
+\t\terrno = -ENOBUFS;
+\t\treturn ESP_ERR_NO_MEM;
+\t}
+\tg_h.funcs->_h_memcpy(copy_buff+H_ESP_PAYLOAD_HEADER_OFFSET, buffer, len);"""
+
 NEW_FAT_FORMAT_REMOUNT = """    esp_err_t err = s_f_mount(card, s_ctx[id]->fs, pdrv, &s_ctx[id]->mount_config, NULL);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, \"failed to remount after format; resources retained for caller cleanup\");
@@ -176,6 +202,53 @@ def patch_tinyusb_msc(root: Path) -> int:
     else:
         print(
             f"component patch failed: expected MSC start/stop eject block not found in {target}",
+            file=sys.stderr,
+        )
+        return 1
+
+    if changed:
+        target.write_text(text, encoding="utf-8")
+    return 0
+
+
+def patch_esp_hosted_tx_no_assert(root: Path) -> int:
+    target = (
+        root
+        / "managed_components"
+        / "espressif__esp_hosted"
+        / "host"
+        / "drivers"
+        / "transport"
+        / "transport_drv.c"
+    )
+    if not target.exists():
+        print(f"component patch skipped; missing {target}")
+        return 0
+
+    text = target.read_text(encoding="utf-8")
+    changed = False
+    if NEW_HOSTED_STA_TX_ALLOC in text:
+        print("component patch already applied: esp_hosted STA TX no assert")
+    elif OLD_HOSTED_STA_TX_ALLOC in text:
+        text = text.replace(OLD_HOSTED_STA_TX_ALLOC, NEW_HOSTED_STA_TX_ALLOC, 1)
+        changed = True
+        print("component patch applied: esp_hosted STA TX no assert")
+    else:
+        print(
+            f"component patch failed: expected esp_hosted STA TX allocation block not found in {target}",
+            file=sys.stderr,
+        )
+        return 1
+
+    if NEW_HOSTED_AP_TX_ALLOC in text:
+        print("component patch already applied: esp_hosted AP TX no assert")
+    elif OLD_HOSTED_AP_TX_ALLOC in text:
+        text = text.replace(OLD_HOSTED_AP_TX_ALLOC, NEW_HOSTED_AP_TX_ALLOC, 1)
+        changed = True
+        print("component patch applied: esp_hosted AP TX no assert")
+    else:
+        print(
+            f"component patch failed: expected esp_hosted AP TX allocation block not found in {target}",
             file=sys.stderr,
         )
         return 1
@@ -366,6 +439,9 @@ def main() -> int:
 
     root = Path(sys.argv[1]).resolve()
     ret = patch_tinyusb_msc(root)
+    if ret != 0:
+        return ret
+    ret = patch_esp_hosted_tx_no_assert(root)
     if ret != 0:
         return ret
     ret = patch_idf_sdmmc_slot_cleanup()

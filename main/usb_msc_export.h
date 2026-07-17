@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "driver/sdmmc_types.h"
 #include "esp_err.h"
@@ -14,8 +15,10 @@ typedef void (*usb_msc_host_event_cb_t)(bool connected, void *arg);
 typedef struct {
     bool initialized;
     bool host_connected;
+    bool bus_active;
     bool storage_ready;
     bool writable;
+    uint32_t last_sof_age_ms;
     char last_error[96];
 } usb_msc_export_status_t;
 

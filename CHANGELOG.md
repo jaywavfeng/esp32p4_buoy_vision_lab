@@ -1,5 +1,13 @@
 # Changelog
 
+## v3.1.0
+
+- Kept the v3 customer Web workflow while hardening USB handoff, Web restore, stream/download recovery and TF ownership transitions.
+- Preserved automatic USB export on plug-in and automatic TF restore on host eject/detach; the Web restore button remains available for manual switching while USB stays plugged in or for recovery from stuck states.
+- Added short build and managed-component paths for Windows clones so `build_rev31.ps1` and `flash_p4.ps1` work reliably outside the original checkout path.
+- Updated customer, developer and hardware documentation to match the current v3.1.0 USB, TF and build behavior.
+- Regenerated the Word user operation guide as a lightweight customer-facing manual without embedded oversized images.
+
 ## v3.0.1
 
 - Hardened TF mounting, write/read verification, I/O fault latching and customer-facing recovery without routine reboot loops.

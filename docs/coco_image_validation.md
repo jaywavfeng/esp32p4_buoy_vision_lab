@@ -1,6 +1,6 @@
 # COCO 模型验证说明
 
-本文记录当前 `v3.0.1` 固件中 COCO 对照模型的验证路径。COCO 不是默认模型，客户默认使用 Fish31；COCO 通过 Web「模型切换」或 `POST /api/config`（表单请求体 `method=coco`）选择后用于演示、实时预览、FIELD 录像和手动补帧。
+本文记录当前 `v3.1.0` 固件中 COCO 对照模型的验证路径。COCO 不是默认模型，客户默认使用 Fish31；COCO 通过 Web「模型切换」或 `POST /api/config`（表单请求体 `method=coco`）选择后用于演示、实时预览、FIELD 录像和手动补帧。
 
 ## 模型信息
 

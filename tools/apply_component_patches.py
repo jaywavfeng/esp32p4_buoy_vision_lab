@@ -146,8 +146,15 @@ NEW_FAT_FORMAT_REMOUNT = """    esp_err_t err = s_f_mount(card, s_ctx[id]->fs, p
     return ret;"""
 
 
+def project_managed_components_dir(root: Path) -> Path:
+    override = os.environ.get("IDF_PROJECT_MANAGED_COMPONENTS_PATH", "")
+    if override:
+        return Path(override).resolve()
+    return root / "managed_components"
+
+
 def patch_tinyusb_msc(root: Path) -> int:
-    target = root / "managed_components" / "espressif__esp_tinyusb" / "tinyusb_msc.c"
+    target = project_managed_components_dir(root) / "espressif__esp_tinyusb" / "tinyusb_msc.c"
     if not target.exists():
         print(f"component patch skipped; missing {target}")
         return 0
@@ -213,8 +220,7 @@ def patch_tinyusb_msc(root: Path) -> int:
 
 def patch_esp_hosted_tx_no_assert(root: Path) -> int:
     target = (
-        root
-        / "managed_components"
+        project_managed_components_dir(root)
         / "espressif__esp_hosted"
         / "host"
         / "drivers"

@@ -25,6 +25,40 @@ $env:GIT_CONFIG_COUNT = "1"
 $env:GIT_CONFIG_KEY_0 = "safe.directory"
 $env:GIT_CONFIG_VALUE_0 = "C:/esp/v6.0.1/esp-idf"
 
+function Get-ShortHash {
+    param([string]$Text)
+
+    $sha1 = [System.Security.Cryptography.SHA1]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Text.ToLowerInvariant())
+        $hashBytes = $sha1.ComputeHash($bytes)
+        return -join ($hashBytes[0..5] | ForEach-Object { $_.ToString("x2") })
+    }
+    finally {
+        $sha1.Dispose()
+    }
+}
+
+function Get-ShortWorkspacePath {
+    param(
+        [string]$RootName,
+        [string]$TargetDir
+    )
+
+    $targetFull = [IO.Path]::GetFullPath($TargetDir).TrimEnd([char[]]@("\", "/"))
+    $shortRoot = Join-Path (Split-Path $env:IDF_TOOLS_PATH -Parent) $RootName
+    New-Item -ItemType Directory -Force -Path $shortRoot | Out-Null
+
+    $leaf = Split-Path $targetFull -Leaf
+    $safeLeaf = $leaf -replace "[^A-Za-z0-9_.-]", "_"
+    if ($safeLeaf.Length -gt 40) {
+        $safeLeaf = $safeLeaf.Substring(0, 40)
+    }
+    $shortPath = Join-Path $shortRoot ($safeLeaf + "-" + (Get-ShortHash $targetFull))
+    New-Item -ItemType Directory -Force -Path $shortPath | Out-Null
+    return $shortPath
+}
+
 function Find-EspSerialPort {
     $ports = @(Get-CimInstance Win32_SerialPort -ErrorAction SilentlyContinue |
         Where-Object {
@@ -93,7 +127,9 @@ $env:PATH = ($ToolPath -join ";") + ";" + $env:PATH
 
 Push-Location $ProjectDir
 try {
-    $BuildDir = Join-Path $ProjectDir ("build_" + $Profile)
+    $ShortBuildRoot = Get-ShortWorkspacePath "idf_build_outputs" $ProjectDir
+    $BuildDir = Join-Path $ShortBuildRoot ("build_" + $Profile)
+    $LegacyBuildDir = Join-Path $ProjectDir ("build_" + $Profile)
     if (-not $SkipBuild) {
         # build_tmp.ps1 intentionally calls `exit`; run it in a child host so
         # a successful build cannot terminate this script before flashing.
@@ -103,6 +139,8 @@ try {
         if ($LASTEXITCODE -ne 0) {
             throw "ESP-IDF $Profile build failed with exit code $LASTEXITCODE"
         }
+    } elseif (-not (Test-Path -LiteralPath $BuildDir) -and (Test-Path -LiteralPath $LegacyBuildDir)) {
+        $BuildDir = $LegacyBuildDir
     }
     $AppImage = Join-Path $BuildDir "esp32p4_buoy_vision_lab.bin"
     if (-not (Test-Path -LiteralPath $AppImage)) {

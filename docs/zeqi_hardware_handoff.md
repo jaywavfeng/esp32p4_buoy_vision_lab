@@ -23,7 +23,7 @@
 | MIPI-CSI | 使用 | 摄像头数据接口 |
 | SCCB/I2C | 使用 | 摄像头控制，`SCL=8`、`SDA=7` |
 | ESP32-C6 Wi-Fi 协处理器 | 使用 | 当前通过 ESP-Hosted SDIO 提供 AP/STA |
-| TF 卡 | 使用 | 当前验收记录显示 `tf_sdmmc` / `sdmmc_4bit` 成功，SDSPI 仅作为 fallback |
+| TF 卡 | 使用 | 当前 v3.1.0 板端状态显示 `tf_sdmmc` / `sdmmc_1bit` 稳定通过写读验证；硬件仍建议完整预留 SDMMC 4-bit，固件按卡片和信号质量选择稳定档位 |
 | USB | 使用 | UART Type-C 用于烧录/日志；ESP32-P4 USB HS OTG 已实现整张 TF 的可读写 MSC 离线导出 |
 | Ethernet/RJ45 | 使用 | 已验证直连电脑文件导出，DHCP 优先，无 DHCP 时 fallback 到 `169.254.100.2`；适合长线、PoE、远程维护和文件下载 |
 | LCD/DSI | 未使用 | 可删除 |
@@ -85,7 +85,7 @@ D3 ：GPIO42
 LDO：4
 ```
 
-当前代码优先按 SDMMC 4-bit 挂载 TF，失败时再 fallback 到 SDSPI：
+当前代码优先按 SDMMC 挂载 TF，并会按真实写入、`fsync`、重开和读回验证结果选择稳定总线档位；SDSPI 仍作为 fallback：
 
 ```text
 MOSI/CMD：GPIO44
@@ -99,7 +99,7 @@ LDO     ：4
 
 ```text
 storage_backend=tf_sdmmc
-sd_mount_mode=sdmmc_4bit
+sd_mount_mode=sdmmc_1bit
 sd_total_bytes=125033775104
 tf_ready=true
 storage_acceptance_ok=true
@@ -107,7 +107,7 @@ storage_acceptance_ok=true
 
 定制板建议：
 
-- 当前 C6 仍可保留为 Wi-Fi 调试入口，TF 侧按已验证的 SDMMC 4-bit 设计；同时保留 SDSPI fallback 的兼容性。
+- 当前 C6 仍可保留为 Wi-Fi 调试入口，TF/eMMC 侧按 SDMMC 4-bit 完整布线和阻抗要求设计，但软件必须允许回退到 1-bit/较低频率以保证不同卡片、线长和封装条件下的稳定性；同时保留 SDSPI fallback 的兼容性。
 - 如果删除 C6 或后续改 C6 通信方案，TF/eMMC 仍建议优先走 SDMMC 4-bit。
 - 如果封装后存储不可取出，优先考虑 eMMC 或工业级 microSD，且必须提供远程下载、格式化、剩余容量查询和必要的调试入口。
 
@@ -119,7 +119,7 @@ storage_acceptance_ok=true
 |---|---|---|
 | OV5647 摄像头模组 | 已使用 | 定制板继续按 MIPI-CSI 摄像头设计 |
 | TF/microSD 卡 | 已使用，验收容量约 128 GB | 采购高耐久或工业级，不建议普通消费卡长期录像 |
-| USB 数据线 | UART 烧录线和 HS OTG DEVICE 数据线均已使用 | 开发板 MSC 测试使用 USB-A 对 USB-A 数据线；定制板应改用规范 USB-C device 线缆和接口 |
+| USB 数据线 | UART 烧录线和 HS OTG DEVICE 数据线均已使用 | USB U 盘导出应连接 P4 的 USB device 口，定制板建议使用规范 USB-C device 线缆和接口；不要把电脑接到 Type-A HOST 口 |
 | 网线 | 有线验证需要 | 后续做 Ethernet 文件下载、维护或图传时准备 |
 
 还需要你确认采购的：
@@ -242,7 +242,7 @@ Wi-Fi 作为备用或删除
 提高长期部署可靠性
 ```
 
-如果只需要离线拷贝，且设备回收后接电脑导出，当前工程已实现的软件方向是 USB 2.0 High-Speed MSC：电脑独占整张 TF，可读写文件；客户主流程为插入 USB 自动导出，安全弹出并拔线后保持 TF 隔离，再通过 Web/API 显式恢复板端采集。定制板建议：
+如果只需要离线拷贝，且设备回收后接电脑导出，当前工程已实现的软件方向是 USB 2.0 High-Speed MSC：电脑独占整张 TF，可读写文件；客户主流程为插入 USB 自动导出，Windows 安全弹出、USB host detach 或拔线后自动恢复 TF，Web/API 恢复按钮作为一直插着时的手动切换或异常兜底。定制板建议：
 
 ```text
 USB-C device connector, not USB-A device
@@ -253,7 +253,7 @@ hardware must prevent host and device power paths from back-feeding
 storage ownership indicator or explicit export button is recommended
 ```
 
-USB MSC 和板端 FatFS 绝不能同时访问存储。固件采用“停止任务 -> finalize AVI -> 卸载 FatFS -> USB 独占 -> 安全弹出并拔线 -> 保持隔离 -> Web/API 显式恢复并写读验证”的策略，硬件上也不要设计会绕开此互斥的第二主机路径。
+USB MSC 和板端 FatFS 绝不能同时访问存储。固件采用“停止任务 -> finalize AVI -> 卸载 FatFS -> USB 独占 -> 安全弹出/host detach/拔线 -> 自动恢复或 Web/API 兜底恢复 -> 写读验证”的策略，硬件上也不要设计会绕开此互斥的第二主机路径。
 
 ## 需要你和我一起确认的问题
 

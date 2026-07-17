@@ -63,7 +63,7 @@ include(${cmake_dir}/utilities.cmake)
 
 if(CONFIG_APP_ENABLE_LEGACY_COKE_SPRITE)
     # Legacy Coke/Sprite bridge source is retained for reproduction, but the
-    # old model assets are not shipped in the v3.0.0 customer release.
+    # old model assets are not shipped in the v3.1.0 customer release.
     set(YOLO26_MODEL_FILE "${CMAKE_CURRENT_LIST_DIR}/../models/yolo26_coke_sprite_raw_heads_416_allint8_p4.espdl")
     if(NOT EXISTS "${YOLO26_MODEL_FILE}")
         message(FATAL_ERROR "CONFIG_APP_ENABLE_LEGACY_COKE_SPRITE is enabled, but ${YOLO26_MODEL_FILE} is not present. Restore the legacy asset or disable the legacy option.")

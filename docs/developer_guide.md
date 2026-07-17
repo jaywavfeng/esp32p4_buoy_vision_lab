@@ -1,6 +1,6 @@
 # ESP32-P4 板端视觉工程技术说明
 
-本文记录 `v3.0.1` 固件的实现现状，面向开发维护和交接验收。客户操作说明见 [customer_manual.md](customer_manual.md) 和 Word 用户手册。
+本文记录 `v3.1.0` 固件的实现现状，面向开发维护和交接验收。客户操作说明见 [customer_manual.md](customer_manual.md) 和 Word 用户手册。
 
 ## 1. 总体链路
 
@@ -126,13 +126,13 @@ detect USB host
 - `CONFIG_APP_USB_MSC_SD_FREQ_KHZ` 只是 USB 上限。USB 必须沿用板端刚通过真实写入、`fsync`、重开和读回验证的总线宽度与频率；不能把已回退到 `1-bit/10 MHz` 的卡重新强制到 `4-bit/40 MHz`。
 - ESP-Hosted 使用 SDMMC Slot 1，TF 使用 Slot 0。释放 Slot 0 时，IDF 6.0.1 补丁会把当前槽归还仍注册的 Slot 1，并保留空槽 ISR 防护，避免 C6 SDIO 中断丢失后重启 P4。
 - `/api/status` 继续上报 `usb_host_connected`、`usb_storage_owner`、`storage_quiescing`、`usb_last_error`。
-- TinyUSB `DETACHED` 或 USB 配置失活不代表数据线已物理拔出，不会触发 TF 自动重新挂载。
-- 安全弹出并物理拔线后，TF 继续保持隔离；用户须从 Web 点击「USB 恢复存储」，或调用 `POST /api/mode/usb/restore?confirm=RESTORE`，成功完成挂载和写读验证后才交还应用。
+- Windows 安全弹出、TinyUSB `DETACHED`、USB host inactive 或物理拔线会触发 `USB_RESTORE`，自动把 TF 从 MSC 侧释放并恢复给应用。
+- 一直插着 USB 时，用户也可以从 Web 点击「USB 恢复存储」，或调用 `POST /api/mode/usb/restore?confirm=RESTORE`，成功完成挂载和写读验证后交还应用；该手动恢复会抑制本次仍插着的线立即重新自动导出，下一次 USB 边沿仍会自动导出。
 - 不再设置“抑制下次自动导出”；下一次物理插入仍会自动导出。
 
 硬件连接：电脑应通过支持数据的 A-to-C 或 C-to-C 线连接 J15 USB 2.0 Type-C `DEVICE` 口。J18 叠层 Type-A 是 P4 作为 USB 主机时使用的 `HOST` 口；不要用 A-to-A 线连接电脑，也不要带电改变 HOST 供电跳接。官方端口定义见 [ESP32-P4-Function-EV-Board v1.5.2 User Guide](https://documentation.espressif.com/esp-dev-kits/en/latest/esp32p4/esp32-p4-function-ev-board/index.html)。
 
-历史结论：USB MSC 在 `bca4815`（v2.0.0）首次加入；v2.0.0、v3.0.0 与修复前 v3.0.1 都采用“TinyUSB 无介质枚举 -> 卸载 FatFS/Slot 0 -> 重建 SDMMC 卡 -> `tinyusb_msc_new_storage_sdmmc()` -> 重新枚举”的同一主流程，也都把 USB TF 固定成 `4-bit/40 MHz`。因此本次故障不是近期重构改变了核心交接方式，而是新 TF 在该档位可枚举、可读但真实写入超时，加上 IDF 6.0.1 共享 Slot 0/1 的当前槽清理缺陷。修复保留原交接方式，只增加验证档位继承和共享控制器修复。
+历史结论：USB MSC 在 `bca4815`（v2.0.0）首次加入；v2.0.0、v3.0.0 与修复前 v3.0.1 都采用“TinyUSB 无介质枚举 -> 卸载 FatFS/Slot 0 -> 重建 SDMMC 卡 -> `tinyusb_msc_new_storage_sdmmc()` -> 重新枚举”的同一主流程，也都把 USB TF 固定成 `4-bit/40 MHz`。因此本次故障不是近期重构改变了核心交接方式，而是新 TF 在该档位可枚举、可读但真实写入超时，加上 IDF 6.0.1 共享 Slot 0/1 的当前槽清理缺陷。v3.1.0 修复保留原交接方式，增加验证档位继承、共享控制器修复和 Web retry；安全弹出、host detach 或拔线仍会自动排队恢复 TF。
 
 ## 5. API 摘要
 
@@ -187,7 +187,7 @@ coco    -> COCO YOLO11n 320 INT8
 .\flash_p4.ps1 -Profile rev31 -Port COM6 -SkipBuild
 ```
 
-`flash_p4.ps1` 会使用所选 profile 的构建目录，只写 bootloader、partition table 和应用镜像，不执行 `erase-flash`，不会主动清空 NVS 或 TF。大镜像写入较慢；直接 esptool 写入时建议给命令 3-5 分钟超时。
+构建脚本会把 build 输出和 managed components 放到 `C:\Espressif\idf_build_outputs\...`、`C:\Espressif\idf_project_managed_components\...`，并在 ESP-IDF component manager 中启用 `IDF_PROJECT_MANAGED_COMPONENTS_PATH` 覆盖，避免异地 clone 路径过长或包含中文导致构建失败。`flash_p4.ps1` 会使用所选 profile 的短路径构建目录，只写 bootloader、partition table 和应用镜像，不执行 `erase-flash`，不会主动清空 NVS 或 TF。大镜像写入较慢；直接 esptool 写入时建议给命令 3-5 分钟超时。
 
 ## 9. 验收清单
 
@@ -199,18 +199,12 @@ coco    -> COCO YOLO11n 320 INT8
 6. FIELD 生成 raw/annotated 成对片段，帧数和时长一致。
 7. 手动补帧进度到满帧，输出 annotated 可播放。
 8. USB 插入后 Windows 识别 `P4_BUOY`，Web 保持在线，`usb_storage_owner=usb`。
-9. 安全弹出并拔线后 TF 保持隔离；Web 显式恢复成功后应用重新持有 TF，下一次插入仍自动导出。
+9. 安全弹出、host detach 或拔线后 TF 自动恢复给应用；Web 显式恢复也可在 USB 仍插着时手动切回，下一次插入仍自动导出。
 10. 文档和 Word 手册不包含面向客户的烧录要求。
 
-## 10. 2026-07-08 板端实测摘要
+## 10. 2026-07-17 v3.1.0 交付验证摘要
 
-- `.\build_tmp.ps1` 通过，应用镜像大小 `0x96f210`，最小 app 分区剩余约 33%。
-- COM3 直接 esptool 写入 `bootloader.bin`、`partition-table.bin`、`esp32p4_buoy_vision_lab.bin` 并 hash verified。
-- `/api/status` 返回 `recording_segment_max_ms=14400000`，首页 UTF-8 中文、模型切换、客户端计数和 14400 秒上限显示正常；有线 Web 访问时 `client_count=1` 且自动采集倒计时暂停。
-- `/stream` 可从 standby 自动唤醒摄像头，12 秒抓取约 2.58 MB MJPEG 数据，随后 `POST /api/power?cmd=standby` 可回待机。
-- `DELETE /api/recordings?confirm=DELETE` 删除 7 个录像相关文件，释放约 9.6 MB，`recording_groups` 清空。
-- 模型保存 API 已验证 `tinycls -> fish31` 可切换，最终交付配置恢复为 Fish31 和 60 秒片段。
-- 5 秒片段 FIELD 生成 2 条客户记录，raw/annotated 帧数分别为 24/24、23/23，`recording_groups` 全部 `ready`，raw 与 annotated 均可通过 Web 下载。
-- 手动补帧 `POST /api/recording/enrich?name=raw_001...avi` 完成 24/24 帧，`inference_coverage_x1000=1000`，annotated 仍在同一条记录内下载。
-- 片段时长从 5 秒恢复到 60 秒后，历史整理完成 `input=2, output=1`，合并后记录 raw/annotated 为 47/47 帧。
-- USB 自动导出已实测：Windows 枚举 `USB\VID_303A&PID_4002\P4E8F60AE0A565`，出现 `E: P4_BUOY` FAT32 卷；Web 保持在线，`app_mode=usb_export`、`usb_storage_owner=usb`；已从 `P4_BUOY:\esp32p4\recordings\` 成功读取和复制 AVI。该记录只证明当时的导出和读取链路；当前“安全弹出、物理拔线、保持隔离、Web 显式恢复”流程仍须随修复固件重新验收。
+- 已从 GitHub `v3.1.0` tag 干净 clone，运行 `.\build_rev31.ps1 -Clean` 构建通过，证明远端源码、依赖锁定和短路径 managed component 方案可在异地 checkout 复现构建。
+- 已用 `.\flash_p4.ps1 -Profile rev31 -Port COM6 -SkipBuild` 烧录真实板端，esptool 完成 bootloader、partition table 和 app 写入校验；脚本未执行 `erase-flash`，不清空 NVS 或 TF。
+- 烧录后通过 `http://192.168.1.80/api/status` 验证 Web/API 在线，状态包含 `app_mode=server`、`recognition_method=fish31`、`eth_ip=169.254.100.2`、`usb_storage_owner=app`、`sd_mounted=true`、`tf_ready=true`、`storage_acceptance_ok=true`、`storage_write_verified=true`、`sd_mount_mode=sdmmc_1bit`、`recording_segment_ms=1800000`、`recording_segment_max_ms=14400000`。
+- 历史功能复测记录保留在仓库根目录 [../TEST_ISSUES.md](../TEST_ISSUES.md)。该报告记录 2026-07-17 早期 `3.0.1` 板端功能复测，覆盖 USB、FIELD、reset 恢复、录像下载、实时图传和验证任务；当前 `v3.1.0` 沿用其已修复的主流程，并额外完成远端 clone 构建、烧录和文档一致性收尾。

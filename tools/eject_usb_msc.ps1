@@ -108,4 +108,4 @@ if ($initialDriveLetter) {
 } else {
     Write-Host "Safely dismounted $volumePath ($VolumeLabel)."
 }
-Write-Host "The board firmware should restore TF automatically after eject/detach; use the Web restore button only if status stays in USB export."
+Write-Host "The board should restore TF automatically after eject/detach. Watch /api/status until usb_storage_owner=app; use the Web restore button if it stays in USB export."

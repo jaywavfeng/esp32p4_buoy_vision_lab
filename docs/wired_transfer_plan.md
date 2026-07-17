@@ -2,7 +2,7 @@
 
 ## 结论
 
-当前 `v3.0.1` 把采集和导出分成三条清晰流程：
+当前 `v3.1.0` 把采集和导出分成三条清晰流程：
 
 1. FIELD 野外采集：优先保证摄像头、TF 写入和推理，生成 raw/annotated 成对录像。
 2. Ethernet/Web 下载：适合维护、少量文件下载和浏览器/API 操作。
@@ -124,17 +124,17 @@ finalize AVI
 keep Web/AP/STA/Ethernet online
 unmount FatFS from app
 expose whole TF as writable USB MSC
-keep TF isolated after safe eject + physical unplug
-remount and write-verify only after an explicit Web/API restore
+restore TF automatically after safe eject, USB host detach or physical unplug
+allow explicit Web/API restore while USB remains plugged or as a recovery fallback
 ```
 
-Windows 卷标为 `P4_BUOY`。插入 USB 自动导出不要求先打开 Web；完成后先在 Windows 安全弹出，再拔掉 USB 数据线。此时板端继续隔离 TF，避免把 TinyUSB `DETACHED` 误判为物理拔线。确认 `/api/status.usb_host_connected=false` 后，从 Web 点击「USB 恢复存储」，或调用：
+Windows 卷标为 `P4_BUOY`。插入 USB 自动导出不要求先打开 Web；完成后先在 Windows 安全弹出，设备通常会自动恢复 TF 并执行写读验证。若 USB 线一直插着但需要手动切回板端存储，或状态长时间停留在 `usb_export`，可从 Web 点击「USB 恢复存储」，或调用：
 
 ```powershell
 curl.exe --noproxy "*" -X POST "http://169.254.100.2/api/mode/usb/restore?confirm=RESTORE"
 ```
 
-只有恢复接口成功完成重新挂载和写读验证后，TF 才交还应用。USB 导出期间 `/api/status` 会显示 `usb_storage_owner:"usb"`。
+恢复成功后 `/api/status.usb_storage_owner` 回到 `app`，并且 `storage_acceptance_ok=true`。USB 导出期间 `/api/status` 会显示 `usb_storage_owner:"usb"`。
 
 USB 工具：
 
@@ -153,8 +153,8 @@ read >= 6 MiB/s
 write >= 4 MiB/s
 SHA256 matches both directions
 create / rename / delete pass
-safe eject + unplug keeps TF isolated
-explicit Web/API restore remounts and write-verifies TF
+safe eject / host detach / unplug restores TF automatically
+explicit Web/API restore also remounts and write-verifies TF while USB remains plugged or when automatic restore stalls
 next physical insert auto-exports again
 ```
 

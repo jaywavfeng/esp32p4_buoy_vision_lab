@@ -23,7 +23,7 @@
 |---|---|---|
 | SERVER / Web 服务模式 | 配置、预览、模型验证、录像管理、下载和维护 | Web、API、AP/STA、Ethernet、mDNS 可用；TF 状态可见；页面按钮必须有真实后端效果 |
 | FIELD / 野外录像模式 | 无人值守采集、推理、存储 | 采集、推理、raw/annotated 写入并发运行；达到片段长度后自动闭合成对视频；未达到片段长度但被中断时也要整理出成对视频 |
-| USB_EXPORT / USB U 盘导出模式 | 离线批量复制 TF 卡数据 | 任意模式下插入 USB 后导出 `P4_BUOY`；Web 明确提示 TF 被 USB 占用；拔出后恢复 Web/SERVER 和 TF 写入能力 |
+| USB_EXPORT / USB U 盘导出模式 | 离线批量复制 TF 卡数据 | 任意模式下插入 USB 后导出 `P4_BUOY`；Web 明确提示 TF 被 USB 占用；安全弹出、host detach 或物理拔线后自动恢复 Web/SERVER 和 TF 写入能力；一直插着 USB 时可通过 Web 手动恢复/再次导出 |
 
 当前客户指定默认验收配置：
 
@@ -48,7 +48,7 @@
 | 清空录像记录 | 点击清空并确认 | 后台清理录像、sidecar、索引和临时文件；完成后列表为空；操作必须有明确风险提示 |
 | TF 重试 | 点击检查并重试 TF | 重新挂载/验证 TF；成功后写入验证通过；失败时给出可操作提示 |
 | USB 立即导出 | 点击 USB 导出或插入 USB | 停止应用侧 TF 写入，把 TF 导出给电脑，Web 给出 USB 占用状态 |
-| USB 恢复存储 | USB 弹出/拔出后恢复 | TF 交还应用，Web/SERVER 可访问，写读验证通过 |
+| USB 恢复存储 | USB 弹出/拔出自动恢复，或一直插着时手动恢复 | TF 交还应用，Web/SERVER 可访问，写读验证通过；失败时 Web 给出可重试提示 |
 
 ## 4. FIELD / 野外录像模式需求
 
@@ -73,8 +73,8 @@ FIELD 是客户最关心的核心模式，必须按用户真实场景验收。
 | U-01 | SERVER 中插入 USB | Windows 出现 `P4_BUOY`，Web 显示 TF 已被 USB 占用 |
 | U-02 | FIELD 中插入 USB | 当前录像先闭合成对视频，再导出 TF |
 | U-03 | USB 已插着时启动 | 设备不应卡死；应进入明确的 USB_EXPORT 或 SERVER 状态 |
-| U-04 | Windows 安全弹出 | 用户安全弹出后，应有明确恢复路径；若客户口径要求“拔出后自动恢复”，实现和文档必须一致 |
-| U-05 | USB 拔出 | 设备恢复 SERVER/Web，TF 挂载并完成写读验证 |
+| U-04 | Windows 安全弹出 | 设备应自动排队恢复 TF；若 Windows 仍占用或恢复失败，Web 必须明确提示“安全弹出/拔线/点击恢复”的兜底路径 |
+| U-05 | USB 拔出 | 设备自动恢复 SERVER/Web，TF 挂载并完成写读验证；下一次插入仍应自动导出 |
 | U-06 | USB 占用时访问 Web | Web 应明确说明 TF 被 USB 占用，不让用户误以为录像丢失 |
 | U-07 | U 盘可见性 | 普通 Windows 用户应能在资源管理器中看到盘符或得到明确操作提示 |
 
@@ -89,7 +89,7 @@ FIELD 是客户最关心的核心模式，必须按用户真实场景验收。
 | 自动进入采集 | 无 Web/stream/download/validate 连接 30 秒 | 设备自动进入 FIELD，并开始写 raw/annotated |
 | 自动采集中断 | 自动 FIELD 录制 10-30 秒后 reset 或 USB 导出 | 退出采集后能看到成对视频 |
 | USB 导出复制 | 在 Windows 打开 `P4_BUOY` | 可复制 `esp32p4/recordings` 中成对 AVI |
-| USB 弹出/拔出恢复 | Windows 安全弹出并拔出 USB | 设备恢复 SERVER/Web，TF 可再次写入 |
+| USB 弹出/拔出恢复 | Windows 安全弹出或拔出 USB | 设备自动恢复 SERVER/Web，TF 可再次写入；若一直插着 USB，则 Web 手动恢复也可完成同样状态切换 |
 | Web 下载 | 通过录像列表下载 raw/annotated | 下载文件大小与 TF 文件一致，可播放 |
 | 补帧 | 对 raw 执行补帧 | annotated 重建完成，帧数与 raw 一致 |
 | 清空记录 | 点击清空并确认 | 录像目录和索引清理完成，页面进度明确 |
